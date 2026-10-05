@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Conversation Manager (Mobile)",
+    "description": "Cross-workspace conversation list, full-text search, batch archive, recoverable delete (recycle bin). Entry: Settings → Conversation Manager. Mobile-friendly layout adapted from DSH-chat-keeper."
+  }
+}

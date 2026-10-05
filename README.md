@@ -43,6 +43,24 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v1.1.0/retry-count-plug
 
 > 装完重启一次 App（让设置页入口出现）；之后改次数实时生效，无需再重启。卡顿重试提示会变成「已重试模型请求（1/10）」。
 
+### ▶ chat-keeper-mobile · 对话管理（手机版）
+
+> 跨工作区对话总表、正文搜索、批量归档、可恢复删除（回收站），以及会话「…」菜单里的「删除会话」。入口：**设置 → 对话管理**（基于 Sky-lll27 的 DSH-chat-keeper 客户端适配手机布局，Host 能力一致）。
+
+**一条命令安装：**
+
+```bash
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v1.2.0/chat-keeper-mobile-plugin.tgz
+```
+
+**或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
+
+```
+https://github.com/Jack-kd/dsh-plugins/releases/download/v1.2.0/chat-keeper-mobile-plugin.tgz
+```
+
+> 装完重启一次 App（工具 + 删除/恢复接口生效）。删除默认进回收站，可 `conversation_restore` 恢复；正在对话的会话删除会中断它（确认后执行）。
+
 <!--
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 新插件占位模板（作者添加新插件时复制下面这段，把「新插件名/一句话说明/安装地址」改掉，
@@ -74,10 +92,9 @@ dsh-plugins/
 ├── pnpm-workspace.yaml   ← 声明 plugins/* 为工作区
 ├── README.md             ← 本文件：插件速查 + 作者指南
 └── plugins/
-    ├── enter-newline/    ← 每个插件一个目录（完整 bundle）
-    │   ├── package.json / cordis.patch.yml / index.js / client.js
-    │   └── locale/ / icon.svg / README.md
-    └── retry-count/      ← 请求重试次数插件（同上结构）
+    ├── enter-newline/       ← 回车换行插件
+    ├── retry-count/         ← 请求重试次数插件
+    └── chat-keeper-mobile/  ← 对话管理（手机版）插件
 ```
 
 ## ✏️ 添加新插件（作者）

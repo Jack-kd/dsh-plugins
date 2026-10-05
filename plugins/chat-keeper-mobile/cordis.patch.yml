@@ -1,0 +1,12 @@
+# 手机适配版对话管理：入口在 设置 → 对话管理（整页，不再用右侧栏）。
+- insert:
+    - id: chat-keeper-mobile
+      name: '@local/chat-keeper-mobile'
+      config: {}
+
+# 打开 DSH 的正文搜索（全文索引），与上游 DSH-chat-keeper 的 patch 一致。
+- id: session-query-sqlite
+  name: '@deepseek-ai/dsh-session-query-sqlite'
+  config:
+    path: ':memory:'
+    openAt: first-search
