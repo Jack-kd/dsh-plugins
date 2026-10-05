@@ -25,6 +25,24 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v1.0.0/enter-newline-pl
 
 > 装完无需重启，到输入框按一下回车即可验证（拼音输入法第一下是提交拼音，第二下才换行，属正常现象）。
 
+### ▶ retry-count · 请求重试次数
+
+> 修改模型请求重试上限（默认 5）。在 **设置 → 通用设置 → 模型请求重试次数** 输入次数（如 10）点修改，或 **插件管理 → 请求重试次数 → 配置** 里改，立即生效。支持 deepseek 与 pi-ai（日日新）提供商。
+
+**一条命令安装：**
+
+```bash
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v1.1.0/retry-count-plugin.tgz
+```
+
+**或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
+
+```
+https://github.com/Jack-kd/dsh-plugins/releases/download/v1.1.0/retry-count-plugin.tgz
+```
+
+> 装完重启一次 App（让设置页入口出现）；之后改次数实时生效，无需再重启。卡顿重试提示会变成「已重试模型请求（1/10）」。
+
 <!--
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 新插件占位模板（作者添加新插件时复制下面这段，把「新插件名/一句话说明/安装地址」改掉，
@@ -56,9 +74,10 @@ dsh-plugins/
 ├── pnpm-workspace.yaml   ← 声明 plugins/* 为工作区
 ├── README.md             ← 本文件：插件速查 + 作者指南
 └── plugins/
-    └── enter-newline/    ← 每个插件一个目录（完整 bundle）
-        ├── package.json / cordis.patch.yml / index.js / client.js
-        ├── locale/ / icon.svg / README.md
+    ├── enter-newline/    ← 每个插件一个目录（完整 bundle）
+    │   ├── package.json / cordis.patch.yml / index.js / client.js
+    │   └── locale/ / icon.svg / README.md
+    └── retry-count/      ← 请求重试次数插件（同上结构）
 ```
 
 ## ✏️ 添加新插件（作者）

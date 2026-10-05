@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Request retry count",
+    "description": "Change the model request retry count (default 5). After install, open Plugins → Request retry count → Configure, enter a number (e.g. 10) and it takes effect — the notice reads “retrying model request (1/10)”."
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "name": "@local/retry-count",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "修改模型请求重试次数（默认 5）。在 设置 → 通用设置 → 模型请求重试次数 输入次数（如 10）点修改，或 插件管理 → 请求重试次数 → 配置，即实时生效。",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "locale/*.json",
+    "icon.svg",
+    "README.md"
+  ],
+  "icon": "./icon.svg",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-settings-general"
+      ]
+    }
+  }
+}
