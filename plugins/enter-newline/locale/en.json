@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Enter = Newline",
+    "description": "Make Enter insert a line break in the composer instead of sending; toggle back to send-on-Enter in Settings → General."
+  }
+}

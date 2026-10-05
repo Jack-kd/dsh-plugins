@@ -1,0 +1,7 @@
+{
+  "name": "dsh-plugins",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Jack-kd 的 DeepSeek Harness 插件仓库（monorepo）：每个插件一个独立 bundle，统一放在 plugins/ 目录下。",
+  "type": "module"
+}
