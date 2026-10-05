@@ -62,6 +62,25 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v1.2.0/chat-keeper-mobi
 > 装完重启一次 App（工具 + 删除/恢复接口生效）。删除默认进回收站，可 `conversation_restore` 恢复；正在对话的会话删除会中断它（确认后执行）。
 
 <!--
+
+### ▶ dsh-client-ui-skin-maid-atelier · 深海女仆工坊皮肤
+
+> 鲸鱼娘女仆、深海蓝蕾丝与 Q 版侧栏 —— 把 DSH 变成女仆工坊（第三方皮肤，作者 Small-tailqwq，MIT 代码许可；美术素材保留版权、非商用、需署名，随包 LICENSE/NOTICE 保留）。
+
+**一条命令安装：**
+
+```bash
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v1.3.0/dsh-client-ui-skin-maid-atelier-plugin.tgz
+```
+
+**或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
+
+```
+https://github.com/Jack-kd/dsh-plugins/releases/download/v1.3.0/dsh-client-ui-skin-maid-atelier-plugin.tgz
+```
+
+> 皮肤类插件通常与官方/其他皮肤互斥；安装后若界面异常，先停用其他皮肤类插件。
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 新插件占位模板（作者添加新插件时复制下面这段，把「新插件名/一句话说明/安装地址」改掉，
 插到上面的速查列表里；不要放进 HTML 注释里，直接贴在列表末尾即可）：
@@ -94,7 +113,8 @@ dsh-plugins/
 └── plugins/
     ├── enter-newline/       ← 回车换行插件
     ├── retry-count/         ← 请求重试次数插件
-    └── chat-keeper-mobile/  ← 对话管理（手机版）插件
+    ├── chat-keeper-mobile/          ← 对话管理（手机版）插件
+    └── dsh-client-ui-skin-maid-atelier/ ← 女仆工坊皮肤（第三方）
 ```
 
 ## ✏️ 添加新插件（作者）
