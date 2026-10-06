@@ -14,10 +14,25 @@
 
 ## 原理
 
-模型提供商的重试策略 `retryPolicy.maxRetries` 默认 5，且监听配置变更会实时重注册。
-本插件声明一个 volatile 配置字段 `maxRetries`，配置变更经 Loader 实时通道通知本插件，
-再由本插件把各提供商行的 `retryPolicy.maxRetries` 同步为目标值，因此立即生效。当前会同步：
-deepseek 两个提供商行（API Key 登录 / 账号登录）与 pi-ai 提供商行（如 日日新/rry）下的每个提供商。
+模型提供商的重试策略 `retryPolicy.maxRetries` 默认 5。本插件声明一个 volatile 配置字段
+`maxRetries`，配置变更后通过两个信号触发同步：
+
+1. **`settings/document-updated`（ns = retry-count）**：宿主在设置写入落盘并 reconcile 完成后发出，
+   是最可靠的主信号；
+2. **`loader/volatile-update`**：Loader 把 volatile 字段提交进运行引用时发出，作兜底。
+
+收到信号后，本插件把 deepseek 两个提供商行（API Key 登录 / 账号登录）与 pi-ai 提供商行
+（如 日日新/rry）下的每个提供商的 `retryPolicy.maxRetries` 同步为目标值，立即生效。
+
+同步在独立串行队列里延迟执行，不会在触发写入的文件锁/reconcile 栈内嵌套编辑，避免与
+HMR 全量 reconcile 竞争导致编辑被静默丢弃；目标值取自本插件 entry 的最新原始配置，
+不依赖 volatile 引用是否已提交。
+
+## 更新记录
+
+- **1.1.0**（2026-10）：修复「改次数后 deepseek/pi-ai 不跟随」——原实现只监听
+  `loader/volatile-update`，部分 build 该事件不送达，或编辑与 HMR reconcile 竞争被丢弃；
+  现改为双信号触发 + 串行延迟编辑，并直接读 entry 原始配置。升级后需重启一次 Harness。
 
 ## 安装
 

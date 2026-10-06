@@ -5,9 +5,21 @@
  *
  * - 本插件声明一个 volatile 配置字段 maxRetries（默认 5，与 deepseek 自带默认一致）；
  *   插件管理页会给本插件生成「配置」表单，用户输入次数保存即写入本插件配置。
- * - 配置变更走 Loader 的 volatile 通道（loader/volatile-update），本插件监听后把
- *   deepseek 两个提供商行（deepseek-official / deepseek-account）的 retryPolicy.maxRetries
- *   改为目标值；deepseek 适配器收到 volatile 更新后会实时重注册，重试上限立刻生效。
+ * - 配置变更有两个信号：
+ *     1. `settings/document-updated`（ns === 'retry-count'）——宿主 dsh-settings 在
+ *        文档写入落盘并 reconcile 完成后发出，是最可靠的「用户改了一次重试次数」信号；
+ *     2. `loader/volatile-update`——Loader 把 volatile 字段提交进运行引用时发出，
+ *        保留它兜底（部分 build 该事件可能不送达，但不依赖它）。
+ *   收到信号后把 deepseek 两个提供商行（deepseek-official / deepseek-account）与
+ *   pi-ai 提供商行（如 日日新/rry）的 retryPolicy.maxRetries 改为目标值。
+ *
+ * 同步实现要点：
+ * - 所有同步跑在一条串行队列里，且从信号发出栈中延迟（setTimeout 0）再执行：
+ *   触发写入本身会持有 profile patch 文件锁并跑 Loader reconcile，若在信号栈内
+ *   直接嵌套 configEditor.edit，会与 HMR 配置文件监听触发的全量 reconcile 竞争
+ *   同一把锁与 entry 状态，导致编辑被静默丢弃（表现为「改了不生效」）。
+ * - 目标值取自本插件 entry 的原始配置（entry.options.config），不依赖 volatile
+ *   引用是否已提交，保证读到的是用户最新写入的值。
  */
 import { createRequire } from 'node:module';
 
@@ -55,6 +67,9 @@ const PI_AI_ENTRY = '@deepseek-ai/dsh-llm-pi-ai';
 /** retryPolicy.maxRetries 缺省值（与 RetryPolicySchema 默认一致）。 */
 const DEFAULT_MAX_RETRIES = 5;
 
+/** 本插件自己的 entry id（patch id），用于 settings/document-updated 过滤。 */
+const SELF_NS = 'retry-count';
+
 export const name = '@local/retry-count';
 
 export const inject = ['configEditor', 'settings'];
@@ -70,57 +85,100 @@ export function apply(ctx, config) {
     child.effect(() => child.settings.configure({ auto: false }, ctx.fiber), 'retry-count: settings presentation');
   });
 
+  /**
+   * 串行队列：provider 编辑共享 profile patch 文件锁与 Loader reconcile，
+   * 队列保证一次只有一个同步在跑，且不在信号发出栈里执行。
+   */
+  let queue = Promise.resolve();
+  const enqueue = (task) => {
+    queue = queue.then(task, task);
+    return queue;
+  };
+
+  /** 目标值：优先读本插件 entry 的最新原始配置，避免依赖 volatile 引用是否已提交。 */
+  const readMaxRetries = (editor) => {
+    try {
+      const selfEntry = editor.entries().find((entry) => entry.options.id === SELF_NS);
+      const raw = selfEntry?.options?.config?.maxRetries;
+      if (typeof raw === 'number' && Number.isSafeInteger(raw)) return raw;
+    } catch {
+      /* fall through to the volatile ref */
+    }
+    try {
+      return config.maxRetries.get();
+    } catch {
+      return DEFAULT_MAX_RETRIES;
+    }
+  };
+
   const sync = () => {
     const editor = ctx.get('configEditor');
-    if (editor === undefined) return;
-    const maxRetries = config.maxRetries.get();
+    if (editor === undefined) return Promise.resolve();
+    const maxRetries = readMaxRetries(editor);
+
+    const targets = [];
     for (const entry of editor.entries()) {
       const entryName = entry.options.name;
-      if (DEEPSEEK_ENTRIES.has(entryName)) {
-        editor.edit(entry, (current, inherited) => {
-          const policy = current.retryPolicy ?? inherited?.retryPolicy;
-          if (policy?.mode === 'always') return current;
-          const effective = policy?.maxRetries ?? DEFAULT_MAX_RETRIES;
-          if (effective === maxRetries) return current;
-          return {
-            ...current,
-            retryPolicy: {
-              mode: 'normal',
-              ...(typeof policy === 'object' && policy !== null ? policy : {}),
-              maxRetries,
-            },
-          };
-        }).catch((error) => {
-          ctx.logger.warn('[retry-count] 同步 deepseek 重试策略失败: %o', error);
-        });
-      } else if (entryName === PI_AI_ENTRY) {
-        editor.edit(entry, (current, inherited) => {
-          const providers = current.providers ?? inherited?.providers ?? {};
-          let changed = false;
-          const next = { ...providers };
-          for (const [name, provider] of Object.entries(providers)) {
-            const policy = provider?.retryPolicy;
-            if (policy?.mode === 'always') continue;
+      if (DEEPSEEK_ENTRIES.has(entryName) || entryName === PI_AI_ENTRY) targets.push(entry);
+    }
+    if (targets.length === 0) return Promise.resolve();
+
+    return enqueue(async () => {
+      for (const entry of targets) {
+        try {
+          await editor.edit(entry, (current, inherited) => {
+            if (entry.options.name === PI_AI_ENTRY) {
+              const providers = current.providers ?? inherited?.providers ?? {};
+              let changed = false;
+              const next = { ...providers };
+              for (const [providerName, provider] of Object.entries(providers)) {
+                const policy = provider?.retryPolicy;
+                if (policy?.mode === 'always') continue;
+                const effective = policy?.maxRetries ?? DEFAULT_MAX_RETRIES;
+                if (effective === maxRetries) continue;
+                next[providerName] = {
+                  ...(typeof provider === 'object' && provider !== null ? provider : {}),
+                  retryPolicy: {
+                    mode: 'normal',
+                    ...(typeof policy === 'object' && policy !== null ? policy : {}),
+                    maxRetries,
+                  },
+                };
+                changed = true;
+              }
+              return changed ? { ...current, providers: next } : current;
+            }
+            const policy = current.retryPolicy ?? inherited?.retryPolicy;
+            if (policy?.mode === 'always') return current;
             const effective = policy?.maxRetries ?? DEFAULT_MAX_RETRIES;
-            if (effective === maxRetries) continue;
-            next[name] = {
-              ...(typeof provider === 'object' && provider !== null ? provider : {}),
+            if (effective === maxRetries) return current;
+            return {
+              ...current,
               retryPolicy: {
                 mode: 'normal',
                 ...(typeof policy === 'object' && policy !== null ? policy : {}),
                 maxRetries,
               },
             };
-            changed = true;
-          }
-          return changed ? { ...current, providers: next } : current;
-        }).catch((error) => {
-          ctx.logger.warn('[retry-count] 同步 pi-ai 重试策略失败: %o', error);
-        });
+          });
+        } catch (error) {
+          ctx.logger.warn('[retry-count] 同步 %s 重试策略失败: %o', entry.options.name, error);
+        }
       }
-    }
+    });
   };
 
+  // 启动时同步一次（应用新配置或插件重载后，把 providers 拉齐到当前值）。
   sync();
-  ctx.on('loader/volatile-update', sync);
+
+  // 信号 1：settings 文档更新（设置页/插件配置表单写入后发出）——最可靠。
+  ctx.on('settings/document-updated', (ns) => {
+    if (ns !== SELF_NS) return;
+    setTimeout(sync, 0);
+  });
+
+  // 信号 2：Loader volatile 提交（部分 build 事件可能不送达，作兜底）。
+  ctx.on('loader/volatile-update', () => {
+    setTimeout(sync, 0);
+  });
 }
