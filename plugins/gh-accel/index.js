@@ -40,6 +40,7 @@ const cloneOutputSchema = {
     dir: { type: 'string' },
     url: { type: 'string' },
     repoUrl: { type: 'string' },
+    mirror: { type: 'string' },
     output: { type: 'string' },
   },
 };
@@ -262,7 +263,7 @@ export function apply(ctx, config = {}) {
 
 function uiSimple(v) {
   if (!v.ok) return textResult(`失败: ${v.output || ''}`);
-  const lines = [`已完成克隆: ${v.dir}`, `加速地址: ${v.url}`, `原始地址: ${v.repoUrl}`];
+  const lines = [`已完成克隆: ${v.dir}`, `仓库地址: ${v.url}（origin 已设回原始地址，fetch 自动走镜像）`, `本次加速镜像: ${v.mirror || '-'}`];
   if (v.output) lines.push(v.output);
   return textResult(lines.join('\n'));
 }

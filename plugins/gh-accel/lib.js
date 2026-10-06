@@ -321,7 +321,11 @@ export async function runClone(url, { dest, depth = true, rules = DEFAULT_RULES,
   if (depth) args.push('--depth', '1');
   args.push(picked.u, dir);
   const out = await run('git', args);
-  return { ok: true, dir, url: picked.u, repoUrl: url, output: out.trim() };
+  // 修复: 克隆完成后把 origin 设回原始地址——
+  //   fetch/pull 依赖全局 insteadOf 自动改写走加速镜像；
+  //   push 依赖 github_accel_push（临时摘除改写直推真实 GitHub）。
+  await run('git', ['remote', 'set-url', 'origin', url], dir).catch(() => {});
+  return { ok: true, dir, url, repoUrl: url, mirror: picked.u, output: out.trim() };
 }
 
 export async function runPush({ dir, remote = 'origin', branch, signal } = {}) {
