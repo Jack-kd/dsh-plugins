@@ -336,7 +336,10 @@ export async function runClone(url, { dest, depth = true, rules = DEFAULT_RULES,
   // 修复: 克隆完成后把 origin 设回原始地址——
   //   fetch/pull 依赖全局 insteadOf 自动改写走加速镜像；
   //   push 依赖 github_accel_push（临时摘除改写直推真实 GitHub）。
+  //   （git remote -v 显示改写后的镜像前缀属正常显示行为，存储值仍为原始地址）
   await run('git', ['remote', 'set-url', 'origin', url], dir).catch(() => {});
+  // 避免 "dubious ownership"：把克隆目录加入全局 safe.directory（尽力而为）
+  await run('git', ['config', '--global', '--add', 'safe.directory', path.resolve(dir)]).catch(() => {});
   return { ok: true, dir, url, repoUrl: url, mirror: picked.u, output: out.trim() };
 }
 
@@ -347,6 +350,7 @@ export async function runPush({ dir, remote = 'origin', branch, signal } = {}) {
   let output = '';
   let failed = false;
   try {
+    if (dir) await run('git', ['config', '--global', '--add', 'safe.directory', path.resolve(dir)]).catch(() => {});
     const args = ['push', remote];
     if (branch) args.push(branch);
     output = (await run('git', args, dir)).trim();

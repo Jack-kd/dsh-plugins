@@ -267,7 +267,11 @@ export function apply(ctx, config = {}) {
 
 function uiSimple(v) {
   if (!v.ok) return textResult(`失败: ${v.output || ''}`);
-  const lines = [`已完成克隆: ${v.dir}`, `仓库地址: ${v.url}（origin 已设回原始地址，fetch 自动走镜像）`, `本次加速镜像: ${v.mirror || '-'}`];
+  const lines = [
+    `已完成克隆: ${v.dir}`,
+    `origin 存储: ${v.url}（原始地址；git remote -v 显示镜像前缀是全局改写的正常显示，非存储异常）`,
+    `本次加速镜像: ${v.mirror || '-'}`,
+  ];
   if (v.output) lines.push(v.output);
   return textResult(lines.join('\n'));
 }
