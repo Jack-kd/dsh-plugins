@@ -30,7 +30,7 @@ HMR 全量 reconcile 竞争导致编辑被静默丢弃；目标值取自本插�
 
 ## 更新记录
 
-- **1.1.0**（2026-10）：修复「改次数后 deepseek/pi-ai 不跟随」——原实现只监听
+- **v2.0.5**（2026-10）：修复「改次数后 deepseek/pi-ai 不跟随」——原实现只监听
   `loader/volatile-update`，部分 build 该事件不送达，或编辑与 HMR reconcile 竞争被丢弃；
   现改为双信号触发 + 串行延迟编辑，并直接读 entry 原始配置。升级后需重启一次 Harness。
 

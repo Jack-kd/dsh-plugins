@@ -29,18 +29,18 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v1.0.0/enter-newline-pl
 
 > 修改模型请求重试上限（默认 5）。在 **设置 → 通用设置 → 模型请求重试次数** 输入次数（如 10）点修改，或 **插件管理 → 请求重试次数 → 配置** 里改，立即生效。支持 deepseek 与 pi-ai（日日新）提供商。
 >
-> **v1.1.0**：修复了改次数后 deepseek/pi-ai 重试策略不跟随的问题（双信号触发 + 串行延迟同步）。
+> **v2.0.5**：修复了改次数后 deepseek/pi-ai 重试策略不跟随的问题（双信号触发 + 串行延迟同步）。
 
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v1.1.0/retry-count-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v2.0.5/retry-count-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/v1.1.0/retry-count-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/v2.0.5/retry-count-plugin.tgz
 ```
 
 > 装完重启一次 App（让设置页入口出现）；之后改次数实时生效，无需再重启。卡顿重试提示会变成「已重试模型请求（1/10）」。

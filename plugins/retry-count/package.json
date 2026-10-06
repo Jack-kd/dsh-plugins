@@ -1,9 +1,9 @@
 {
   "name": "@local/retry-count",
-  "version": "1.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "修改模型请求重试次数（默认 5）。在 设置 → 通用设置 → 模型请求重试次数 输入次数（如 10）点修改，或 插件管理 → 请求重试次数 → 配置，即实时生效（v1.1.0 修复 deepseek/pi-ai 不跟随问题）。",
+  "description": "修改模型请求重试次数（默认 5）。在 设置 → 通用设置 → 模型请求重试次数 输入次数（如 10）点修改，或 插件管理 → 请求重试次数 → 配置，即实时生效（v2.0.5 修复 deepseek/pi-ai 不跟随问题）。",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
