@@ -162,6 +162,23 @@ export function apply(ctx, config = {}) {
     }));
   }
 
+  // 引导 AI 优先使用加速工具（systemPrompt 为可选服务，缺失时静默跳过）
+  try {
+    ctx.inject(['systemPrompt'], (sc) => {
+      ctx.effect(() => sc.section({
+        name: 'gh-accel',
+        text:
+          'GitHub 资源获取指引（gh-accel 加速插件已生效）：' +
+          '克隆/拉取 GitHub 仓库直接使用 git 即可（全局已自动改写加速镜像）；' +
+          '下载 GitHub 上的单文件（release 附件、raw 文件、源码归档）一律使用 github_accel_download 工具，' +
+          '不要用 curl/wget 直连 github.com 或 raw.githubusercontent.com（直连极慢且常超时）；' +
+          '向 GitHub 推送代码使用 github_accel_push。',
+      }));
+    });
+  } catch {
+    /* systemPrompt 不可用时忽略 */
+  }
+
   // 全局自动配置（幂等，尽力而为，失败不影响插件运行）
   queueMicrotask(() => {
     setupGlobal({

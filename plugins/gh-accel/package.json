@@ -1,6 +1,6 @@
 {
   "name": "@local/gh-accel",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "type": "module",
   "description": "GitHub 下载/上传加速插件：自动测速选最快镜像 + 多线程分段下载 + git/pip 全局配置",
