@@ -30,6 +30,22 @@ HMR 全量 reconcile 竞争导致编辑被静默丢弃；目标值取自本插�
 
 ## 更新记录
 
+- **v2.0.7**（2026-10）：定位到最终根因并修复。运行期同步失败的真实错误是
+  `HMR transactions cannot be nested`：`configEditor.edit` 把写盘+reconcile 包进
+  `hmr.runExclusive` 排他事务，而 `runExclusive` 对嵌套调用是**直接拒绝**而非排队；
+  设置写入自身的编辑与 HMR 配置监听触发的全量 reconcile 会持有事务数秒，插件在这
+  期间发起的编辑全部被拒（v2.0.5/v2.0.6 事件已送达、值也读对，就差这一步）。
+  v2.0.7 对「HMR 忙碌」错误做 600ms 短间隔重试（上限 40 次），其余错误仍走 5s 冷却。
+
+- **v2.0.6**（2026-10）：彻底修复运行期不同步。实测本 build（0.2.0-rc.2）：
+  `loader/volatile-update` 携带 `owner.fiber === fiber` 过滤器，而 ctx.on 监听器
+  全部挂在根上下文，事件实际上送不到任何插件；`entry.options.config` 在写入后
+  会滞后，不能作为运行时值源。v2.0.6 改为：主信号 `app-boot/config-reload`
+  （每次 patch reconcile 完成即触发）+ 兜底 `settings/document-updated`；值源
+  改读 settings 文档 user 段（直读 patch，写入即最新）；并加入同值跳过与
+  失败冷却，防止自激循环。
+
+
 - **v2.0.6**（2026-10）：彻底修复运行期不同步。实测本 build（0.2.0-rc.2）：
   `loader/volatile-update` 携带 `owner.fiber === fiber` 过滤器，而 ctx.on 监听器
   全部挂在根上下文，事件实际上送不到任何插件；`entry.options.config` 在写入后

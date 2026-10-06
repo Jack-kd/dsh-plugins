@@ -20,11 +20,11 @@
  *   2. volatile 引用 config.maxRetries.get()（写入时同步提交）；
  *   3. entry.options.config（回退）。
  *
- * 同步实现要点：
- * - 所有同步跑在一条串行队列里，且从信号发出栈中延迟（setTimeout 0）再执行，
- *   避免在触发写入的文件锁/reconcile 栈内嵌套编辑；
- * - 自激循环防护：成功同步过的值记为 lastSynced，同值事件直接跳过；
- *   失败后进入 5s 冷却，防止失败重试与 reconcile 事件互相放大。
+ * 编辑失败的主因（v2.0.7 修复）：configEditor.edit 会把写盘+reconcile 包进
+ * `hmr.runExclusive` 排他事务，而 `runExclusive` 对嵌套调用是直接拒绝
+ * （"HMR transactions cannot be nested"）而非排队。设置写入自身的编辑与 HMR
+ * 配置监听触发的全量 reconcile 会持有事务数秒，插件在这期间发起的编辑全部被拒。
+ * 因此同步对「HMR 忙碌」错误做短间隔重试（600ms，上限 40 次），其余错误才走失败冷却。
  */
 import { createRequire } from 'node:module';
 
@@ -77,6 +77,12 @@ const SELF_NS = 'retry-count';
 
 /** 失败冷却：一次同步失败后，此毫秒数内不再重试（防止失败与 reconcile 事件互相放大）。 */
 const FAIL_RETRY_COOLDOWN_MS = 5000;
+
+/** HMR 排他事务忙碌时的错误标记：configEditor.edit 在 HMR 事务内嵌套调用会被直接拒绝。 */
+const HMR_BUSY_MESSAGE = 'HMR transactions cannot be nested';
+/** HMR 忙碌时的重试间隔与上限（写入本身持有事务通常几百毫秒到一两秒）。 */
+const HMR_RETRY_DELAY_MS = 600;
+const HMR_RETRY_MAX = 40;
 
 export const name = '@local/retry-count';
 
@@ -138,6 +144,22 @@ export function apply(ctx, config) {
   let lastSynced = null;
   /** 最近一次同步失败的时间戳：仅失败后进入冷却，成功路径不受限。 */
   let lastFailedAt = 0;
+  /** HMR 忙碌重试状态：同一时间只挂一个重试定时器，并对总重试次数设上限。 */
+  let retryPending = false;
+  let retryCount = 0;
+  const scheduleRetry = () => {
+    if (retryPending) return;
+    retryPending = true;
+    setTimeout(() => {
+      retryPending = false;
+      retryCount += 1;
+      if (retryCount <= HMR_RETRY_MAX) {
+        sync();
+      } else {
+        ctx.logger.warn('[retry-count] HMR 忙碌重试已达上限，放弃本轮同步');
+      }
+    }, HMR_RETRY_DELAY_MS);
+  };
 
   const sync = () => {
     const editor = ctx.get('configEditor');
@@ -193,12 +215,21 @@ export function apply(ctx, config) {
             };
           });
         } catch (error) {
+          if (String(error?.message ?? error).includes(HMR_BUSY_MESSAGE)) {
+            // 触发写入的 HMR 排他事务还在运行：稍后重试整轮，不视为失败。
+            ctx.logger.debug('[retry-count] HMR 忙碌，稍后重试同步（%s）', entry.options.name);
+            scheduleRetry();
+            return;
+          }
           allOk = false;
           lastFailedAt = Date.now();
           ctx.logger.warn('[retry-count] 同步 %s 重试策略失败: %o', entry.options.name, error);
         }
       }
-      if (allOk) lastSynced = maxRetries;
+      if (allOk) {
+        lastSynced = maxRetries;
+        retryCount = 0;
+      }
     });
   };
 
