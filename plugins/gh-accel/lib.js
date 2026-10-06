@@ -223,7 +223,12 @@ export async function runDownload(url, {
     let lastErr = null;
     for (const t of [picked.u, ...(rule ? rule.mirrors.map((m) => rewriteFor(url, m, rule.style)).filter((x) => x !== picked.u) : [])]) {
       try {
-        await downloadRange(t, 0, size ? size - 1 : null, out, { retries: 1, signal });
+        // downloadRange 失败返回 false（不抛错），必须显式检查——否则会"假成功"
+        const okDl = await downloadRange(t, 0, size ? size - 1 : null, out, { retries: 1, signal });
+        if (!okDl) {
+          lastErr = new Error(`下载失败: ${t}`);
+          continue;
+        }
         return summarize(out, picked.via, size, t0, rule);
       } catch (e) {
         lastErr = e;
@@ -260,7 +265,14 @@ export async function runDownload(url, {
 
 function summarize(out, viaUrl, size, t0, rule) {
   const seconds = (Date.now() - t0) / 1000;
-  const bytes = fs.existsSync(out) ? fs.statSync(out).size : 0;
+  // 真实性兜底：文件必须真实存在且非空，否则按失败处理（杜绝"假成功"）
+  let bytes = 0;
+  try {
+    bytes = fs.statSync(out).size;
+  } catch {
+    throw new Error('下载未产生文件（源不可达或返回空），已中止');
+  }
+  if (bytes <= 0) throw new Error('下载文件为空，已中止');
   return {
     ok: true,
     path: out,
