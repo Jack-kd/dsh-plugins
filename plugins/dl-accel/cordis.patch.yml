@@ -1,6 +1,0 @@
-- insert:
-    - id: dl-accel
-      name: '@local/dl-accel'
-      inject:
-        - tools
-      config: {}

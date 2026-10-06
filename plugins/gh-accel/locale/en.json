@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "GitHub Download Accelerator",
-    "description": "Auto-accelerates GitHub downloads/uploads for the Harness: github_accel_download/clone/push tools plus global git/pip mirror config. Probes the fastest mirror, downloads in multi-threaded segments — often 10-50x faster."
+    "title": "Download Accelerator (GitHub + Universal, merged)",
+    "description": "gh-accel v2: GitHub download/clone/push acceleration plus rule-driven mirror routing for any site (HuggingFace hf-mirror, npm npmmirror, extensible via config), multi-threaded segmented downloads, and automatic global git/pip acceleration."
   }
 }

@@ -1,5 +1,10 @@
-// gh-accel lib — GitHub 加速下载核心逻辑（纯 Node 内置模块，可独立测试）
-// 导出: runDownload / runClone / runPush / rewrite / DEFAULT_MIRRORS
+// gh-accel v2.0.0 lib — 合并版下载加速核心（GitHub + 通用，规则驱动，纯 Node 内置模块）
+// 导出: runDownload / runProbe / runClone / runPush / setupGlobal /
+//       DEFAULT_RULES / GIT_REWRITE_KEY / clampInt
+// 规则: { match: <正则>, style: 'prefix'|'host', mirrors: [base...] }
+//   prefix: 新URL = base + 原URL   （gh 代理类）
+//   host:   把原URL 的 origin 换成 base （npm/huggingface 镜像类）
+// 无规则命中 → 直连 + 多线程分段加速（若支持 Range）
 
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
@@ -10,53 +15,82 @@ import http from 'node:http';
 import { execFile } from 'node:child_process';
 import { pipeline } from 'node:stream/promises';
 
-export const UA = 'gh-accel/1.0.2 (+https://github.com)';
-// 默认镜像列表（2026-10 实测筛选：ghfast 为 git 改写锚点保持首位；
-// 其余按本机实测下载带宽排序，gh-proxy/ghproxy.net 为社区老牌兜底）。
-// 每次下载工具都会并行测速全表并选最快路线，死节点自动跳过。
-export const DEFAULT_MIRRORS = [
-  'https://ghfast.top/',
-  'https://github.geekery.cn/',
-  'https://down.mxw.xx.kg/',
-  'https://gh.monlor.com/',
-  'https://js.jiangss.shop/',
-  'https://github.mxw.qzz.io/',
-  'https://gh.acmsz.top/',
-  'https://ghproxy.felicity.land/',
-  'https://gh-proxy.com/',
-  'https://ghproxy.net/',
+export const UA = 'gh-accel/2.0.0 (+https://github.com)';
+
+// 内置默认规则（自定义规则排在前面，优先命中）
+export const DEFAULT_RULES = [
+  {
+    match: 'github\\.com/|githubusercontent\\.com/|codeload\\.github\\.com/',
+    style: 'prefix',
+    mirrors: [
+      'https://ghfast.top/',
+      'https://github.geekery.cn/',
+      'https://down.mxw.xx.kg/',
+      'https://gh.monlor.com/',
+      'https://js.jiangss.shop/',
+      'https://github.mxw.qzz.io/',
+      'https://gh.acmsz.top/',
+      'https://ghproxy.felicity.land/',
+      'https://gh-proxy.com/',
+      'https://ghproxy.net/',
+    ],
+  },
+  {
+    match: 'huggingface\\.co|hf\\.co',
+    style: 'host',
+    mirrors: ['https://hf-mirror.com'],
+  },
+  {
+    match: 'registry\\.npmjs\\.org',
+    style: 'host',
+    mirrors: ['https://registry.npmmirror.com'],
+  },
 ];
+
 export const GIT_REWRITE_KEY = 'url.https://ghfast.top/https://github.com/.insteadOf';
 
-const MIN_DIRECT_OK = 60 * 1024;   // 直连持续带宽低于此值则放弃
-const MIN_MIRROR_OK = 20 * 1024;   // 镜像持续带宽低于此值则放弃
-const PROBE_BUDGET_MS = 4000;      // 每个探测最多 4 秒
-const PROBE_MAX = 512 * 1024;      // 每个探测最多读 512KB（镜像多时控制开销）
-const SEGMENT_MIN = 2 * 1024 * 1024; // 小于此值不切片
-const CONNECT_TIMEOUT = 15_000;
+const MIN_DIRECT_OK = 200 * 1024;  // 直连持续带宽高于此值则直连更快
+const MIN_MIRROR_OK = 40 * 1024;   // 镜像持续带宽低于此值则放弃该镜像
+const PROBE_BUDGET_MS = 3500;      // 每个探测最多 3.5 秒
+const PROBE_MAX = 512 * 1024;      // 每个探测最多读 512KB
+const SEGMENT_MIN = 4 * 1024 * 1024; // 小于此值不切片
+const CONNECT_TIMEOUT = 12_000;
 
 export function clampInt(v, lo, hi) {
   const n = Number.isFinite(v) ? Math.floor(v) : lo;
   return Math.max(lo, Math.min(hi, n));
 }
 
-export function rewrite(url, mirror) {
-  if (url.startsWith(mirror)) return url;
-  for (const pre of [
-    'https://github.com/',
-    'https://raw.githubusercontent.com/',
-    'https://codeload.github.com/',
-    'https://objects.githubusercontent.com/',
-  ]) {
-    if (url.startsWith(pre)) return mirror + url;
+function rewriteFor(url, base, style) {
+  try {
+    if (style === 'host') {
+      const u = new URL(url);
+      const b = new URL(base);
+      u.protocol = b.protocol;
+      u.host = b.host;
+      u.port = b.port;
+      return u.toString();
+    }
+    return base + url; // prefix
+  } catch {
+    return base + url;
   }
-  return url;
+}
+
+export function matchRule(url, rules) {
+  for (const r of rules || []) {
+    if (!r || typeof r.match !== 'string' || !Array.isArray(r.mirrors) || !r.mirrors.length) continue;
+    try {
+      if (new RegExp(r.match).test(url)) return r;
+    } catch { /* 非法正则跳过 */ }
+  }
+  return null;
 }
 
 function httpGet(url, { headers = {}, followRedirects = 5, signal, timeoutMs = CONNECT_TIMEOUT } = {}) {
   return new Promise((resolve, reject) => {
-    let req;
     const mod = url.startsWith('https:') ? https : http;
+    let req;
     try {
       req = mod.get(url, {
         headers: { 'User-Agent': UA, Accept: '*/*', ...headers },
@@ -66,11 +100,11 @@ function httpGet(url, { headers = {}, followRedirects = 5, signal, timeoutMs = C
         const loc = res.headers.location;
         if (followRedirects > 0 && status >= 300 && status < 400 && loc) {
           res.resume();
-          const next = new URL(loc, url).toString();
-          httpGet(next, { headers, followRedirects: followRedirects - 1, signal, timeoutMs }).then(resolve, reject);
+          httpGet(new URL(loc, url).toString(), { headers, followRedirects: followRedirects - 1, signal, timeoutMs })
+            .then(resolve, reject);
           return;
         }
-        resolve({ status, headers: res.headers, stream: res, finalUrl: url });
+        resolve({ status, headers: res.headers, stream: res });
       });
     } catch (e) {
       reject(e);
@@ -81,7 +115,7 @@ function httpGet(url, { headers = {}, followRedirects = 5, signal, timeoutMs = C
   });
 }
 
-export async function probe(url, { followRedirects = 1, budgetMs = PROBE_BUDGET_MS, signal } = {}) {
+export async function probe(url, { followRedirects = 1, signal } = {}) {
   const t0 = Date.now();
   try {
     const { status, headers, stream } = await httpGet(url, {
@@ -101,7 +135,7 @@ export async function probe(url, { followRedirects = 1, budgetMs = PROBE_BUDGET_
     let settled = false;
     await new Promise((resolve) => {
       stream.on('data', (c) => {
-        if (Date.now() - t0 >= budgetMs || len >= PROBE_MAX) {
+        if (Date.now() - t0 >= PROBE_BUDGET_MS || len >= PROBE_MAX) {
           if (!settled) { settled = true; stream.destroy(); resolve(); }
           return;
         }
@@ -119,9 +153,11 @@ export async function probe(url, { followRedirects = 1, budgetMs = PROBE_BUDGET_
   }
 }
 
-export async function pick(url, { mirrors = DEFAULT_MIRRORS, forceMirror = false, signal } = {}) {
-  const cands = forceMirror ? [] : [{ u: url, via: 'direct', follow: 0 }];
-  for (const m of mirrors) cands.push({ u: rewrite(url, m), via: m, follow: 1 });
+async function pick(url, { rule, directOnly = false, signal } = {}) {
+  const cands = [{ u: url, via: 'direct', follow: 0 }];
+  if (!directOnly && rule) {
+    for (const m of rule.mirrors) cands.push({ u: rewriteFor(url, m, rule.style), via: m, follow: 1 });
+  }
   const results = await Promise.allSettled(cands.map((c) => probe(c.u, { followRedirects: c.follow, signal })));
   let best = null;
   cands.forEach((c, i) => {
@@ -131,26 +167,7 @@ export async function pick(url, { mirrors = DEFAULT_MIRRORS, forceMirror = false
       best = { u: c.u, via: c.via, speed: r.bps, size: r.size, rangeOk: r.rangeOk };
     }
   });
-  return best
-    ? best
-    : { u: url, via: 'direct(fallback)', speed: 0, size: null, rangeOk: false };
-}
-
-export async function getSize(url, signal) {
-  try {
-    const { status, headers, stream } = await httpGet(url, {
-      headers: { Range: 'bytes=0-0' },
-      followRedirects: 5,
-      signal,
-    });
-    stream.resume();
-    const cr = headers['content-range'];
-    if (cr && cr.includes('/')) return Number(cr.split('/').pop());
-    if (status === 200) return Number(headers['content-length'] || 0);
-    return 0;
-  } catch {
-    return 0;
-  }
+  return best || { u: url, via: 'direct(fallback)', speed: 0, size: null, rangeOk: false };
 }
 
 function delay(ms) {
@@ -161,11 +178,7 @@ async function downloadRange(url, start, end, dest, { retries = 2, signal }) {
   for (let i = 0; i <= retries; i++) {
     try {
       const headers = end == null ? {} : { Range: `bytes=${start}-${end}` };
-      const { status, stream } = await httpGet(url, {
-        headers,
-        followRedirects: 5,
-        signal,
-      });
+      const { status, stream } = await httpGet(url, { headers, followRedirects: 5, signal });
       if (status !== 200 && status !== 206) {
         stream.resume();
         throw new Error(`HTTP ${status}`);
@@ -196,23 +209,22 @@ async function mapLimit(items, limit, fn) {
 export async function runDownload(url, {
   out,
   threads = 8,
-  forceMirror = false,
-  mirrors = DEFAULT_MIRRORS,
+  rules = DEFAULT_RULES,
+  mirror = null,   // 显式指定镜像 base，跳过规则全表
   signal,
 } = {}) {
   const t0 = Date.now();
-  const picked = await pick(url, { mirrors, forceMirror, signal });
+  const rule = mirror ? { style: 'prefix', mirrors: [mirror] } : matchRule(url, rules);
+  const picked = await pick(url, { rule, directOnly: !rule });
   let size = picked.size;
   if (!size) size = await getSize(picked.u, signal);
 
   if (!size || size <= SEGMENT_MIN || !picked.rangeOk) {
-    // 小文件 / 未知大小 / 不支持 Range → 单流，失败后轮换镜像
     let lastErr = null;
-    const targets = [picked.u, ...mirrors.filter((m) => rewrite(url, m) !== picked.u).map((m) => rewrite(url, m))];
-    for (const t of targets) {
+    for (const t of [picked.u, ...(rule ? rule.mirrors.map((m) => rewriteFor(url, m, rule.style)).filter((x) => x !== picked.u) : [])]) {
       try {
-        await downloadRange(t, 0, size ? size - 1 : undefined, out, { retries: 1, signal });
-        return summarize(out, t, size, t0, picked.via);
+        await downloadRange(t, 0, size ? size - 1 : null, out, { retries: 1, signal });
+        return summarize(out, picked.via, size, t0, rule);
       } catch (e) {
         lastErr = e;
       }
@@ -220,7 +232,6 @@ export async function runDownload(url, {
     throw lastErr || new Error('download failed');
   }
 
-  // 分段并发
   const seg = Math.max(1, Math.floor(size / threads));
   const ranges = [];
   for (let s = 0; s < size; s += seg) ranges.push([s, Math.min(s + seg - 1, size - 1)]);
@@ -232,25 +243,22 @@ export async function runDownload(url, {
     await fsp.rm(tmp, { recursive: true, force: true });
     throw new Error('部分分片下载失败');
   }
-  const ws = fs.createWriteStream(out);
   try {
     await pipeline(
       (async function* merge() {
-        for (const p of parts) {
-          yield* fs.createReadStream(p);
-        }
+        for (const p of parts) yield* fs.createReadStream(p);
       })(),
-      ws,
+      fs.createWriteStream(out),
     );
   } finally {
     await fsp.rm(tmp, { recursive: true, force: true });
   }
   const got = (await fsp.stat(out)).size;
   if (size && got !== size) throw new Error(`大小不一致: 预期 ${size} 实际 ${got}`);
-  return summarize(out, picked.u, size, t0, picked.via);
+  return summarize(out, picked.via, size, t0, rule);
 }
 
-function summarize(out, viaUrl, size, t0, via) {
+function summarize(out, viaUrl, size, t0, rule) {
   const seconds = (Date.now() - t0) / 1000;
   const bytes = fs.existsSync(out) ? fs.statSync(out).size : 0;
   return {
@@ -259,8 +267,39 @@ function summarize(out, viaUrl, size, t0, via) {
     bytes,
     seconds: Math.round(seconds * 10) / 10,
     kbPerSec: Math.round(bytes / Math.max(seconds, 0.01) / 1024),
-    via,
+    via: viaUrl,
+    ruleMatched: rule ? rule.match : '',
   };
+}
+
+export async function getSize(url, signal) {
+  try {
+    const { status, headers, stream } = await httpGet(url, {
+      headers: { Range: 'bytes=0-0' },
+      followRedirects: 5,
+      signal,
+    });
+    stream.resume();
+    const cr = headers['content-range'];
+    if (cr && cr.includes('/')) return Number(cr.split('/').pop());
+    if (status === 200) return Number(headers['content-length'] || 0);
+    return 0;
+  } catch {
+    return 0;
+  }
+}
+
+// 诊断：返回命中的规则 + 各候选取路实测带宽（不下文件）
+export async function runProbe(url, { rules = DEFAULT_RULES, signal } = {}) {
+  const rule = matchRule(url, rules);
+  const cands = [{ u: url, via: 'direct', follow: 0 }];
+  if (rule) for (const m of rule.mirrors) cands.push({ u: rewriteFor(url, m, rule.style), via: m, follow: 1 });
+  const results = await Promise.allSettled(cands.map((c) => probe(c.u, { followRedirects: c.follow, signal })));
+  const routes = cands.map((c, i) => {
+    const r = results[i].status === 'fulfilled' ? results[i].value : { bps: 0, size: null, rangeOk: false };
+    return { via: c.via, kbPerSec: Math.round(r.bps / 1024), rangeOk: r.rangeOk };
+  });
+  return { url, ruleMatched: rule ? rule.match : '', routes };
 }
 
 /* ---------------- git 相关 ---------------- */
@@ -274,8 +313,9 @@ function run(cmd, args, cwd) {
   });
 }
 
-export async function runClone(url, { dest, depth = true, mirrors = DEFAULT_MIRRORS, signal } = {}) {
-  const picked = await pick(url, { mirrors, forceMirror: true, signal });
+export async function runClone(url, { dest, depth = true, rules = DEFAULT_RULES, signal } = {}) {
+  const rule = matchRule(url, rules) || {};
+  const picked = await pick(url, { rule: rule.style ? rule : null, directOnly: !rule.style, signal });
   const dir = dest || url.replace(/\.git$/, '').split('/').pop() || 'repo';
   const args = ['clone'];
   if (depth) args.push('--depth', '1');

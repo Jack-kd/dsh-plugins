@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "GitHub 下载加速",
-    "description": "安装在 Harness 后自动生效：github_accel_download / clone / push 三个加速工具 + git/pip 全局镜像配置。下载 GitHub 文件、克隆仓库自动走最快加速镜像，多线程分段并发，可提速数十倍。"
+    "title": "下载加速（GitHub + 通用，合并版）",
+    "description": "gh-accel v2：GitHub 下载/克隆/推送专用加速 + 任意站点规则驱动镜像（HuggingFace hf-mirror / npm npmmirror，可配置扩展）合二为一，多线程分段下载，自动配置 git 与 pip 全局加速。"
   }
 }
