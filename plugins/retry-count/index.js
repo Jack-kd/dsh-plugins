@@ -20,11 +20,15 @@
  *   2. volatile 引用 config.maxRetries.get()（写入时同步提交）；
  *   3. entry.options.config（回退）。
  *
- * 编辑失败的主因（v2.0.7 修复）：configEditor.edit 会把写盘+reconcile 包进
- * `hmr.runExclusive` 排他事务，而 `runExclusive` 对嵌套调用是直接拒绝
- * （"HMR transactions cannot be nested"）而非排队。设置写入自身的编辑与 HMR
- * 配置监听触发的全量 reconcile 会持有事务数秒，插件在这期间发起的编辑全部被拒。
- * 因此同步对「HMR 忙碌」错误做短间隔重试（600ms，上限 40 次），其余错误才走失败冷却。
+ * 编辑执行模型（v2.0.8 关键修复）：
+ *   configEditor.edit 把写盘+reconcile 包进 `hmr.runExclusive` 排他事务；该事务用
+ *   AsyncLocalStorage 标记嵌套，而 Node 的 timer 会**继承创建时的 ALS 上下文**——
+ *   事件监听器在事务内调度 `setTimeout(sync, 0)`，回调仍带着事务上下文执行，于是
+ *   `runExclusive` 每次都判定为嵌套直接拒绝（"HMR transactions cannot be nested"），
+ *   重试也继承同一上下文，永远失败。
+ *   因此事件监听器只**置位**，真正执行同步放在 apply 时（干净上下文，无任何 HMR 事务）
+ *   创建的 setInterval 轮询里：clean 上下文调用 edit 时 runExclusive 只会**排队**等待
+ *   当前事务结束，而不是被拒。HMR 忙碌错误仍保留短间隔重试兜底。
  */
 import { createRequire } from 'node:module';
 
@@ -80,9 +84,11 @@ const FAIL_RETRY_COOLDOWN_MS = 5000;
 
 /** HMR 排他事务忙碌时的错误标记：configEditor.edit 在 HMR 事务内嵌套调用会被直接拒绝。 */
 const HMR_BUSY_MESSAGE = 'HMR transactions cannot be nested';
-/** HMR 忙碌时的重试间隔与上限（写入本身持有事务通常几百毫秒到一两秒）。 */
+/** HMR 忙碌时的重试间隔与上限（clean 上下文下本不应出现，纯兜底）。 */
 const HMR_RETRY_DELAY_MS = 600;
 const HMR_RETRY_MAX = 40;
+/** 干净上下文轮询间隔：由 apply 时创建的 setInterval 驱动真正执行同步。 */
+const SYNC_POLL_INTERVAL_MS = 300;
 
 export const name = '@local/retry-count';
 
@@ -101,7 +107,7 @@ export function apply(ctx, config) {
 
   /**
    * 串行队列：provider 编辑共享 profile patch 文件锁与 Loader reconcile，
-   * 队列保证一次只有一个同步在跑，且不在信号发出栈里执行。
+   * 队列保证一次只有一个同步在跑。
    */
   let queue = Promise.resolve();
   const enqueue = (task) => {
@@ -144,22 +150,32 @@ export function apply(ctx, config) {
   let lastSynced = null;
   /** 最近一次同步失败的时间戳：仅失败后进入冷却，成功路径不受限。 */
   let lastFailedAt = 0;
-  /** HMR 忙碌重试状态：同一时间只挂一个重试定时器，并对总重试次数设上限。 */
-  let retryPending = false;
+
+  // ---- 干净上下文执行模型 ----
+  // 事件监听器（可能在 HMR 事务的 ALS 上下文内执行）只置位；真正的同步由 apply 时
+  // （干净上下文）创建的 setInterval 驱动，使 configEditor.edit 的 runExclusive
+  // 只会排队等待当前事务结束，而不是被当作嵌套直接拒绝。
+  let needSync = false;
+  let retryAt = 0;
   let retryCount = 0;
-  const scheduleRetry = () => {
-    if (retryPending) return;
-    retryPending = true;
-    setTimeout(() => {
-      retryPending = false;
-      retryCount += 1;
-      if (retryCount <= HMR_RETRY_MAX) {
-        sync();
-      } else {
-        ctx.logger.warn('[retry-count] HMR 忙碌重试已达上限，放弃本轮同步');
-      }
-    }, HMR_RETRY_DELAY_MS);
+  const requestSync = () => {
+    needSync = true;
   };
+  const scheduleRetry = () => {
+    retryCount += 1;
+    if (retryCount <= HMR_RETRY_MAX) {
+      retryAt = Date.now() + HMR_RETRY_DELAY_MS;
+      needSync = true;
+    } else {
+      ctx.logger.warn('[retry-count] HMR 忙碌重试已达上限，放弃本轮同步');
+    }
+  };
+  const ticker = setInterval(() => {
+    if (!needSync || Date.now() < retryAt) return;
+    needSync = false;
+    sync();
+  }, SYNC_POLL_INTERVAL_MS);
+  ctx.effect(() => () => clearInterval(ticker), 'retry-count: sync ticker');
 
   const sync = () => {
     const editor = ctx.get('configEditor');
@@ -216,7 +232,7 @@ export function apply(ctx, config) {
           });
         } catch (error) {
           if (String(error?.message ?? error).includes(HMR_BUSY_MESSAGE)) {
-            // 触发写入的 HMR 排他事务还在运行：稍后重试整轮，不视为失败。
+            // 兜底：若仍处于事务上下文，稍后重试整轮，不视为失败。
             ctx.logger.debug('[retry-count] HMR 忙碌，稍后重试同步（%s）', entry.options.name);
             scheduleRetry();
             return;
@@ -233,22 +249,20 @@ export function apply(ctx, config) {
     });
   };
 
-  // 启动时同步一次（应用新配置或插件重载后，把 providers 拉齐到当前值）。
+  // 启动时同步一次（apply 处于干净上下文，直接执行）。
   sync();
 
-  // 信号 1：profile patch reconcile 完成（设置写入、插件自身编辑、HMR 全量）——最及时可靠。
+  // 事件监听器：只置位，由干净上下文的 ticker 驱动真正执行。
   ctx.on('app-boot/config-reload', () => {
-    setTimeout(sync, 0);
+    requestSync();
   });
 
-  // 信号 2：settings 文档更新（设置页/插件配置表单写入或 describe 检测到变化时发出）。
   ctx.on('settings/document-updated', (ns) => {
     if (ns !== SELF_NS) return;
-    setTimeout(sync, 0);
+    requestSync();
   });
 
-  // 信号 3：Loader volatile 提交（本 build 事件送达受限，保留以兼容未来 build）。
   ctx.on('loader/volatile-update', () => {
-    setTimeout(sync, 0);
+    requestSync();
   });
 }
