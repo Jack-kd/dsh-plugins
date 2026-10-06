@@ -10,9 +10,19 @@ import http from 'node:http';
 import { execFile } from 'node:child_process';
 import { pipeline } from 'node:stream/promises';
 
-export const UA = 'gh-accel/1.0 (+https://github.com)';
+export const UA = 'gh-accel/1.0.2 (+https://github.com)';
+// 默认镜像列表（2026-10 实测筛选：ghfast 为 git 改写锚点保持首位；
+// 其余按本机实测下载带宽排序，gh-proxy/ghproxy.net 为社区老牌兜底）。
+// 每次下载工具都会并行测速全表并选最快路线，死节点自动跳过。
 export const DEFAULT_MIRRORS = [
   'https://ghfast.top/',
+  'https://github.geekery.cn/',
+  'https://down.mxw.xx.kg/',
+  'https://gh.monlor.com/',
+  'https://js.jiangss.shop/',
+  'https://github.mxw.qzz.io/',
+  'https://gh.acmsz.top/',
+  'https://ghproxy.felicity.land/',
   'https://gh-proxy.com/',
   'https://ghproxy.net/',
 ];
@@ -21,7 +31,7 @@ export const GIT_REWRITE_KEY = 'url.https://ghfast.top/https://github.com/.inste
 const MIN_DIRECT_OK = 60 * 1024;   // 直连持续带宽低于此值则放弃
 const MIN_MIRROR_OK = 20 * 1024;   // 镜像持续带宽低于此值则放弃
 const PROBE_BUDGET_MS = 4000;      // 每个探测最多 4 秒
-const PROBE_MAX = 1024 * 1024;     // 每个探测最多读 1MB
+const PROBE_MAX = 512 * 1024;      // 每个探测最多读 512KB（镜像多时控制开销）
 const SEGMENT_MIN = 2 * 1024 * 1024; // 小于此值不切片
 const CONNECT_TIMEOUT = 15_000;
 
