@@ -1,4 +1,4 @@
-# gh-accel v2 · 下载加速合并版（GitHub + 通用）
+# 加速器 · 下载加速合并版（GitHub + 通用）
 
 **gh-accel 与 dl-accel 合二为一**：一个插件同时负责 GitHub 与任意站点的下载/上传加速。
 
@@ -51,7 +51,7 @@
 dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v2.0.0/gh-accel-plugin.tgz
 ```
 
-或「插件管理 → 添加插件」粘贴同一地址。已装旧版 gh-accel / dl-accel 的：卸载后装 v2.0.0 即可（功能合并，工具名不变）。
+或「插件管理 → 添加插件」粘贴同一地址。
 
 ## 安全说明
 

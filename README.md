@@ -79,7 +79,7 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v1.3.0/dsh-client-ui-sk
 
 > 皮肤类插件通常与官方/其他皮肤互斥；安装后若界面异常，先停用其他皮肤类插件。
 
-### ▶ gh-accel · 下载加速（GitHub + 通用，合并版）
+### ▶ 加速器 · 下载加速（GitHub + 通用，合并版）
 
 > **gh-accel 与 dl-accel 合二为一（v2.0.0）**：一个插件同时负责 GitHub 与任意站点的下载/上传加速。`github_accel_download`（GitHub 文件，自动测速选最快镜像 + 8 线程分段）、`github_accel_clone`（加速 clone）、`github_accel_push`（push 自动绕过只读镜像）、`url_accel_download`（任意非 GitHub 站点，规则驱动镜像：HuggingFace hf-mirror / npm npmmirror，可配置扩展）、`url_accel_probe`（选路诊断）。装好后自动配置 git 全局镜像改写与 pip 清华源；GitHub 直链自动引导专用工具，国内服务器自动直连不绕路。实测比直连快数倍到数十倍。
 
@@ -95,7 +95,7 @@ dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/dow
 https://github.com/Jack-kd/dsh-plugins/releases/download/v2.0.0/gh-accel-plugin.tgz
 ```
 
-> 已装旧版 gh-accel / dl-accel 的：卸载后装 v2.0.0 即可（功能合并，工具名不变）。镜像（ghfast.top 等）是公共第三方服务、有失效风险；可在配置里用 `mirrors`/`rules` 自行增删站点规则。下载大文件建议指定绝对 `out` 路径。
+> 镜像（ghfast.top 等）是公共第三方服务、有失效风险；可在配置里用 `mirrors`/`rules` 自行增删站点规则。下载大文件建议指定绝对 `out` 路径。
 
 <!--
 

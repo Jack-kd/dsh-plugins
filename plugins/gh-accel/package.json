@@ -3,7 +3,7 @@
   "version": "2.0.0",
   "private": true,
   "type": "module",
-  "description": "下载加速合并版：GitHub（专用工具+git/pip 全局配置）+ 通用 URL（规则驱动镜像，可在配置里给任意站点加镜像）合二为一，多线程分段下载，实测比直连快数倍到数十倍",
+  "description": "加速器（gh-accel v2）：GitHub 与通用 URL 下载加速合并版。规则驱动镜像 + 多线程分段下载，自动配置 git/pip 全局加速，实测比直连快数倍到数十倍",
   "exports": {
     ".": "./index.js",
     "./lib.js": "./lib.js",

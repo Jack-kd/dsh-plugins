@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "下载加速（GitHub + 通用，合并版）",
+    "title": "加速器",
     "description": "gh-accel v2：GitHub 下载/克隆/推送专用加速 + 任意站点规则驱动镜像（HuggingFace hf-mirror / npm npmmirror，可配置扩展）合二为一，多线程分段下载，自动配置 git 与 pip 全局加速。"
   }
 }

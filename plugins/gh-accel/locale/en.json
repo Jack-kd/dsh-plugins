@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "Download Accelerator (GitHub + Universal, merged)",
+    "title": "Accelerator",
     "description": "gh-accel v2: GitHub download/clone/push acceleration plus rule-driven mirror routing for any site (HuggingFace hf-mirror, npm npmmirror, extensible via config), multi-threaded segmented downloads, and automatic global git/pip acceleration."
   }
 }
