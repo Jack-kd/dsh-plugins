@@ -1,4 +1,4 @@
-// gh-accel v2.0.0 — 合并版下载加速插件（gh-accel + dl-accel 合二为一）
+// gh-accel v2 — 合并版下载加速插件（gh-accel + dl-accel 合二为一）
 // 工具:
 //   github_accel_download / github_accel_clone / github_accel_push  (GitHub 路线)
 //   url_accel_download / url_accel_probe                            (非 GitHub 通用路线)
@@ -117,7 +117,9 @@ export function apply(ctx, config = {}) {
       const url = String(args.url || '').trim();
       if (!GITHUB_RE.test(url)) throw new Error('url 必须是 github.com / raw.githubusercontent.com / codeload.github.com 开头的 https 链接');
       if (exec.signal?.aborted) throw new Error('已取消');
-      return runDownload(url, { out: args.out || undefined, threads, rules, mirror: args.mirror || null, signal: exec.signal });
+      // threads 优先取调用参数，未传时回退插件配置（修复：之前参数被静默忽略）
+      const t = clampInt(args.threads ?? threads, 8, 32);
+      return runDownload(url, { out: args.out || undefined, threads: t, rules, mirror: args.mirror || null, signal: exec.signal });
     },
   }));
 
@@ -201,7 +203,9 @@ export function apply(ctx, config = {}) {
         throw new Error('GitHub 直链请使用 github_accel_download 工具（本插件的 GitHub 专用路线）');
       }
       if (exec.signal?.aborted) throw new Error('已取消');
-      return runDownload(url, { out: args.out || undefined, threads, rules, mirror: args.mirror || null, signal: exec.signal });
+      // threads 优先取调用参数，未传时回退插件配置（修复：之前参数被静默忽略）
+      const t = clampInt(args.threads ?? threads, 8, 32);
+      return runDownload(url, { out: args.out || undefined, threads: t, rules, mirror: args.mirror || null, signal: exec.signal });
     },
   }));
 

@@ -86,13 +86,13 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v1.3.0/dsh-client-ui-sk
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v2.0.1/gh-accel-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v2.0.2/gh-accel-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/v2.0.1/gh-accel-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/v2.0.2/gh-accel-plugin.tgz
 ```
 
 > 镜像（ghfast.top 等）是公共第三方服务、有失效风险；可在配置里用 `mirrors`/`rules` 自行增删站点规则。下载大文件建议指定绝对 `out` 路径。
