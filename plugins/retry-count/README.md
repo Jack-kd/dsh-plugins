@@ -30,6 +30,15 @@ HMR 全量 reconcile 竞争导致编辑被静默丢弃；目标值取自本插�
 
 ## 更新记录
 
+- **v2.0.6**（2026-10）：彻底修复运行期不同步。实测本 build（0.2.0-rc.2）：
+  `loader/volatile-update` 携带 `owner.fiber === fiber` 过滤器，而 ctx.on 监听器
+  全部挂在根上下文，事件实际上送不到任何插件；`entry.options.config` 在写入后
+  会滞后，不能作为运行时值源。v2.0.6 改为：主信号 `app-boot/config-reload`
+  （每次 patch reconcile 完成即触发）+ 兜底 `settings/document-updated`；值源
+  改读 settings 文档 user 段（直读 patch，写入即最新）；并加入同值跳过与
+  失败冷却，防止自激循环。
+
+
 - **v2.0.5**（2026-10）：修复「改次数后 deepseek/pi-ai 不跟随」——原实现只监听
   `loader/volatile-update`，部分 build 该事件不送达，或编辑与 HMR reconcile 竞争被丢弃；
   现改为双信号触发 + 串行延迟编辑，并直接读 entry 原始配置。升级后需重启一次 Harness。
