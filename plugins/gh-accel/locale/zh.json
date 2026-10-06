@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "GitHub 下载加速",
+    "description": "安装在 Harness 后自动生效：github_accel_download / clone / push 三个加速工具 + git/pip 全局镜像配置。下载 GitHub 文件、克隆仓库自动走最快加速镜像，多线程分段并发，可提速数十倍。"
+  }
+}

@@ -79,6 +79,24 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v1.3.0/dsh-client-ui-sk
 
 > 皮肤类插件通常与官方/其他皮肤互斥；安装后若界面异常，先停用其他皮肤类插件。
 
+### ▶ gh-accel · GitHub 下载加速
+
+> 让 Harness 下载/克隆 GitHub 项目自动走加速镜像：`github_accel_download`（release 附件 / raw 文件 / 源码归档，自动对直连与多个镜像逐条测速选最快路线，大文件 8 线程分段并发下载）、`github_accel_clone`（加速 clone）、`github_accel_push`（push 时自动绕过只读镜像）。装好后自动配置 git 全局镜像改写与 pip 清华源，实测比直连快 50–70 倍。
+
+**一条命令安装：**
+
+```bash
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v1.4.0/gh-accel-plugin.tgz
+```
+
+**或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
+
+```
+https://github.com/Jack-kd/dsh-plugins/releases/download/v1.4.0/gh-accel-plugin.tgz
+```
+
+> 镜像（ghfast.top / gh-proxy.com / ghproxy.net）是公共第三方服务、有失效风险；可在插件配置的 `mirrors` 列表里自行增删。下载大文件建议指定绝对 `out` 路径。
+
 <!--
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -114,7 +132,8 @@ dsh-plugins/
     ├── enter-newline/       ← 回车换行插件
     ├── retry-count/         ← 请求重试次数插件
     ├── chat-keeper-mobile/          ← 对话管理（手机版）插件
-    └── dsh-client-ui-skin-maid-atelier/ ← 女仆工坊皮肤（第三方）
+    ├── dsh-client-ui-skin-maid-atelier/ ← 女仆工坊皮肤（第三方）
+    └── gh-accel/            ← GitHub 下载加速插件
 ```
 
 ## ✏️ 添加新插件（作者）

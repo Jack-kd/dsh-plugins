@@ -1,0 +1,6 @@
+- insert:
+    - id: gh-accel
+      name: '@local/gh-accel'
+      inject:
+        - tools
+      config: {}

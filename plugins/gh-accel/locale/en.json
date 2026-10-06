@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "GitHub Download Accelerator",
+    "description": "Auto-accelerates GitHub downloads/uploads for the Harness: github_accel_download/clone/push tools plus global git/pip mirror config. Probes the fastest mirror, downloads in multi-threaded segments — often 10-50x faster."
+  }
+}
