@@ -97,6 +97,24 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v1.4.0/gh-accel-plugin.
 
 > 镜像（ghfast.top / gh-proxy.com / ghproxy.net）是公共第三方服务、有失效风险；可在插件配置的 `mirrors` 列表里自行增删。下载大文件建议指定绝对 `out` 路径。
 
+### ▶ dl-accel · 通用下载加速（非 GitHub）
+
+> 任意 URL（非 GitHub）下载加速：规则驱动自动走镜像（内置 HuggingFace hf-mirror / npm npmmirror，可在插件配置的 `rules` 里给**任意站点**加镜像）+ 多线程分段下载、失败自动重试、大小校验。与 gh-accel 分工：**GitHub 站内文件走 gh-accel，其他站点走 dl-accel**（`url_accel_download` 收到 GitHub 直链会自动引导改用 `github_accel_download`）。
+
+**一条命令安装：**
+
+```bash
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v1.5.0/dl-accel-plugin.tgz
+```
+
+**或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
+
+```
+https://github.com/Jack-kd/dsh-plugins/releases/download/v1.5.0/dl-accel-plugin.tgz
+```
+
+> 新装环境一次生效；若同一会话里刚装过旧版本，需重启一次 Harness 让插件模块重新加载。规则格式：`{ match: 正则, style: "prefix"|"host", mirrors: [镜像base...] }`。
+
 <!--
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -133,7 +151,8 @@ dsh-plugins/
     ├── retry-count/         ← 请求重试次数插件
     ├── chat-keeper-mobile/          ← 对话管理（手机版）插件
     ├── dsh-client-ui-skin-maid-atelier/ ← 女仆工坊皮肤（第三方）
-    └── gh-accel/            ← GitHub 下载加速插件
+    ├── gh-accel/            ← GitHub 下载加速插件
+    └── dl-accel/            ← 通用下载加速插件（非 GitHub）
 ```
 
 ## ✏️ 添加新插件（作者）

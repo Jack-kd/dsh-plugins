@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Universal Download Accelerator",
+    "description": "Faster downloads from any non-GitHub URL: rule-driven mirror routing (HuggingFace hf-mirror / npm npmmirror, add any site via config) plus multi-threaded segmented download. GitHub URLs are routed to the gh-accel plugin."
+  }
+}

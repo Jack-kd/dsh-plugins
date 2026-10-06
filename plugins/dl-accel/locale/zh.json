@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "通用下载加速",
+    "description": "任意 URL（非 GitHub）下载加速：规则驱动自动走镜像（HuggingFace hf-mirror / npm npmmirror，可在配置里给任意站点加镜像）+ 多线程分段下载。GitHub 直链请配 gh-accel 插件。"
+  }
+}

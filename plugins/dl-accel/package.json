@@ -1,0 +1,26 @@
+{
+  "name": "@local/dl-accel",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "通用 URL 下载加速插件：规则驱动（GitHub/HuggingFace/npm 等自动走镜像）+ 多线程分段下载，可在配置里给任意站点加镜像",
+  "exports": {
+    ".": "./index.js",
+    "./lib.js": "./lib.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.js",
+    "lib.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg"
+  ],
+  "icon": "./icon.svg",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
