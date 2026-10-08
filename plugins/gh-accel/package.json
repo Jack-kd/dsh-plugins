@@ -1,18 +1,20 @@
 {
   "name": "@local/gh-accel",
-  "version": "2.0.4",
+  "version": "2.0.5",
   "private": true,
   "type": "module",
-  "description": "加速器（gh-accel v2）：GitHub 与通用 URL 下载加速合并版。规则驱动镜像 + 多线程分段下载，自动配置 git/pip 全局加速，实测比直连快数倍到数十倍",
+  "description": "加速器（gh-accel v2）：GitHub 与通用 URL 下载加速合并版。规则驱动镜像 + 多线程分段下载，自动配置 git/pip 全局加速，实测比直连快数倍到数十倍；v2.0.5 新增下载走加速节点时输入框上方「加速器加速下载中…」状态条",
   "exports": {
     ".": "./index.js",
     "./lib.js": "./lib.js",
+    "./client.js": "./client.js",
     "./package.json": "./package.json",
     "./locale/*.json": "./locale/*.json"
   },
   "files": [
     "index.js",
     "lib.js",
+    "client.js",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg"
@@ -21,6 +23,13 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime"
+      ]
     }
   }
 }

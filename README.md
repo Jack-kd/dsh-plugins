@@ -85,18 +85,20 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v1.3.0/dsh-client-ui-sk
 
 ### ▶ 加速器 · 下载加速（GitHub + 通用，合并版）
 
-> **gh-accel 与 dl-accel 合二为一（v2.0.0）**：一个插件同时负责 GitHub 与任意站点的下载/上传加速。`github_accel_download`（GitHub 文件，自动测速选最快镜像 + 8 线程分段）、`github_accel_clone`（加速 clone）、`github_accel_push`（push 自动绕过只读镜像）、`url_accel_download`（任意非 GitHub 站点，规则驱动镜像：HuggingFace hf-mirror / npm npmmirror，可配置扩展）、`url_accel_probe`（选路诊断）。装好后自动配置 git 全局镜像改写与 pip 清华源；GitHub 直链自动引导专用工具，国内服务器自动直连不绕路。实测比直连快数倍到数十倍。
+> **gh-accel 与 dl-accel 合二为一（v2.0.5）**：一个插件同时负责 GitHub 与任意站点的下载/上传加速。`github_accel_download`（GitHub 文件，自动测速选最快镜像 + 8 线程分段）、`github_accel_clone`（加速 clone）、`github_accel_push`（push 自动绕过只读镜像）、`url_accel_download`（任意非 GitHub 站点，规则驱动镜像：HuggingFace hf-mirror / npm npmmirror，可配置扩展）、`url_accel_probe`（选路诊断）。装好后自动配置 git 全局镜像改写与 pip 清华源；GitHub 直链自动引导专用工具，国内服务器自动直连不绕路。实测比直连快数倍到数十倍。
+>
+> **v2.0.5 新增**：下载走加速节点时，输入框上方实时显示「⚫ 加速器加速下载中…」状态条，下载完成/直连时自动隐藏。
 
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v2.0.4/gh-accel-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v2.0.5/gh-accel-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/v2.0.4/gh-accel-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/v2.0.5/gh-accel-plugin.tgz
 ```
 
 > 镜像（ghfast.top 等）是公共第三方服务、有失效风险；可在配置里用 `mirrors`/`rules` 自行增删站点规则。下载大文件建议指定绝对 `out` 路径。

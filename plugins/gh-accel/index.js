@@ -11,6 +11,7 @@ import {
   runPush,
   setupGlobal,
   clampInt,
+  matchRule,
   DEFAULT_RULES,
 } from './lib.js';
 
@@ -90,6 +91,69 @@ export function apply(ctx, config = {}) {
   const threads = clampInt(config.threads, 8, 32);
   if (Array.isArray(config.mirrors) && config.mirrors.length) {
     rules = rules.map((r) => (/github/.test(r.match) ? { ...r, mirrors: config.mirrors } : r));
+  }
+
+  // ── 下载中状态投影：会话事件折叠出「正走加速节点下载」状态 ─────────────
+  // tool/call 提交时，若该下载会走加速节点（命中镜像规则，或显式指定 mirror），
+  // 把 callId 记为活动；tool/result 完成、turn/end 兜底时清除。
+  // 客户端状态条只在 active 时渲染 —— 空闲/直连/下载完成一律不显示。
+  const DOWNLOAD_TOOLS = new Set(['github_accel_download', 'url_accel_download', 'github_accel_clone']);
+  const anySchema = { parse: (value) => value };
+  const ghAccelProjection = {
+    key: 'gh-accel',
+    stateVersion: 1,
+    stateSchema: anySchema,
+    init: () => ({ calls: [] }),
+    apply(state, event) {
+      if (event.type === 'tool/call') {
+        const { callId, name, arguments: argsText } = event.data;
+        if (!DOWNLOAD_TOOLS.has(name)) return state;
+        let url = '';
+        let mirror = null;
+        try {
+          const parsed = JSON.parse(argsText || '{}');
+          url = String(parsed.url || '');
+          mirror = parsed.mirror || null;
+        } catch {
+          return state;
+        }
+        // 走加速节点 = 显式指定 mirror，或 URL 命中内置/自定义镜像规则
+        let throughNode = Boolean(mirror);
+        if (!throughNode && url) {
+          try { throughNode = Boolean(matchRule(url, rules)); } catch { /* 规则异常视为不走节点 */ }
+        }
+        if (!throughNode) return state;
+        if (state.calls.includes(callId)) return state;
+        return { calls: [...state.calls, callId] };
+      }
+      if (event.type === 'tool/result') {
+        const callId = event.data?.message?.toolCallId;
+        if (!callId || !state.calls.includes(callId)) return state;
+        return { calls: state.calls.filter((id) => id !== callId) };
+      }
+      if (event.type === 'turn/end') {
+        return state.calls.length ? { calls: [] } : state;
+      }
+      return state;
+    },
+    wire: {
+      viewSchema: anySchema,
+      view: (state) => ({ active: state.calls.length > 0, count: state.calls.length }),
+    },
+  };
+  const registerGhAccelProjection = (p) => {
+    try {
+      ctx.effect(() => p.register(ghAccelProjection, 'gh-accel: 走加速节点下载中投影'));
+    } catch {}
+  };
+  const projections = ctx.get('sessionProjections');
+  if (projections !== undefined) {
+    registerGhAccelProjection(projections);
+  } else if (typeof ctx.inject === 'function') {
+    ctx.inject(['sessionProjections'], (innerCtx) => {
+      const p = innerCtx.get('sessionProjections');
+      if (p !== undefined) registerGhAccelProjection(p);
+    });
   }
 
   ctx.effect(() => ctx.tools.register({

@@ -2,6 +2,11 @@
 
 **gh-accel 与 dl-accel 合二为一**：一个插件同时负责 GitHub 与任意站点的下载/上传加速。
 
+## v2.0.5 · 下载中状态条
+
+下载走加速节点（命中镜像规则，或显式指定 `mirror`）时，输入框上方会实时显示
+**「⚫ 加速器加速下载中…」** 状态条；空闲、直连（国内不绕路）或下载完成时自动隐藏，不留残余。
+
 ## 功能（5 个工具）
 
 | 工具 | 用途 |
@@ -48,7 +53,7 @@
 ## 安装
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v2.0.4/gh-accel-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v2.0.5/gh-accel-plugin.tgz
 ```
 
 或「插件管理 → 添加插件」粘贴同一地址。
