@@ -1,6 +1,6 @@
 {
   "name": "@local/enter-newline",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "type": "module",
   "description": "把输入框回车键改为插入换行而不是发送消息，可在 设置 → 通用设置 中切换回回车发送。",

@@ -11,16 +11,29 @@ window.__ModuleLoader__.load({
 
     const zh = {
       'row.title': '回车键',
-      'row.description': '开启后按回车插入换行，不再发送消息；Ctrl/⌘+Enter 仍可发送',
+      'row.description': '开启后按回车插入换行、不再发送；Ctrl/⌘+Enter 或右下角按钮仍可发送。回答运行中如需发送/引导也请用 Ctrl/⌘+Enter（与下方「忙碌时回车」设置互不影响）',
+      'row.unsupported': '当前浏览器不支持回车原生换行（beforeinput），已自动恢复「回车发送」',
       'switch.on': '回车插入换行',
       'switch.off': '回车发送消息'
     };
     const en = {
       'row.title': 'Enter key',
-      'row.description': 'When on, Enter inserts a line break instead of sending; Ctrl/⌘+Enter still sends',
+      'row.description': 'When on, Enter inserts a line break instead of sending; Ctrl/⌘+Enter or the send button still sends. While a reply is running, use Ctrl/⌘+Enter to send or steer (independent of the Composer Enter row below)',
+      'row.unsupported': 'This browser lacks native beforeinput support for Enter — interception is disabled (Enter sends)',
       'switch.on': 'Newline on Enter',
       'switch.off': 'Send on Enter'
     };
+
+    // ---- native beforeinput support ----
+    // Plain Enter must produce the line break through the browser's NATIVE
+    // default action (beforeinput inputType insertParagraph/insertLineBreak):
+    // the interception keeps the keydown away from the editor's own keymap,
+    // so no document listener will ever insert the newline for us. Engines
+    // predating InputEvent.inputType (pre-2017 Chrome/Safari, Firefox < 87,
+    // some embedded WebViews) never fire a usable beforeinput for Enter —
+    // there the key would do NOTHING (no send, no newline). Detect the API
+    // and degrade to stock "send on Enter" there instead of swallowing keys.
+    const BEFOREINPUT_SUPPORTED = typeof InputEvent === 'function' && 'inputType' in InputEvent.prototype;
 
     // ---- preference store (SnapshotStore-shaped, persisted in localStorage) ----
     function loadBehavior() {
@@ -33,6 +46,17 @@ window.__ModuleLoader__.load({
     function createPrefStore() {
       let value = loadBehavior();
       const listeners = new Set();
+      // Other tabs share the same preference; `storage` fires only in tabs
+      // that did NOT make the change, so every open tab converges.
+      const onStorage = (event) => {
+        if (event.key !== STORAGE_KEY) return;
+        const next = event.newValue;
+        if (next !== 'send' && next !== 'newline') return;
+        if (next === value) return;
+        value = next;
+        for (const listener of listeners) listener();
+      };
+      window.addEventListener('storage', onStorage);
       return {
         getSnapshot: () => value,
         subscribe(listener) {
@@ -45,6 +69,9 @@ window.__ModuleLoader__.load({
           value = next;
           try { localStorage.setItem(STORAGE_KEY, next); } catch (err) { /* ignore */ }
           for (const listener of listeners) listener();
+        },
+        dispose() {
+          window.removeEventListener('storage', onStorage);
         }
       };
     }
@@ -76,11 +103,16 @@ window.__ModuleLoader__.load({
     // ---- General-settings preference row ----
     function EnterBehaviorRow({ usePref, setPref, t }) {
       const pref = usePref((value) => value);
-      const checked = pref === 'newline';
+      const supported = BEFOREINPUT_SUPPORTED;
+      // When the browser cannot deliver native beforeinput for Enter, the
+      // interception is inactive (Enter keeps sending): show the effective
+      // state and park the switch so the row never lies about behavior.
+      const checked = supported ? pref === 'newline' : false;
+      const desc = supported ? t('row.description') : t('row.description') + ' ' + t('row.unsupported');
       return h('div', { className: 'enlbRow' },
         h('div', { className: 'enlbRowText' },
           h('div', { className: 'enlbTitle' }, t('row.title')),
-          h('div', { className: 'enlbDesc' }, t('row.description'))
+          h('div', { className: 'enlbDesc' }, desc)
         ),
         h('button', {
           type: 'button',
@@ -88,6 +120,7 @@ window.__ModuleLoader__.load({
           'aria-checked': checked,
           'aria-label': t(checked ? 'switch.on' : 'switch.off'),
           className: 'enlbSwitch',
+          disabled: !supported,
           onClick: () => setPref(checked ? 'send' : 'newline')
         }, h('span', { className: 'enlbThumb' }))
       );
@@ -98,12 +131,16 @@ window.__ModuleLoader__.load({
       if (!(target instanceof Element)) return null;
       return target.closest('[data-composer-input]');
     }
-    // A trigger menu (@ / / …) or the command overlay owns Enter while open:
-    // it must pick the highlighted row, so interception yields to it.
+    // A trigger menu (@ / / …) owns Enter while open: it must pick the
+    // highlighted row, so interception yields to it. The trajectory overlay
+    // ([data-conversation-composer-overlay]) renders OUTSIDE the composer
+    // card and never holds the composer's focus, so it needs no guard here:
+    // while it is open the keydown target is not inside [data-composer-input]
+    // and this hook returns early anyway.
     function menuOpen(host) {
       const card = host.closest('[data-composer-card]');
       if (card === null) return false;
-      return card.querySelector('[data-trigger-menu], [data-conversation-composer-overlay]') !== null;
+      return card.querySelector('[data-trigger-menu]') !== null;
     }
     // Mobile IME "return" keys arrive as composition-adjacent keydowns
     // (isComposing, or keyCode 229 even with isComposing=false). Any
@@ -128,6 +165,7 @@ window.__ModuleLoader__.load({
       const pref = createPrefStore();
 
       ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'enter-newline: dictionaries');
+      ctx.effect(() => () => pref.dispose(), 'enter-newline: preference store');
 
       // Document-level capture: runs before the composer's own keymap, so a
       // plain Enter never reaches the submit handler. The keymap submits
@@ -138,6 +176,7 @@ window.__ModuleLoader__.load({
       // inserts the line break itself. No execCommand, no synthetic events,
       // and nothing the mobile IME depends on is canceled.
       const onKeyDown = (event) => {
+        if (!BEFOREINPUT_SUPPORTED) return; // no native newline path: keep stock send-on-Enter
         if (pref.getSnapshot() !== 'newline') return;
         if (event.key !== 'Enter') return;
         if (composingNow() || event.isComposing || event.keyCode === 229) return; // IME owns this key

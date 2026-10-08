@@ -10,17 +10,19 @@ Jack-kd 的 DeepSeek Harness（DSH）插件仓库 —— monorepo 结构：**一
 ### ▶ enter-newline · 回车换行
 
 > 把 DSH 输入框的回车键从「发送」改为「插入换行」；可在 **设置 → 通用设置 → 回车键** 切回「回车发送」。手机、电脑通用，不打断手机输入法。
+>
+> **v1.0.1**：不支持的浏览器（无原生 `beforeinput`）不再「按回车没反应」，自动退回回车发送并在设置页提示；偏好跨标签页同步；文案区分官方「忙碌时回车」。
 
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v1.0.0/enter-newline-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v1.0.1/enter-newline-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/v1.0.0/enter-newline-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/v1.0.1/enter-newline-plugin.tgz
 ```
 
 > 装完无需重启，到输入框按一下回车即可验证（拼音输入法第一下是提交拼音，第二下才换行，属正常现象）。
