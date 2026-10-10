@@ -2,11 +2,11 @@
 
 **gh-accel 与 dl-accel 合二为一**：一个插件同时负责 GitHub 与任意站点的下载/上传加速。
 
-## v2.3.0 · 修复状态小框不显示
+## v2.4.0 · 修复状态小框不显示（真正根因）
 
-**v2.3.0**：修复「⚡ 加速器加速中…」状态小框在某些版本（如 0.2.0-rc.2）不显示的问题——`dsh.client` 声明中移除了并不存在的 `@deepseek-ai/dsh-client-runtime` 注入，与可正常渲染客户端界面的插件声明方式保持一致。工具功能不受影响。
+**v2.4.0**：修复「⚡ 加速器加速中…」状态小框不显示的问题——**`package.json` 的 `exports` 需暴露 `"./client"` 键**（此前误写为 `"./client.js"`，DSH 客户端模块加载器按 `exports["./client"]` 查找，找不到就把该插件客户端整体丢弃）；同时 `index.js` 声明 `sessionProjections` 注入（与 DSH 对客户端投影送达的要求一致）。此前 v2.3.0 已移除不存在的 `@deepseek-ai/dsh-client-runtime` 注入。
 
-> 更新记录：v2.1.0 首版为「⚫ 加速器加速下载中…」小胶囊；v2.2.0 重做为更醒目的圆角小框并换成「加速器加速中…」文案；v2.3.0 修复该小框在部分 DSH 版本不渲染的问题。
+> 更新记录：v2.1.0 首版为「⚫ 加速器加速下载中…」小胶囊；v2.2.0 重做为更醒目的圆角小框并换成「加速器加速中…」文案；v2.3.0 清理了幽灵注入；v2.4.0 修复 exports `"./client"` 缺失导致客户端模块不被加载的根本问题。
 
 ## 功能（5 个工具）
 
@@ -54,7 +54,7 @@
 ## 安装
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v2.3.0/gh-accel-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v2.4.0/gh-accel-plugin.tgz
 ```
 
 或「插件管理 → 添加插件」粘贴同一地址。

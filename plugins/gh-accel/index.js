@@ -15,7 +15,7 @@ import {
   DEFAULT_RULES,
 } from './lib.js';
 
-export const inject = ['tools'];
+export const inject = ['tools', 'sessionProjections'];
 
 function textResult(text) {
   return [{ type: 'text', text }];

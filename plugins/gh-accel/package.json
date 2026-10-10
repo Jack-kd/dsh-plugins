@@ -1,13 +1,13 @@
 {
   "name": "@local/gh-accel",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "private": true,
   "type": "module",
-  "description": "加速器（gh-accel v2）：GitHub 与通用 URL 下载加速合并版。规则驱动镜像 + 多线程分段下载，自动配置 git/pip 全局加速，实测比直连快数倍到数十倍；v2.3.0 修复「⚡ 加速器加速中…」状态小框不显示的问题（移除 dsh.client 中不存在的 @deepseek-ai/dsh-client-runtime 注入，与可正常显示的插件声明保持一致）",
+  "description": "加速器（gh-accel v2）：GitHub 与通用 URL 下载加速合并版。规则驱动镜像 + 多线程分段下载，自动配置 git/pip 全局加速，实测比直连快数倍到数十倍；v2.4.0 修复「⚡ 加速器加速中…」状态小框不显示的根本原因（exports 补上 \"./client\" 键、index.js 声明 sessionProjections 注入，与可正常渲染客户端界面的插件保持一致）",
   "exports": {
     ".": "./index.js",
+    "./client": "./client.js",
     "./lib.js": "./lib.js",
-    "./client.js": "./client.js",
     "./package.json": "./package.json",
     "./locale/*.json": "./locale/*.json"
   },
