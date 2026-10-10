@@ -144,6 +144,8 @@ dsh-plugins/
 
 ## ✏️ 添加新插件（作者）
 
+> 📘 完整规范见 [docs/插件开发发布规范.md](docs/插件开发发布规范.md)：客户端 UI 五条铁律（尤其 `exports` 的 `"./client"` 键）、更新/发布 SOP、可粘贴给 AI 的两段提示词。
+
 1. 在 `plugins/` 下新建目录（可复制 `enter-newline` 再改）：
    ```
    plugins/<插件名>/
