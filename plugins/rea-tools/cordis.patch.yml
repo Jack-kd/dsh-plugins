@@ -1,0 +1,7 @@
+# rea-tools 插件的配置层。id 必须与 index.js 的 `export const name` 一致（都是 rea）。
+- insert:
+    - id: rea
+      name: "@local/rea-tools"
+      inject:
+        - tools
+      config: {}

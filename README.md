@@ -105,6 +105,26 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v2.4.0/gh-accel-plugin.
 
 > 镜像（ghfast.top 等）是公共第三方服务、有失效风险；可在配置里用 `mirrors`/`rules` 自行增删站点规则。下载大文件建议指定绝对 `out` 路径。
 
+### ▶ rea-tools · REA 逆向工具链（一键安装 + 原生/APK 逆向）
+
+> 一键安装 **REA + Ghidra + JADX**（arm64 反编译器免编译、断点续传、zip 缓存、幂等），并提供 7 个逆向工具：`rea_install`（安装）、`rea_doctor`（就绪检查）、`rea_analyze`（二进制概览）、`rea_function`（函数伪代码，Ghidra）、`rea_inspect_apk` / `rea_inspect_apk_class` / `rea_inspect_apk_method`（APK 静态逆向，不运行目标代码）。已在 arm64 实测：NewPipe APK 7096 类，Manifest/类成员/方法反编译全部正常。
+>
+> **v0.1.0**：首个版本 —— 7 个工具，全新环境装完即可分析原生二进制与 APK。
+
+**一条命令安装：**
+
+```bash
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v0.1.0/rea-tools-plugin.tgz
+```
+
+**或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
+
+```
+https://github.com/Jack-kd/dsh-plugins/releases/download/v0.1.0/rea-tools-plugin.tgz
+```
+
+> 首次使用先调 `rea_install` 工具（自动下载 Ghidra 543MB，断点续传；已装过的部分自动跳过）。升级需先卸载再装新版本。
+
 <!--
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -141,7 +161,8 @@ dsh-plugins/
     ├── retry-count/         ← 请求重试次数插件
     ├── chat-keeper-mobile/          ← 对话管理（手机版）插件
     ├── dsh-client-ui-skin-maid-atelier/ ← 女仆工坊皮肤（第三方）
-    └── gh-accel/            ← 下载加速（GitHub + 通用，合并版）
+    ├── gh-accel/            ← 下载加速（GitHub + 通用，合并版）
+    └── rea-tools/           ← REA 逆向工具链（安装 + 原生/APK 逆向）
 ```
 
 ## ✏️ 添加新插件（作者）

@@ -1,0 +1,25 @@
+{
+  "name": "@local/rea-tools",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "REA 逆向工具链（REA + Ghidra + JADX）一键安装 + 原生二进制 / APK 逆向工具",
+  "exports": {
+    ".": "./index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "install-rea-ghidra.sh",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "keywords": ["dsh", "dsh-plugin", "rea", "ghidra", "reverse-engineering"],
+  "license": "MIT"
+}
