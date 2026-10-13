@@ -125,6 +125,26 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v0.1.0/rea-tools-plugin
 
 > 首次使用先调 `rea_install` 工具（自动下载 Ghidra 543MB，断点续传；已装过的部分自动跳过）。升级需先卸载再装新版本。
 
+### ▶ our-free-model · 免费模型（免登录免 Key，多模型开箱即用）
+
+> 装上即用，无需登录、注册或填 API Key：DeepSeek V4.1 Flash、Kimi K3 等前沿模型直接出现在输入框的 **Our Free Model** 分组，免费不限量（上游为 OpenCode Zen / Kilo 公共网关）。另含 Kilo 免费池、EAC 协付渠道（桌面端）、13 个账号渠道（CodeArts/CodeBuddy/Qoder/TRAE/Gemini 等）、76 家聚合提供商（自带 Key 接入）、Token 压缩、命名降级链（combo）、本地 OpenAI/Anthropic 兼容网关与局域网转发、数据看板与运行日志，九页毛玻璃设置界面（**设置 → Our Free Model**）。第三方插件，作者 Ebony-Vinyl，MIT。
+>
+> **v2.1.0**：收录上游仓库当前版本 —— 聚合渠道、省 Token、路由三页，Anthropic `/v1/messages` 原生接口，局域网转发中继，应用内升级与热重载。
+
+**一条命令安装：**
+
+```bash
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v2.1.0/our-free-model-plugin.tgz
+```
+
+**或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
+
+```
+https://github.com/Jack-kd/dsh-plugins/releases/download/v2.1.0/our-free-model-plugin.tgz
+```
+
+> 装完重启一次 App。模型可用性按你自己这台机器的网络出口实测，切换网络后可在设置页「重新探测可用性」。升级需先卸载再装新版本。
+
 <!--
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -162,7 +182,8 @@ dsh-plugins/
     ├── chat-keeper-mobile/          ← 对话管理（手机版）插件
     ├── dsh-client-ui-skin-maid-atelier/ ← 女仆工坊皮肤（第三方）
     ├── gh-accel/            ← 下载加速（GitHub + 通用，合并版）
-    └── rea-tools/           ← REA 逆向工具链（安装 + 原生/APK 逆向）
+    ├── rea-tools/           ← REA 逆向工具链（安装 + 原生/APK 逆向）
+    └── our-free-model/      ← 免费模型（免登录免 Key，第三方收录）
 ```
 
 ## ✏️ 添加新插件（作者）
