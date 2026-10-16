@@ -117,6 +117,8 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v2.5.2/gh-accel-plugin.
 
 > 一键安装 **REA + Ghidra + JADX**（arm64 反编译器免编译、断点续传、zip 缓存、幂等），并提供 7 个逆向工具：`rea_install`（安装）、`rea_doctor`（就绪检查）、`rea_analyze`（二进制概览）、`rea_function`（函数伪代码，Ghidra）、`rea_inspect_apk` / `rea_inspect_apk_class` / `rea_inspect_apk_method`（APK 静态逆向，不运行目标代码）。已在 arm64 实测：NewPipe APK 7096 类，Manifest/类成员/方法反编译全部正常。
 >
+> **v0.2.4**：胶囊改为**两行**布局——第一行「REA · 操作名…」；第二行显示正在分析的目标文件名（从 `apk`/`path` 参数提取，灰色小字）；无文件参数的工具只显示一行。
+>
 > **v0.2.3**：rea 工具执行中的胶囊**显示具体操作名**，如「**REA · 分析 APK…**」「**REA · 反编译函数…**」「**REA · 分析二进制…**」；并发执行时显示最近一次操作。
 >
 > **v0.2.2**：任一个 `rea_*` 工具被实际调用时（如 `rea_inspect_apk`、`rea_analyze`），输入框上方显示「**REA 逆向中…**」胶囊（带呼吸光点），工具返回后自动消失——与「加速器」插件的下载状态小框同一套交互（事件驱动投影）。
@@ -130,13 +132,13 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v2.5.2/gh-accel-plugin.
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v0.2.3/rea-tools-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v0.2.4/rea-tools-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/v0.2.3/rea-tools-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/v0.2.4/rea-tools-plugin.tgz
 ```
 
 > 首次打开自动弹窗选择版本后台安装；或在设置 → 通用 → REA 逆向环境 里安装；也可调 `rea_install` 工具。升级需先卸载再装新版本。

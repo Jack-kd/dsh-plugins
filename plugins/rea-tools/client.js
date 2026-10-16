@@ -74,6 +74,10 @@
   50%{opacity:.5;box-shadow:0 0 10px var(--dsw-alias-state-business-primary)}}
 .reaBar{flex:1;min-width:40px;height:4px;border-radius:2px;background:var(--dsw-alias-bg-overlay);overflow:hidden}
 .reaBarIn{height:100%;background:var(--dsw-alias-state-business-primary);transition:width .3s ease}
+.reaPillBody{display:flex;flex-direction:column;gap:1px;min-width:0;line-height:1.25}
+.reaPillMainRow{white-space:nowrap}
+.reaPillTarget{font-size:11px;font-weight:500;color:var(--dsw-alias-label-tertiary);white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;max-width:180px}
 .reaStages{margin:8px 0 0;display:flex;flex-direction:column;gap:7px}
 .reaStage{display:flex;align-items:center;gap:9px;font-size:12.5px;line-height:18px}
 .reaStageIco{flex:none;width:15px;text-align:center;color:var(--dsw-alias-label-tertiary)}
@@ -99,6 +103,7 @@
           childDesc: 'reaChildDesc', warn: 'reaWarn', remember: 'reaRemember', foot: 'reaFoot',
           btn: 'reaBtn', btnPrimary: 'reaBtnPrimary', btnGhost: 'reaBtnGhost', pill: 'reaPill',
           pillCard: 'reaPillCard', dot: 'reaDot', bar: 'reaBar', barIn: 'reaBarIn', stages: 'reaStages',
+          pillBody: 'reaPillBody', pillMainRow: 'reaPillMainRow', pillTarget: 'reaPillTarget',
           stage: 'reaStage', stageDone: 'reaStageDone', stageIco: 'reaStageIco', stageName: 'reaStageName',
           stageMeta: 'reaStageMeta', log: 'reaLog', settingRow: 'reaSettingRow', settingText: 'reaSettingText',
           settingName: 'reaSettingName', settingDesc: 'reaSettingDesc', ok: 'reaOk',
@@ -257,12 +262,15 @@
           // 仅在：安装中 / 有 rea 工具正在执行 时显示
           if (!installing && !active) return null
           if (active) {
-            // 工具执行中的胶囊：显示具体操作名 + 呼吸光点
+            // 工具执行中的胶囊：第一行操作名 + 光点，第二行目标文件名
             const label = state.activeLabel || '逆向分析'
+            const target = state.activeTarget || null
             return h('div', { className: S.pill },
-              h('div', { className: S.pillCard, role: 'status', 'aria-live': 'polite', title: 'REA 逆向工具正在工作' },
+              h('div', { className: S.pillCard, role: 'status', 'aria-live': 'polite', title: 'REA 逆向工具正在工作: ' + (label || '') + (target ? ' · ' + target : '') },
                 h('span', { className: S.dot }),
-                h('span', null, 'REA · ' + label + '…')))
+                h('div', { className: S.pillBody },
+                  h('div', { className: S.pillMainRow }, 'REA · ' + label + '…'),
+                  (target ? h('div', { className: S.pillTarget }, target) : null))))
           }
           const pct = Math.max(0, Math.min(100, state.percent || 0))
           return h('div', { className: S.pill },

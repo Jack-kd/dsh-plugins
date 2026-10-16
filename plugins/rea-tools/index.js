@@ -306,16 +306,26 @@ export function apply(ctx) {
 
   const projection = {
     key: 'rea',
-    stateVersion: 3,
+    stateVersion: 4,
     stateSchema: anySchema,
     init: () => ({ calls: [] }),
     apply(state, event) {
       if (event.type === 'tool/call') {
-        const { callId, name } = event.data || {}
+        const { callId, name, arguments: argsRaw } = event.data || {}
         if (!REA_TOOLS.includes(name) || !callId) return state
         const exists = Array.isArray(state.calls) && state.calls.some((c) => (typeof c === 'object' && c !== null) ? c.callId === callId : c === callId)
         if (exists) return state
-        const entry = { callId, name }
+        // 从参数里取文件路径（apk / path）→ basename，作为胶囊上的目标文件名
+        let target = null
+        try {
+          const args = (typeof argsRaw === 'string' ? JSON.parse(argsRaw) : (argsRaw || {}))
+          const p = args && typeof args.apk === 'string' ? args.apk
+            : (args && typeof args.path === 'string' ? args.path : null)
+          if (typeof p === 'string' && p.trim()) {
+            target = p.split(/[\\/]/).pop() || p
+          }
+        } catch { /* 参数解析失败不影响胶囊 */ }
+        const entry = { callId, name, target }
         return { calls: Array.isArray(state.calls) ? [...state.calls, entry] : [entry] }
       }
       if (event.type === 'tool/result') {
@@ -335,6 +345,7 @@ export function apply(ctx) {
         // 取最近一个正在执行的 rea 工具的中文操作描述
         const last = calls.length ? calls[calls.length - 1] : null
         const activeLabel = last ? (REA_LABELS[last.name] || last.name) : null
+        const activeTarget = (last && last.target) || null
         return {
           tier: ui.tier,
           installing: ui.installing,
@@ -353,6 +364,7 @@ export function apply(ctx) {
           doneStages: ui.doneStages || [],
           active,
           activeLabel,
+          activeTarget,
           sizes: SIZES,
         }
       },
