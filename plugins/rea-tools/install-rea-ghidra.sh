@@ -16,15 +16,23 @@
 #        sudo bash install-rea-ghidra.sh --decompiler-tgz /path/rea-ghidra-arm64-*.tar.gz
 #        sudo bash install-rea-ghidra.sh --compile          # 强制源码编译反编译器
 #        sudo bash install-rea-ghidra.sh --skip-rea         # 只装 Ghidra
+#        sudo bash install-rea-ghidra.sh --skip-ghidra      # 初级版本：只装 JDK+rea+JADX（纯 APK 逆向，省 543MB）
 #        sudo bash install-rea-ghidra.sh --install-dir /opt/ghidra_12.1.4_PUBLIC
 #        sudo bash install-rea-ghidra.sh --no-cache         # 装完不保留 zip 缓存
 #
 # 特性：
 #   * 断点续传 + zip 缓存复用（网络中断不重来，重装秒过）
-#   * Ghidra 下载走 GitHub 官方源 + 加速镜像，自动逐个尝试
+#   * **镜像优先**：加速镜像排在官方源之前，并带「慢速放弃」——某源速率持续过低会自动换下一个
 #   * 预编译反编译器缺失时自动从仓库拉取
 #   * 自动下载 JADX 桥接（REA_JADX_MCP_JAR），装完即可分析 APK
 #   * 幂等：已装好的部分自动跳过
+#
+# v0.1.1 修复（重要）：
+#   此前下载源把 GitHub 官方源排在第一位，且 download_resume 只判断「是否报错」不看速率，
+#   于是官方源能连上但只有 ~10 KB/s 时会一直挂着慢慢下（543MB 约 13 小时），永不回退到
+#   快 40 倍的镜像。现改为：① 镜像排前、官方源兜底；② 连续 DL_SPEED_TIME 秒低于
+#   DL_SPEED_LIMIT 即放弃换源。实测：官方源 10 秒放弃，镜像 543MB 约 20 分钟完成。
+#   可用环境变量覆盖：DL_SPEED_LIMIT（默认 51200 B/s）、DL_SPEED_TIME（默认 20 秒）。
 #
 # 前置条件：Linux（x86_64 / aarch64）、root、Node.js 22.19+/24.11+/26+ 与 npm。
 # JDK 21 脚本会自动 apt 安装。
@@ -51,18 +59,24 @@ OFFICIAL_URL="https://github.com/NationalSecurityAgency/ghidra/releases/download
 REPO_RELEASE_URL="https://github.com/${GITHUB_REPO}/releases/download/${RELEASE_TAG}/${GHIDRA_ZIP_NAME}"
 REPO_RAW_BASE="https://raw.githubusercontent.com/${GITHUB_REPO}/${REPO_BRANCH}"
 # 下载候选（按顺序尝试；可用 GHIDRA_MIRRORS_EXTRA 环境变量在前面追加）
+#
+# v0.1.1 关键修复：镜像排在官方源**之前**。
+# 官方源（github.com / raw.githubusercontent.com）在国内通常极慢（实测 ~10 KB/s，
+# 甚至完全超时），而 ghfast.top 等镜像可达 400-3000 KB/s。旧顺序把官方源放第一，
+# 配合 download_resume 的"能连上就不回退"行为，会把安装拖到十几小时。
+# 官方源仍保留在末尾兜底：万一镜像全部失效、而本机恰好能直连 GitHub，仍可装上。
 GHIDRA_MIRRORS=(
-  "${OFFICIAL_URL}"                                         # GitHub 官方源
-  "https://ghfast.top/${OFFICIAL_URL}"                      # ghfast 加速
+  "https://ghfast.top/${OFFICIAL_URL}"                      # ghfast 加速（国内首选）
   "https://ghproxy.net/${OFFICIAL_URL}"                     # ghproxy 加速
   "https://gh-proxy.com/${OFFICIAL_URL}"                    # gh-proxy 加速
   "${REPO_RELEASE_URL}"                                     # 本仓库 Release（若日后上传了该包会自动命中）
+  "${OFFICIAL_URL}"                                         # GitHub 官方源（兜底）
 )
 JADX_MIRRORS=(
-  "${JADX_URL}"                                             # GitHub 官方源
-  "https://ghfast.top/${JADX_URL}"                          # ghfast 加速
+  "https://ghfast.top/${JADX_URL}"                          # ghfast 加速（国内首选）
   "https://ghproxy.net/${JADX_URL}"                         # ghproxy 加速
   "https://gh-proxy.com/${JADX_URL}"                        # gh-proxy 加速
+  "${JADX_URL}"                                             # GitHub 官方源（兜底）
 )
 if [[ -n "${GHIDRA_MIRRORS_EXTRA:-}" ]]; then
   read -r -a GHIDRA_MIRRORS_EXTRA_ARR <<< "${GHIDRA_MIRRORS_EXTRA}"
@@ -83,6 +97,7 @@ DECOMPILER_TGZ="${DEFAULT_TGZ}"
 ZIP_CACHE_DIR="${ZIP_CACHE_DIR:-/var/cache/rea-install}"
 FORCE_COMPILE=0
 SKIP_REA=0
+SKIP_GHIDRA=0
 KEEP_ZIP=1
 
 while [[ $# -gt 0 ]]; do
@@ -92,9 +107,10 @@ while [[ $# -gt 0 ]]; do
     --decompiler-tgz) DECOMPILER_TGZ="$2"; shift 2 ;;
     --compile)     FORCE_COMPILE=1; shift ;;
     --skip-rea)    SKIP_REA=1; shift ;;
+    --skip-ghidra) SKIP_GHIDRA=1; shift ;;
     --no-cache)    KEEP_ZIP=0; shift ;;
     --version)     echo "Ghidra ${GHIDRA_VERSION}"; exit 0 ;;
-    -h|--help)     sed -n '2,60p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help)     sed -n '2,70p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "未知参数: $1 (--help 查看用法)"; exit 1 ;;
   esac
 done
@@ -115,11 +131,22 @@ rea_version() {
 }
 
 # 断点续传下载：curl -C - / wget -c；成功返回 0
+#
+# v0.1.1 关键修复：加入「慢速放弃」（slow-abort）。
+# 背景：GitHub 官方源在国内常能连上、但只有 ~10 KB/s。旧实现只判断「是否报错」，
+# 于是会一直挂在官方源上慢慢下（543MB 约需 13 小时），永不回退到快 40 倍的镜像。
+# 现在：若连续 SPEED_TIME 秒平均速率低于 SPEED_LIMIT，则主动放弃并返回非 0，
+# 由调用方换下一个源。已下载的部分保留（-C -），可继续断点续传。
+DL_SPEED_LIMIT="${DL_SPEED_LIMIT:-51200}"   # 50 KB/s
+DL_SPEED_TIME="${DL_SPEED_TIME:-20}"        # 持续 20 秒低于阈值即放弃
 download_resume() {
   local url="$1" out="$2"
   if has_cmd curl; then
-    curl -fL -C - --retry 3 --connect-timeout 15 --retry-delay 2 -o "${out}" "${url}" 2>/dev/null
+    curl -fL -C - --retry 3 --connect-timeout 15 --retry-delay 2 \
+      --speed-limit "${DL_SPEED_LIMIT}" --speed-time "${DL_SPEED_TIME}" \
+      -o "${out}" "${url}" 2>/dev/null
   elif has_cmd wget; then
+    # wget 无等价的持续低速判定；用 --timeout 兜住完全卡死的情况
     wget -c -q --tries 3 --timeout 15 -O "${out}" "${url}" 2>/dev/null
   else
     return 1
@@ -168,7 +195,11 @@ if [[ "${SKIP_REA}" -eq 0 ]]; then
 fi
 
 # ---------- 4. Ghidra 发布包（断点续传 + zip 缓存）----------
-if [[ -z "${GHIDRA_ZIP}" && -d "${INSTALL_DIR}" ]]; then
+# v0.2.0：--skip-ghidra 时整段跳过（初级版本：只装 JDK + rea-agents + JADX，
+# 用于纯 APK 逆向。Ghidra 是可选增强，APK 分析完全不依赖它）。
+if [[ "${SKIP_GHIDRA}" -eq 1 ]]; then
+  log "跳过 Ghidra（--skip-ghidra：初级版本，仅 APK 逆向）"
+elif [[ -z "${GHIDRA_ZIP}" && -d "${INSTALL_DIR}" ]]; then
   log "检测到已存在的 Ghidra 安装: ${INSTALL_DIR}，跳过下载"
 else
   if [[ -n "${GHIDRA_ZIP}" ]]; then
@@ -270,7 +301,9 @@ build_decompiler_from_source() {
   log "反编译器编译完成"
 }
 
-if [[ "${FORCE_COMPILE}" -eq 1 ]]; then
+if [[ "${SKIP_GHIDRA}" -eq 1 ]]; then
+  log "跳过反编译器（--skip-ghidra）"
+elif [[ "${FORCE_COMPILE}" -eq 1 ]]; then
   build_decompiler_from_source
 elif [[ "${GHIDRA_OSDIR}" == "linux_x86_64" ]]; then
   log "x86_64 发布包自带反编译器，无需处理"
@@ -282,7 +315,8 @@ else
     log "未在本目录找到 ${TGZ_NAME}，尝试从仓库拉取..."
     TGZ_TMP="$(mktemp -d)"
     ok=0
-    for base in "${REPO_RAW_BASE}" "https://ghfast.top/${REPO_RAW_BASE}" "https://ghproxy.net/${REPO_RAW_BASE}"; do
+    # v0.1.1：镜像排前、raw 官方源兜底（与 GHIDRA_MIRRORS 同样的理由）
+    for base in "https://ghfast.top/${REPO_RAW_BASE}" "https://ghproxy.net/${REPO_RAW_BASE}" "${REPO_RAW_BASE}"; do
       log "  尝试: ${base}/${TGZ_NAME}"
       if download_resume "${base}/${TGZ_NAME}" "${TGZ_TMP}/${TGZ_NAME}"; then ok=1; break; fi
     done
@@ -305,22 +339,47 @@ fi
 if [[ "${SKIP_REA}" -eq 0 ]]; then
   REA_BIN="$(command -v rea || true)"
   if [[ -n "${REA_BIN}" ]]; then
-    REA_SCRIPT="$(readlink -f "${REA_BIN}" 2>/dev/null || true)"
-    if [[ -z "${REA_SCRIPT}" || ! -f "${REA_SCRIPT}" ]]; then
-      REA_SCRIPT="${REA_BIN}"
+    # 判断 REA_BIN 是否已是本脚本生成的包装脚本（而非原始的 .mjs 软链）
+    IS_WRAPPER=0
+    grep -q "REA wrapper: guarantees Ghidra + JADX env" "${REA_BIN}" 2>/dev/null && IS_WRAPPER=1
+
+    if [[ "${IS_WRAPPER}" -eq 0 ]]; then
+      # 首次安装：rea 指向 .mjs（软链或普通文件），取出真实脚本路径
+      REA_SCRIPT="$(readlink -f "${REA_BIN}" 2>/dev/null || true)"
+      if [[ -z "${REA_SCRIPT}" || ! -f "${REA_SCRIPT}" ]]; then
+        REA_SCRIPT="${REA_BIN}"
+      fi
+    else
+      # 已存在包装脚本：从里面取回它 exec 的 .mjs 路径，避免自我嵌套
+      REA_SCRIPT="$(sed -n 's/^exec \/usr\/bin\/env node "\(.*\)" "\$@"$/\1/p' "${REA_BIN}" | head -1)"
+      [[ -n "${REA_SCRIPT}" && -f "${REA_SCRIPT}" ]] || REA_SCRIPT=""
     fi
-    if [[ "${REA_SCRIPT}" == *.mjs ]]; then
+
+    # v0.2.0 修复：只要目标是包装脚本就重写一次（而非仅在首次安装时写）。
+    # 否则「初级版本 → 升级到升级版本」时，旧包装脚本不含 GHIDRA_INSTALL_DIR 且永不刷新，
+    # 导致 shell 里直接跑 `rea analyze` 找不到 Ghidra。
+    if [[ -n "${REA_SCRIPT}" && "${REA_SCRIPT}" == *.mjs ]]; then
       rm -f "${REA_BIN}"
+      # --skip-ghidra 时不导出 GHIDRA_INSTALL_DIR，避免把 rea 指向不存在的安装目录
+      if [[ "${SKIP_GHIDRA}" -eq 1 ]]; then
+        GHIDRA_EXPORT_LINE="# 初级版本：未安装 Ghidra，不设置 GHIDRA_INSTALL_DIR"
+      else
+        GHIDRA_EXPORT_LINE="export GHIDRA_INSTALL_DIR=\"\${GHIDRA_INSTALL_DIR:-${INSTALL_DIR}}\""
+      fi
       cat > "${REA_BIN}" <<WRAPPER
 #!/usr/bin/env bash
 # REA wrapper: guarantees Ghidra + JADX env for analysis in DSH shells.
-export GHIDRA_INSTALL_DIR="\${GHIDRA_INSTALL_DIR:-${INSTALL_DIR}}"
+${GHIDRA_EXPORT_LINE}
 export JAVA_HOME="\${JAVA_HOME:-${JAVA_HOME_DEFAULT}}"
 export REA_JADX_MCP_JAR="\${REA_JADX_MCP_JAR:-${JADX_JAR_PATH}}"
 exec /usr/bin/env node "${REA_SCRIPT}" "\$@"
 WRAPPER
       chmod +x "${REA_BIN}"
-      log "已为 rea 创建环境变量包装脚本（GHIDRA_INSTALL_DIR=${INSTALL_DIR}，REA_JADX_MCP_JAR=${JADX_JAR_PATH}）"
+      if [[ "${SKIP_GHIDRA}" -eq 1 ]]; then
+        log "已为 rea 创建环境变量包装脚本（初级版本：GHIDRA_INSTALL_DIR 未设置，REA_JADX_MCP_JAR=${JADX_JAR_PATH}）"
+      else
+        log "已为 rea 创建环境变量包装脚本（GHIDRA_INSTALL_DIR=${INSTALL_DIR}，REA_JADX_MCP_JAR=${JADX_JAR_PATH}）"
+      fi
     fi
   fi
 fi
@@ -330,12 +389,22 @@ log "运行 rea doctor 验证..."
 rea doctor 2>&1 | grep -E "healthy:|  - name: (ghidra|ghidra-native_decompiler|ghidra-version)|ok: (true|false)" | head -16 || true
 
 log "===================================================="
-log " 安装完成！"
-log "   Ghidra:     ${INSTALL_DIR}"
-log "   反编译器:  ${DECOMPILER_DIR}/decompile"
-log "   JADX 桥接:  ${JADX_JAR_PATH}"
-log "   rea:       $(rea_version || echo '(未安装 rea)')"
-log " 快速上手:"
-log "   原生:   rea analyze <二进制路径>; rea function <路径> --procedure <函数名>"
-log "   APK:    rea inspect-android-package <apk>; rea inspect-android-class <apk> <类名>"
+if [[ "${SKIP_GHIDRA}" -eq 1 ]]; then
+  log " 安装完成！（初级版本：仅 APK 逆向）"
+  log "   JADX 桥接:  ${JADX_JAR_PATH}"
+  log "   rea:       $(rea_version || echo '(未安装 rea)')"
+  log "   注意:      未安装 Ghidra，原生二进制分析（rea_analyze / rea_function）不可用"
+  log "              如需升级，可在「设置 → 通用 → REA 逆向环境」中安装升级版本"
+  log " 快速上手:"
+  log "   APK:    rea inspect-android-package <apk>; rea inspect-android-class <apk> <类名>"
+else
+  log " 安装完成！（升级版本：APK + 原生二进制）"
+  log "   Ghidra:     ${INSTALL_DIR}"
+  log "   反编译器:  ${DECOMPILER_DIR}/decompile"
+  log "   JADX 桥接:  ${JADX_JAR_PATH}"
+  log "   rea:       $(rea_version || echo '(未安装 rea)')"
+  log " 快速上手:"
+  log "   原生:   rea analyze <二进制路径>; rea function <路径> --procedure <函数名>"
+  log "   APK:    rea inspect-android-package <apk>; rea inspect-android-class <apk> <类名>"
+fi
 log "===================================================="

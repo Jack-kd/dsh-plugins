@@ -117,21 +117,23 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v2.5.2/gh-accel-plugin.
 
 > 一键安装 **REA + Ghidra + JADX**（arm64 反编译器免编译、断点续传、zip 缓存、幂等），并提供 7 个逆向工具：`rea_install`（安装）、`rea_doctor`（就绪检查）、`rea_analyze`（二进制概览）、`rea_function`（函数伪代码，Ghidra）、`rea_inspect_apk` / `rea_inspect_apk_class` / `rea_inspect_apk_method`（APK 静态逆向，不运行目标代码）。已在 arm64 实测：NewPipe APK 7096 类，Manifest/类成员/方法反编译全部正常。
 >
-> **v0.1.0**：首个版本 —— 7 个工具，全新环境装完即可分析原生二进制与 APK。
+> **v0.2.0**：新增**环境准备弹窗 + 后台安装 + 进度展示**。首次打开新环境自动弹出「REA 逆向环境需要准备」，选 **初级版本**（JDK + rea-agents + JADX，APK 逆向，约 239 MB，含可逐项勾选）或 **升级版本**（+ Ghidra 12.1.4 原生二进制逆向，约 784 MB）；可在后台下载（不阻塞对话），输入框上方显示进度胶囊，点击看详情（百分比 / 阶段 / 当前源 / 日志），完成发提示。取消安装时弹窗让你选「保留已下载（续传）」或「删除」。设备提升为全部走镜像加速（ghfast.top 等）且超慢源自动中断。
+>
+> **状态机**：仅首次自动弹窗 → 后台装完不再弹；「稍后再说」仅在 **设置 → 通用 → REA 逆向环境** 里可装；中断/失败下次**静默续传**。初级装完可在设置页一键升级到升级版本。
 
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v0.1.0/rea-tools-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v0.2.0/rea-tools-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/v0.1.0/rea-tools-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/v0.2.0/rea-tools-plugin.tgz
 ```
 
-> 首次使用先调 `rea_install` 工具（自动下载 Ghidra 543MB，断点续传；已装过的部分自动跳过）。升级需先卸载再装新版本。
+> 首次打开自动弹窗选择版本后台安装；或在设置 → 通用 → REA 逆向环境 里安装；也可调 `rea_install` 工具。升级需先卸载再装新版本。
 
 ### ▶ our-free-model · 免费模型（免登录免 Key，多模型开箱即用）
 

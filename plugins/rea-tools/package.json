@@ -1,16 +1,19 @@
 {
   "name": "@local/rea-tools",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "REA 逆向工具链（REA + Ghidra + JADX）一键安装 + 原生二进制 / APK 逆向工具",
+  "description": "REA 逆向工具链（REA + Ghidra + JADX）一键安装 + 原生二进制 / APK 逆向工具；v0.2.0 新增环境准备弹窗（初级/升级版本可选）、后台安装与进度展示、设置页升级入口",
   "exports": {
     ".": "./index.js",
+    "./client": "./client.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
   "files": [
     "index.js",
+    "client.js",
+    "install-manager.js",
     "cordis.patch.yml",
     "install-rea-ghidra.sh",
     "README.md"
@@ -18,6 +21,14 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-settings-general"
+      ]
     }
   },
   "keywords": ["dsh", "dsh-plugin", "rea", "ghidra", "reverse-engineering"],

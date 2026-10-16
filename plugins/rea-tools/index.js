@@ -12,6 +12,10 @@ import { execFile } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import {
+  detectState, readState, writeState, startInstall, cancelInstall,
+  isInstalling, currentProgress, PATHS, SIZES,
+} from './install-manager.js'
 
 export const name = 'rea'
 export const inject = ['tools']
@@ -213,4 +217,232 @@ export function apply(ctx) {
   if (failed.length > 0) {
     throw new Error(`rea-tools 部分工具注册失败: ${failed.join('; ')}`)
   }
+
+  // ========================================================================
+  // v0.2.0 UI 支撑：环境状态 + 后台安装
+  //
+  // 设计：安装**不占用工具调用**，因此不受工具超时（1200s）限制。
+  // 543MB 经镜像约需 20 分钟，正好卡在旧的阻塞式超时临界点，改后台后该问题消失。
+  // 客户端通过 sessionProjections 读取状态，不做轮询。
+  // ========================================================================
+
+  // 内存中的状态快照（投影与命令都读它；落盘只用于跨重启的续传判断）
+  const ui = {
+    tier: 'none',
+    installing: false,
+    percent: 0,
+    stageLabel: null,
+    source: null,
+    doneMB: 0,
+    totalMB: 0,
+    targetTier: null,
+    doneStages: [],
+    logTail: [],
+    lastError: null,
+    dismissed: false,
+    showDialog: false,   // 客户端据此决定是否弹窗
+  }
+
+  const refreshFromDisk = () => {
+    const st = detectState(__dirname)
+    ui.tier = st.tier
+    ui.dismissed = st.dismissed
+    ui.resumable = st.resumable
+    ui.cacheMB = st.cacheMB
+    ui.lastError = ui.lastError || st.lastError
+    // 仅首次（未装、未忽略、未在装）才弹窗
+    ui.showDialog = st.tier === 'none' && !st.dismissed && !st.installing && !isInstalling()
+  }
+  refreshFromDisk()
+
+  const syncProgress = (p) => {
+    ui.installing = true
+    ui.percent = p.percent || 0
+    ui.stageLabel = p.stageLabel || p.stage || null
+    ui.source = p.source
+    ui.doneMB = p.doneMB || 0
+    ui.totalMB = p.totalMB || 0
+    ui.logTail = p.logTail || []
+    if (p.tier) ui.targetTier = p.tier
+    ui.doneStages = Array.isArray(p.stageDone) ? p.stageDone : []
+  }
+
+  const onInstallDone = async ({ ok, error, tier }) => {
+    ui.installing = false
+    if (ok) {
+      ui.percent = 100
+      ui.lastError = null
+      await writeState(__dirname, { installing: false, installedTier: tier, installedAt: Date.now(), lastError: null })
+    } else {
+      ui.lastError = error || '安装失败'
+      await writeState(__dirname, { installing: false, lastError: ui.lastError })
+    }
+    refreshFromDisk()
+    ui.showDialog = false   // 无论成败都不再弹窗（失败可在入口里重试）
+    publish()
+  }
+
+  // ---- 投影：客户端用 useProjection('rea') 读取 ----
+  const anySchema = { parse: (v) => v }
+  let listeners = []
+  const publish = () => { for (const fn of listeners) { try { fn() } catch { /* 忽略 */ } } }
+
+  const projection = {
+    key: 'rea',
+    stateVersion: 1,
+    stateSchema: anySchema,
+    init: () => ({ v: 0 }),
+    apply(state, event) {
+      // 状态由宿主主动 publish 驱动；这里只需保证投影存在且可订阅
+      if (event.type === 'turn/end') return state
+      return state
+    },
+    wire: {
+      viewSchema: anySchema,
+      view: () => ({
+        tier: ui.tier,
+        installing: ui.installing,
+        percent: ui.percent,
+        stageLabel: ui.stageLabel,
+        source: ui.source,
+        doneMB: ui.doneMB,
+        totalMB: ui.totalMB,
+        logTail: ui.logTail,
+        lastError: ui.lastError,
+        dismissed: ui.dismissed,
+        showDialog: ui.showDialog,
+        resumable: ui.resumable || false,
+        cacheMB: ui.cacheMB || 0,
+        targetTier: ui.targetTier || null,
+        doneStages: ui.doneStages || [],
+        sizes: SIZES,
+      }),
+    },
+  }
+
+  const registerProjection = (p) => {
+    try {
+      ctx.effect(() => p.register(projection, 'rea: 环境状态与安装进度'))
+    } catch (e) {
+      console.warn('[rea-tools] 投影注册失败:', e && e.message ? e.message : e)
+    }
+  }
+  try {
+    const projections = ctx.get('sessionProjections')
+    if (projections !== undefined) registerProjection(projections)
+    else if (typeof ctx.inject === 'function') {
+      ctx.inject(['sessionProjections'], (inner) => {
+        const p = inner.get('sessionProjections')
+        if (p !== undefined) registerProjection(p)
+      })
+    }
+  } catch (e) {
+    console.warn('[rea-tools] 获取 sessionProjections 失败:', e && e.message ? e.message : e)
+  }
+
+  // ---- 会话命令：客户端 UI 通过 ctx.remote.commands.execute() 调用 ----
+  // 文档指定的 UI→宿主 调用方式（references/user-actions.md）。
+  const doInstall = async (tier) => {
+    if (isInstalling()) return { kind: 'error', text: '已有安装在进行中' }
+    const t = tier === 'full' ? 'full' : 'basic'
+    await writeState(__dirname, { installing: true, targetTier: t, dismissed: true, lastError: null })
+    ui.dismissed = true
+    ui.showDialog = false
+    ui.lastError = null
+    const r = startInstall(__dirname, t, syncProgress, onInstallDone)
+    if (!r.ok) {
+      ui.installing = false
+      await writeState(__dirname, { installing: false })
+      return { kind: 'error', text: '启动失败：' + (r.error || '未知错误') }
+    }
+    publish()
+    const label = t === 'basic' ? '初级版本（APK 逆向）' : '升级版本（+ 原生二进制）'
+    return { kind: 'success', text: `已开始后台安装 ${label}，可在输入框上方查看进度。` }
+  }
+
+  const doDismiss = async () => {
+    await writeState(__dirname, { dismissed: true })
+    ui.dismissed = true
+    ui.showDialog = false
+    publish()
+    return { kind: 'success', text: '已跳过。之后可在「设置 → 通用 → REA 逆向环境」中安装。' }
+  }
+
+  const doCancel = async (keepCache) => {
+    if (!isInstalling()) return { kind: 'error', text: '当前没有进行中的安装' }
+    await cancelInstall(__dirname, keepCache === false)
+    ui.installing = false
+    ui.lastError = keepCache === false ? '已取消安装，并清理了已下载的缓存' : '已取消安装，已下载的部分已保留'
+    refreshFromDisk()
+    publish()
+    return { kind: 'success', text: ui.lastError }
+  }
+
+  try {
+    ctx.inject(['commands'], (c) => {
+      const reg = (name, description, handler) => {
+        try {
+          ctx.effect(() => c.commands.register({
+            definitionId: `@local/rea-tools#${name}`,
+            name,
+            description,
+            handler,
+          }))
+        } catch (e) {
+          console.warn(`[rea-tools] 注册命令 ${name} 失败:`, e && e.message ? e.message : e)
+        }
+      }
+      reg('rea-install-basic', '后台安装 REA 初级版本（APK 逆向）', async () => doInstall('basic'))
+      reg('rea-install-full', '后台安装 REA 升级版本（含 Ghidra）', async () => doInstall('full'))
+      reg('rea-dismiss', '忽略 REA 环境安装提示', async () => doDismiss())
+      reg('rea-cancel', '取消正在进行的 REA 安装（保留已下载缓存）', async () => doCancel(true))
+      reg('rea-cancel-clean', '取消 REA 安装并清理已下载缓存', async () => doCancel(false))
+    })
+  } catch (e) {
+    console.warn('[rea-tools] 命令注册不可用:', e && e.message ? e.message : e)
+  }
+
+  // ---- 工具：让 AI 也能查询/启动安装（与 UI 走同一套逻辑）----
+  try {
+    ctx.tools.register(defineTool({
+      name: 'rea_status',
+      description: '查询 REA 逆向环境状态（未安装 / 初级版本 / 升级版本 / 安装中）与下载进度。'
+        + '轻量（毫秒级），可在分析前先调一次判断是否需要安装。',
+      parameters: {},
+      output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: String(v) }] },
+      async execute() {
+        const st = detectState(__dirname)
+        const p = currentProgress()
+        const lines = [
+          `状态: ${st.tier === 'none' ? '未安装' : st.tier === 'basic' ? '初级版本（APK 逆向）' : st.tier === 'full' ? '升级版本（APK + 原生二进制）' : '部分安装'}`,
+          `组件: JDK=${st.components.jdk ? '✔' : '✘'} rea=${st.components.rea ? '✔' : '✘'} JADX=${st.components.jadx ? '✔' : '✘'} Ghidra=${st.components.ghidra ? '✔' : '✘'}`,
+        ]
+        if (st.cacheMB > 0 && st.tier !== 'full') lines.push(`已下载缓存: ${st.cacheMB} MB（可续传）`)
+        if (p && ui.installing) lines.push(`安装中: ${p.percent || 0}%（${p.stageLabel || '准备中'}）`)
+        if (st.lastError) lines.push(`上次错误: ${st.lastError}`)
+        if (st.tier === 'none') lines.push('提示: 可调用 rea_install 安装（初级版本省 543MB，仅 APK 逆向足够）。')
+        else if (st.tier === 'basic') lines.push('提示: 如需原生二进制逆向（rea_analyze / rea_function），可升级安装 Ghidra。')
+        return lines.join('\n')
+      },
+    }))
+  } catch (e) {
+    console.warn('[rea-tools] rea_status 注册失败:', e && e.message ? e.message : e)
+  }
+
+  // ---- 启动时：若上次点了后台安装但没装完 → 静默续传（不弹窗）----
+  ctx.effect(() => {
+    const t = setTimeout(async () => {
+      try {
+        const st = detectState(__dirname)
+        if (st.resumable && st.tier !== 'full' && !isInstalling()) {
+          console.log('[rea-tools] 检测到未完成的安装，静默续传…')
+          const saved = await readState(__dirname)
+          await doInstall(saved.targetTier || 'basic')
+        }
+      } catch (e) {
+        console.warn('[rea-tools] 续传检查失败:', e && e.message ? e.message : e)
+      }
+    }, 3000)
+    return () => clearTimeout(t)
+  }, 'rea-tools: 续传检查')
 }
