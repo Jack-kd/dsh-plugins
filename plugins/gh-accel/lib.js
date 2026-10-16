@@ -401,10 +401,17 @@ export async function runPush({ dir, remote = 'origin', branch, signal } = {}) {
   return { ok: !failed, output, rewriteRestored: true };
 }
 
-export async function setupGlobal({ gitRewrite = true, pipMirror = 'https://pypi.tuna.tsinghua.edu.cn/simple' } = {}) {
+export async function setupGlobal({
+  gitRewrite = true,
+  pipMirror = 'https://pypi.tuna.tsinghua.edu.cn/simple',
+  hfMirror = 'https://hf-mirror.com',
+  npmMirror = 'https://registry.npmmirror.com',
+} = {}) {
   const applied = [];
   try {
     if (gitRewrite) {
+      // 先彻底清除旧条目再写一条：早期版本用 --add 且每次启动都执行，
+      // 会让 insteadOf 在 ~/.gitconfig 里重复累积（功能不受影响，但不干净）。
       await run('git', ['config', '--global', '--unset-all', GIT_REWRITE_KEY]).catch(() => {});
       await run('git', ['config', '--global', '--add', GIT_REWRITE_KEY, 'https://github.com/']);
       applied.push('git insteadOf');
@@ -417,6 +424,26 @@ export async function setupGlobal({ gitRewrite = true, pipMirror = 'https://pypi
     await fsp.writeFile(path.join(dir, 'pip.conf'),
       `[global]\nindex-url = ${pipMirror}\ntrusted-host = ${host}\ntimeout = 60\n`);
     applied.push('pip.conf');
+
+    // HuggingFace：huggingface_hub 通过 HF_ENDPOINT 环境变量选择镜像端点。
+    // 关键：本环境的 bash 工具是 DSH 进程的子进程，且 `bash -c` 不读任何 rc 文件，
+    // 所以写 ~/.bashrc 之类对 `huggingface-cli` 无效——必须直接写进本进程 process.env，
+    // 之后由 DSH 派生的命令才能继承到。
+    if (hfMirror) {
+      process.env.HF_ENDPOINT = hfMirror;
+      applied.push('HF_ENDPOINT(进程内)');
+    }
+
+    // npm：写用户级 ~/.npmrc，对 npm / pnpm / npx 均生效。
+    if (npmMirror) {
+      const npmrc = path.join(home, '.npmrc');
+      let existing = '';
+      try { existing = await fsp.readFile(npmrc, 'utf8'); } catch { /* 不存在则新建 */ }
+      const lines = existing.split('\n').filter((l) => l.trim() && !/^\s*registry\s*=/.test(l));
+      lines.push(`registry=${npmMirror}`);
+      await fsp.writeFile(npmrc, lines.join('\n') + '\n');
+      applied.push('npmrc');
+    }
   } catch (e) {
     console.error('[gh-accel] 全局配置未完成:', e.message);
   }

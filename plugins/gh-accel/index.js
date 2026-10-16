@@ -303,11 +303,27 @@ export function apply(ctx, config = {}) {
     },
   }));
 
-  // 系统提示：文件下载优选规则（可选服务，缺失时静默跳过）
+  // 系统提示：文件下载优选规则（可选服务，缺失时跳过但不再静默吞错）
+  //
+  // 历史坑（v2.5.2 修复）：这里此前写成 ctx.effect(() => sc.section({...}))，两处都错——
+  //   1) sc 是 inject 回调给出的**内层作用域上下文**，section() 挂在它自己的 systemPrompt 上，
+  //      必须写 sc.systemPrompt.section(...)；写成 sc.section 会抛 "sc.section is not a function"；
+  //   2) SystemPromptProjection.section() 强制校验 order 必须是有限数字，缺省会抛
+  //      `prompt section "gh-accel" order must be a finite number`。
+  // 两处错误都被下面的 catch 静默吞掉，导致该提示词从未进入模型上下文（工具照常注册，
+  // 表面完全正常，极难察觉）。现在修好并保留可见的告警，避免同类问题再次潜伏。
   try {
     ctx.inject(['systemPrompt'], (sc) => {
-      ctx.effect(() => sc.section({
+      const sp = sc && sc.systemPrompt ? sc.systemPrompt : (ctx.get('systemPrompt') || null);
+      if (!sp || typeof sp.section !== 'function') {
+        console.warn('[gh-accel] systemPrompt 服务不可用，跳过「文件下载优选规则」提示注入');
+        return;
+      }
+      ctx.effect(() => sp.section({
         name: 'gh-accel',
+        order: typeof sp.getSectionOrder === 'function'
+          ? sp.getSectionOrder('MCP_SERVERS') + 1
+          : 3101,
         text:
           '文件下载优选规则（gh-accel v2 已生效）：下载任意 URL 的大文件/工具时，' +
           'GitHub 站内文件一律用 github_accel_download（自动走加速镜像）；' +
@@ -315,14 +331,16 @@ export function apply(ctx, config = {}) {
           '需要对比选路时可先用 url_accel_probe。不要用 curl/wget 直连下载大文件（通常慢数倍）。',
       }));
     });
-  } catch {
-    /* systemPrompt 不可用时忽略 */
+  } catch (e) {
+    console.warn('[gh-accel] 注入「文件下载优选规则」系统提示失败:', e && e.message ? e.message : e);
   }
 
   queueMicrotask(() => {
     setupGlobal({
       gitRewrite: config.gitRewrite !== false,
       pipMirror: config.pipMirror || 'https://pypi.tuna.tsinghua.edu.cn/simple',
+      hfMirror: config.hfMirror === undefined ? 'https://hf-mirror.com' : config.hfMirror,
+      npmMirror: config.npmMirror === undefined ? 'https://registry.npmmirror.com' : config.npmMirror,
     }).then((applied) => {
       console.log('[gh-accel] v2 全局配置已生效:', applied.join(', ') || '无');
     });

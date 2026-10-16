@@ -1,9 +1,9 @@
 {
   "name": "@local/gh-accel",
-  "version": "2.5.1",
+  "version": "2.5.2",
   "private": true,
   "type": "module",
-  "description": "加速器（gh-accel v2）：GitHub 与通用 URL 下载加速合并版。规则驱动镜像 + 多线程分段下载，自动配置 git/pip 全局加速，实测比直连快数倍到数十倍；v2.5.1 修复显式 mirror 对 host 型镜像（npmmirror/hf-mirror）被按 prefix 拼接、导致静默回退直连的问题（新增样式自动识别与 mirrorStyle 覆盖参数）；v2.5.0 修复显式指定 mirror 参数时必失败的问题（summarize 的 ruleMatched 在无 match 字段时变成 undefined，触发 DSH lossless JSON 校验拒绝整个下载结果）；v2.4.0 修复「⚡ 加速器加速中…」状态小框不显示的根本原因（exports 补上 \"./client\" 键、index.js 声明 sessionProjections 注入）",
+  "description": "加速器（gh-accel v2）：GitHub 与通用 URL 下载加速合并版。规则驱动镜像 + 多线程分段下载，自动配置 git/pip 全局加速，实测比直连快数倍到数十倍；v2.5.2 修复「文件下载优选规则」系统提示从未注入的问题（sc.section 写成内层上下文缺 systemPrompt、且缺 section 必需的 order，两处错误被 catch 静默吞掉），并新增 HF_ENDPOINT 与 npm registry 全局镜像、修复 git insteadOf 重复累积；v2.5.1 修复显式 mirror 对 host 型镜像（npmmirror/hf-mirror）被按 prefix 拼接、导致静默回退直连的问题（新增样式自动识别与 mirrorStyle 覆盖参数）；v2.5.0 修复显式指定 mirror 参数时必失败的问题（summarize 的 ruleMatched 在无 match 字段时变成 undefined，触发 DSH lossless JSON 校验拒绝整个下载结果）；v2.4.0 修复「⚡ 加速器加速中…」状态小框不显示的根本原因（exports 补上 \"./client\" 键、index.js 声明 sessionProjections 注入）",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",

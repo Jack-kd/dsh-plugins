@@ -2,6 +2,44 @@
 
 **gh-accel 与 dl-accel 合二为一**：一个插件同时负责 GitHub 与任意站点的下载/上传加速。
 
+## v2.5.2 · 修复系统提示从未注入 + 补全 HF/npm 全局镜像
+
+**v2.5.2** 修了三件事：
+
+### 1. 「文件下载优选规则」系统提示**从未生效**（重要）
+
+插件一直声称"注入文件下载优选规则系统提示"，但该提示**从来没进过模型上下文**。解压真实会话记录可证：`"文件下载优选规则"` 在会话里出现 40 次，**全部来自 AI 自己的调查操作**（读源码 / 推理 / 敲命令），`system/message`（真正送达模型的系统提示）里 **0 次**。
+
+两处 bug 叠加，且都被 `catch {}` 静默吞掉，所以表面完全正常：
+
+```js
+ctx.inject(['systemPrompt'], (sc) => {
+  ctx.effect(() => sc.section({ ... }));   // ✘ 错 1：sc 是内层作用域上下文，没有 section()
+});                                        // ✘ 错 2：section() 强制要求 order 为有限数字，未传
+```
+
+- **错 1**：`inject` 回调参数 `sc` 是内层作用域上下文，`section()` 挂在它自己的 `systemPrompt` 上，必须写 `sc.systemPrompt.section(...)`。写成 `sc.section` 会抛 `sc.section is not a function`。
+- **错 2**：`SystemPromptProjection.section()` 会校验 `order` 必须是有限数字，缺省会抛 `prompt section "gh-accel" order must be a finite number`。
+
+**只修错 1 不够**——修完仍会因为缺 `order` 抛错。现改为 `sc.systemPrompt.section({ name, order: getSectionOrder('MCP_SERVERS') + 1, text })`，并把静默 `catch {}` 换成 `console.warn`，避免同类问题再次潜伏。
+
+> 影响：修复前"自动走加速节点"只靠**工具描述诱导**；修复后系统提示会明确要求模型优先使用加速工具、不要用 curl/wget 直连。可靠性有实质提升。
+
+### 2. 新增 HF_ENDPOINT 与 npm registry 全局镜像
+
+此前 `setupGlobal()` 只配置 git 与 pip，HuggingFace / npm 命令不会自动走镜像。现补齐：
+
+| 通道 | 配置方式 |
+|---|---|
+| HuggingFace | `process.env.HF_ENDPOINT = https://hf-mirror.com` |
+| npm | 写用户级 `~/.npmrc` 的 `registry=https://registry.npmmirror.com` |
+
+> **为什么 HF 要写 `process.env` 而不是 `~/.bashrc`**：本环境的 bash 工具是 DSH 进程的子进程，且 `bash -c` **不读取任何 rc 文件**（`.bashrc` / `.profile` / `/etc/profile.d` 实测均无效）。因此必须直接写进本进程 `process.env`，后续由 DSH 派生的命令才能继承到。
+
+### 3. 修复 git insteadOf 重复累积
+
+早期实现每次启动都 `git config --global --add`，导致 `~/.gitconfig` 里同一条 `insteadOf` 反复累积（实测已出现 2 条）。现改为先 `--unset-all` 再写一条，幂等。
+
 ## v2.5.1 · 修复显式 mirror 对 host 型镜像静默失效
 
 **v2.5.1**：修复显式传 `mirror` 指向 **host 型镜像**（`registry.npmmirror.com`、`hf-mirror.com` 这类「替换 origin」的镜像）时**镜像静默不生效、悄悄回退直连**的问题。
@@ -51,7 +89,7 @@ https://registry.npmmirror.comhttps://registry.npmjs.org/typescript/...
 
 **v2.4.0**：修复「⚡ 加速器加速中…」状态小框不显示的问题——**`package.json` 的 `exports` 需暴露 `"./client"` 键**（此前误写为 `"./client.js"`，DSH 客户端模块加载器按 `exports["./client"]` 查找，找不到就把该插件客户端整体丢弃）；同时 `index.js` 声明 `sessionProjections` 注入（与 DSH 对客户端投影送达的要求一致）。此前 v2.3.0 已移除不存在的 `@deepseek-ai/dsh-client-runtime` 注入。
 
-> 更新记录：v2.1.0 首版为「⚫ 加速器加速下载中…」小胶囊；v2.2.0 重做为更醒目的圆角小框并换成「加速器加速中…」文案；v2.3.0 清理了幽灵注入；v2.4.0 修复 exports `"./client"` 缺失导致客户端模块不被加载的根本问题；v2.5.0 修复显式传 `mirror` 参数时 `ruleMatched` 为 `undefined` 触发 lossless JSON 校验失败的问题；v2.5.1 修复显式 `mirror` 对 host 型镜像（npmmirror/hf-mirror）被按 prefix 拼接而静默回退直连的问题，并新增 `mirrorStyle` 覆盖参数。
+> 更新记录：v2.1.0 首版为「⚫ 加速器加速下载中…」小胶囊；v2.2.0 重做为更醒目的圆角小框并换成「加速器加速中…」文案；v2.3.0 清理了幽灵注入；v2.4.0 修复 exports `"./client"` 缺失导致客户端模块不被加载的根本问题；v2.5.0 修复显式传 `mirror` 参数时 `ruleMatched` 为 `undefined` 触发 lossless JSON 校验失败的问题；v2.5.1 修复显式 `mirror` 对 host 型镜像（npmmirror/hf-mirror）被按 prefix 拼接而静默回退直连的问题，并新增 `mirrorStyle` 覆盖参数；v2.5.2 修复「文件下载优选规则」系统提示从未注入的问题（`sc.section` 用错内层上下文 + 缺 `section` 必需的 `order`，两处错误被静默吞掉），新增 HF_ENDPOINT / npm registry 全局镜像，并修复 git insteadOf 重复累积。
 
 ## 功能（5 个工具）
 
@@ -94,12 +132,14 @@ https://registry.npmmirror.comhttps://registry.npmjs.org/typescript/...
         mirrors: ['https://<你的gitlab镜像>']
     gitRewrite: true        # 是否配置 git 全局镜像改写
     pipMirror: 'https://pypi.tuna.tsinghua.edu.cn/simple'
+    hfMirror: 'https://hf-mirror.com'              # v2.5.2：写 process.env.HF_ENDPOINT；传 null 可关闭
+    npmMirror: 'https://registry.npmmirror.com'    # v2.5.2：写用户级 ~/.npmrc；传 null 可关闭
 ```
 
 ## 安装
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v2.5.1/gh-accel-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v2.5.2/gh-accel-plugin.tgz
 ```
 
 或「插件管理 → 添加插件」粘贴同一地址。
