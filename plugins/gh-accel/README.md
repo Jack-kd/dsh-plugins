@@ -2,11 +2,19 @@
 
 **gh-accel 与 dl-accel 合二为一**：一个插件同时负责 GitHub 与任意站点的下载/上传加速。
 
+## v2.5.0 · 修复显式指定 mirror 参数必失败
+
+**v2.5.0**：修复 `github_accel_download` / `url_accel_download` 在**显式传 `mirror` 参数**时必然报错 `returned invalid output: value is not lossless JSON` 的问题。
+
+根因在 `lib.js` 的 `summarize()`：`ruleMatched: rule ? rule.match : ''` —— 用 `mirror` 参数指定镜像时，`rule` 是构造出来的 `{ style, mirrors }`、**没有 `match` 字段**，于是 `ruleMatched` 变成 `undefined`。而工具 `output.schema` 声明该字段为 `string`，DSH 做 lossless JSON 校验时，`undefined` 字段在 `JSON.parse(JSON.stringify(...))` 后整个键会丢失 → 校验失败，**下载其实已经成功也会被判为无效**。
+
+改为 `ruleMatched: (rule && rule.match) || ''` 后，该字段稳定为字符串，校验通过。不传 `mirror`（走规则命中或直连）的路径本来就有 `match`，行为不变。
+
 ## v2.4.0 · 修复状态小框不显示（真正根因）
 
 **v2.4.0**：修复「⚡ 加速器加速中…」状态小框不显示的问题——**`package.json` 的 `exports` 需暴露 `"./client"` 键**（此前误写为 `"./client.js"`，DSH 客户端模块加载器按 `exports["./client"]` 查找，找不到就把该插件客户端整体丢弃）；同时 `index.js` 声明 `sessionProjections` 注入（与 DSH 对客户端投影送达的要求一致）。此前 v2.3.0 已移除不存在的 `@deepseek-ai/dsh-client-runtime` 注入。
 
-> 更新记录：v2.1.0 首版为「⚫ 加速器加速下载中…」小胶囊；v2.2.0 重做为更醒目的圆角小框并换成「加速器加速中…」文案；v2.3.0 清理了幽灵注入；v2.4.0 修复 exports `"./client"` 缺失导致客户端模块不被加载的根本问题。
+> 更新记录：v2.1.0 首版为「⚫ 加速器加速下载中…」小胶囊；v2.2.0 重做为更醒目的圆角小框并换成「加速器加速中…」文案；v2.3.0 清理了幽灵注入；v2.4.0 修复 exports `"./client"` 缺失导致客户端模块不被加载的根本问题；v2.5.0 修复显式传 `mirror` 参数时 `ruleMatched` 为 `undefined` 触发 lossless JSON 校验失败的问题。
 
 ## 功能（5 个工具）
 
@@ -54,10 +62,12 @@
 ## 安装
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v2.4.0/gh-accel-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v2.5.0/gh-accel-plugin.tgz
 ```
 
 或「插件管理 → 添加插件」粘贴同一地址。
+
+> **升级提示**：当前版本安装后不自动更新，升级需先卸载再装新版本。
 
 ## 安全说明
 

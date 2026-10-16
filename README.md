@@ -87,23 +87,27 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v0.1.9/dsh-client-ui-sk
 
 ### ▶ 加速器 · 下载加速（GitHub + 通用，合并版）
 
-> **gh-accel 与 dl-accel 合二为一（v2.4.0）**：一个插件同时负责 GitHub 与任意站点的下载/上传加速。`github_accel_download`（GitHub 文件，自动测速选最快镜像 + 8 线程分段）、`github_accel_clone`（加速 clone）、`github_accel_push`（push 自动绕过只读镜像）、`url_accel_download`（任意非 GitHub 站点，规则驱动镜像：HuggingFace hf-mirror / npm npmmirror，可配置扩展）、`url_accel_probe`（选路诊断）。装好后自动配置 git 全局镜像改写与 pip 清华源；GitHub 直链自动引导专用工具，国内服务器自动直连不绕路。实测比直连快数倍到数十倍。
+> **gh-accel 与 dl-accel 合二为一（v2.5.0）**：一个插件同时负责 GitHub 与任意站点的下载/上传加速。`github_accel_download`（GitHub 文件，自动测速选最快镜像 + 8 线程分段）、`github_accel_clone`（加速 clone）、`github_accel_push`（push 自动绕过只读镜像）、`url_accel_download`（任意非 GitHub 站点，规则驱动镜像：HuggingFace hf-mirror / npm npmmirror，可配置扩展）、`url_accel_probe`（选路诊断）。装好后自动配置 git 全局镜像改写与 pip 清华源；GitHub 直链自动引导专用工具，国内服务器自动直连不绕路。实测比直连快数倍到数十倍。
+>
+> **v2.5.0**：修复**显式传 `mirror` 参数时必然失败**的问题（`github_accel_download` / `url_accel_download` 报 `returned invalid output: value is not lossless JSON`）。根因是 `summarize()` 里 `ruleMatched: rule ? rule.match : ''` —— 用 `mirror` 指定镜像时 `rule` 没有 `match` 字段，该值变成 `undefined`，而 schema 声明为 `string`，lossless JSON 校验时该键丢失导致**下载成功也被判为无效**；现改为 `(rule && rule.match) || ''`。
 >
 > **v2.2.0+ / v2.4.0**：下载/克隆走加速节点时，输入框上方浮出「⚡ 加速器加速中…」圆角状态小框（呼吸光点 + 滑入动画，深浅主题自适应），直连或完成时自动隐藏；v2.4.0 修复该小框不显示的问题（`exports` 补上 `"./client"` 键 —— 此前误写为 `"./client.js"` 导致 DSH 客户端模块加载器整体丢弃该插件的客户端）。
 
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v2.4.0/gh-accel-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v2.5.0/gh-accel-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/v2.4.0/gh-accel-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/v2.5.0/gh-accel-plugin.tgz
 ```
 
 > 镜像（ghfast.top 等）是公共第三方服务、有失效风险；可在配置里用 `mirrors`/`rules` 自行增删站点规则。下载大文件建议指定绝对 `out` 路径。
+>
+> **升级提示**：当前版本安装后不自动更新，升级需先卸载再装新版本。
 
 ### ▶ rea-tools · REA 逆向工具链（一键安装 + 原生/APK 逆向）
 

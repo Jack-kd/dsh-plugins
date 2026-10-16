@@ -280,7 +280,10 @@ function summarize(out, viaUrl, size, t0, rule) {
     seconds: Math.round(seconds * 10) / 10,
     kbPerSec: Math.round(bytes / Math.max(seconds, 0.01) / 1024),
     via: viaUrl,
-    ruleMatched: rule ? rule.match : '',
+    // 用 mirror 参数显式指定镜像时，rule 是构造的 { style, mirrors }、没有 match 字段，
+    // 直接写 rule.match 会得到 undefined —— 而工具 output.schema 声明本字段为 string，
+    // DSH 的 lossless JSON 校验会因该键在序列化中丢失而判定整个下载结果无效。
+    ruleMatched: (rule && rule.match) || '',
   };
 }
 
