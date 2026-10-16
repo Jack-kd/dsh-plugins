@@ -77,6 +77,33 @@ function rewriteFor(url, base, style) {
   }
 }
 
+// 归一化镜像 base，便于比较（去尾部斜杠、统一小写 host）
+function normBase(base) {
+  try {
+    const u = new URL(String(base));
+    return (u.protocol + '//' + u.host + u.pathname).replace(/\/+$/, '');
+  } catch {
+    return String(base || '').replace(/\/+$/, '');
+  }
+}
+
+// 推断显式 mirror 的改写样式：
+//   1) 命中任一规则 mirrors 列表里的镜像 → 沿用该规则的 style（npmmirror/hf-mirror 等 host 型由此识别）；
+//   2) 否则回退 'prefix'（保持向后兼容：GitHub 代理类镜像历来按 prefix 拼接）。
+// 注意：显式 mirror 早期被硬编码为 prefix，导致 host 型镜像（如 registry.npmmirror.com）
+// 被拼成 "https://registry.npmmirror.comhttps://registry.npmjs.org/..." 这种非法主机名，
+// 选不到合格候选后静默回退直连——镜像未生效却不报错。
+export function inferMirrorStyle(url, base, rules) {
+  const target = normBase(base);
+  for (const r of rules || []) {
+    if (!r || !Array.isArray(r.mirrors)) continue;
+    for (const m of r.mirrors) {
+      if (normBase(m) === target) return r.style === 'host' ? 'host' : 'prefix';
+    }
+  }
+  return 'prefix';
+}
+
 export function matchRule(url, rules) {
   for (const r of rules || []) {
     if (!r || typeof r.match !== 'string' || !Array.isArray(r.mirrors) || !r.mirrors.length) continue;
@@ -210,11 +237,19 @@ export async function runDownload(url, {
   out,
   threads = 8,
   rules = DEFAULT_RULES,
-  mirror = null,   // 显式指定镜像 base，跳过规则全表
+  mirror = null,        // 显式指定镜像 base，跳过规则全表
+  mirrorStyle = null,   // 可选：显式指定 mirror 的改写样式 'prefix' | 'host'；缺省按已知规则自动识别
   signal,
 } = {}) {
   const t0 = Date.now();
-  const rule = mirror ? { style: 'prefix', mirrors: [mirror] } : matchRule(url, rules);
+  const rule = mirror
+    ? {
+        style: mirrorStyle === 'host' || mirrorStyle === 'prefix'
+          ? mirrorStyle
+          : inferMirrorStyle(url, mirror, rules),
+        mirrors: [mirror],
+      }
+    : matchRule(url, rules);
   const picked = await pick(url, { rule, directOnly: !rule });
   let size = picked.size;
   if (!size) size = await getSize(picked.u, signal);

@@ -87,7 +87,9 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v0.1.9/dsh-client-ui-sk
 
 ### ▶ 加速器 · 下载加速（GitHub + 通用，合并版）
 
-> **gh-accel 与 dl-accel 合二为一（v2.5.0）**：一个插件同时负责 GitHub 与任意站点的下载/上传加速。`github_accel_download`（GitHub 文件，自动测速选最快镜像 + 8 线程分段）、`github_accel_clone`（加速 clone）、`github_accel_push`（push 自动绕过只读镜像）、`url_accel_download`（任意非 GitHub 站点，规则驱动镜像：HuggingFace hf-mirror / npm npmmirror，可配置扩展）、`url_accel_probe`（选路诊断）。装好后自动配置 git 全局镜像改写与 pip 清华源；GitHub 直链自动引导专用工具，国内服务器自动直连不绕路。实测比直连快数倍到数十倍。
+> **gh-accel 与 dl-accel 合二为一（v2.5.1）**：一个插件同时负责 GitHub 与任意站点的下载/上传加速。`github_accel_download`（GitHub 文件，自动测速选最快镜像 + 8 线程分段）、`github_accel_clone`（加速 clone）、`github_accel_push`（push 自动绕过只读镜像）、`url_accel_download`（任意非 GitHub 站点，规则驱动镜像：HuggingFace hf-mirror / npm npmmirror，可配置扩展）、`url_accel_probe`（选路诊断）。装好后自动配置 git 全局镜像改写与 pip 清华源；GitHub 直链自动引导专用工具，国内服务器自动直连不绕路。实测比直连快数倍到数十倍。
+>
+> **v2.5.1**：修复显式传 `mirror` 指向 **host 型镜像**（`registry.npmmirror.com`、`hf-mirror.com` 这类「替换 origin」的镜像）时**镜像静默不生效、悄悄回退直连**的问题。此前显式 `mirror` 被硬编码为 prefix 拼接，会把 host 型镜像拼成 `https://registry.npmmirror.comhttps://registry.npmjs.org/...` 这种非法主机名，探针拿不到合格候选就回退 `direct(fallback)`——**不报错但镜像没用上**。现新增 `inferMirrorStyle()` 按内置规则自动识别样式，并提供 `mirrorStyle: 'prefix' | 'host'` 参数供强制覆盖；识别不到时仍回退 prefix，GitHub 代理类镜像用法完全兼容。
 >
 > **v2.5.0**：修复**显式传 `mirror` 参数时必然失败**的问题（`github_accel_download` / `url_accel_download` 报 `returned invalid output: value is not lossless JSON`）。根因是 `summarize()` 里 `ruleMatched: rule ? rule.match : ''` —— 用 `mirror` 指定镜像时 `rule` 没有 `match` 字段，该值变成 `undefined`，而 schema 声明为 `string`，lossless JSON 校验时该键丢失导致**下载成功也被判为无效**；现改为 `(rule && rule.match) || ''`。
 >
@@ -96,13 +98,13 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v0.1.9/dsh-client-ui-sk
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v2.5.0/gh-accel-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v2.5.1/gh-accel-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/v2.5.0/gh-accel-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/v2.5.1/gh-accel-plugin.tgz
 ```
 
 > 镜像（ghfast.top 等）是公共第三方服务、有失效风险；可在配置里用 `mirrors`/`rules` 自行增删站点规则。下载大文件建议指定绝对 `out` 路径。

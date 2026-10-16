@@ -2,6 +2,43 @@
 
 **gh-accel 与 dl-accel 合二为一**：一个插件同时负责 GitHub 与任意站点的下载/上传加速。
 
+## v2.5.1 · 修复显式 mirror 对 host 型镜像静默失效
+
+**v2.5.1**：修复显式传 `mirror` 指向 **host 型镜像**（`registry.npmmirror.com`、`hf-mirror.com` 这类「替换 origin」的镜像）时**镜像静默不生效、悄悄回退直连**的问题。
+
+### 现象
+
+```
+url_accel_download(url="https://registry.npmjs.org/typescript/-/typescript-5.6.3.tgz",
+                   mirror="https://registry.npmmirror.com")
+→ 返回「成功」，但路线显示 direct(fallback) —— 镜像根本没走，且不报任何错
+```
+
+### 根因
+
+`lib.js` 里显式 `mirror` 被**硬编码为 prefix 样式**：
+
+```js
+const rule = mirror ? { style: 'prefix', mirrors: [mirror] } : matchRule(url, rules);
+```
+
+prefix 样式是把镜像地址**直接拼在原 URL 前面**，只适用于 GitHub 代理类镜像（如 `ghfast.top/`）。对 host 型镜像会拼出非法 URL：
+
+```
+https://registry.npmmirror.comhttps://registry.npmjs.org/typescript/...
+                              ↑ 主机名被拼成了 "registry.npmmirror.comhttps:"
+```
+
+`pick()` 探针拿不到合格候选（带宽 0），于是回退 `direct(fallback)`——**不报错，但镜像未生效**，用户很难察觉。
+
+### 修复
+
+1. **样式自动识别**：新增 `inferMirrorStyle()`，显式 `mirror` 若命中内置/自定义规则里某个镜像（按归一化后比较，容忍尾斜杠），就沿用该规则的 `style`。于是 `npmmirror` / `hf-mirror` 会被正确识别为 host 型。
+2. **新增 `mirrorStyle` 参数**：需要强制指定时，可传 `mirrorStyle: 'prefix' | 'host'` 覆盖自动识别。
+3. 识别不到的镜像仍回退 `prefix`，**完全向后兼容** GitHub 代理类镜像的既有用法。
+
+> 附带效果：`mirror` 参数现在对 host 型镜像也能正常工作了，不必再依赖 `rules` 配置。
+
 ## v2.5.0 · 修复显式指定 mirror 参数必失败
 
 **v2.5.0**：修复 `github_accel_download` / `url_accel_download` 在**显式传 `mirror` 参数**时必然报错 `returned invalid output: value is not lossless JSON` 的问题。
@@ -14,7 +51,7 @@
 
 **v2.4.0**：修复「⚡ 加速器加速中…」状态小框不显示的问题——**`package.json` 的 `exports` 需暴露 `"./client"` 键**（此前误写为 `"./client.js"`，DSH 客户端模块加载器按 `exports["./client"]` 查找，找不到就把该插件客户端整体丢弃）；同时 `index.js` 声明 `sessionProjections` 注入（与 DSH 对客户端投影送达的要求一致）。此前 v2.3.0 已移除不存在的 `@deepseek-ai/dsh-client-runtime` 注入。
 
-> 更新记录：v2.1.0 首版为「⚫ 加速器加速下载中…」小胶囊；v2.2.0 重做为更醒目的圆角小框并换成「加速器加速中…」文案；v2.3.0 清理了幽灵注入；v2.4.0 修复 exports `"./client"` 缺失导致客户端模块不被加载的根本问题；v2.5.0 修复显式传 `mirror` 参数时 `ruleMatched` 为 `undefined` 触发 lossless JSON 校验失败的问题。
+> 更新记录：v2.1.0 首版为「⚫ 加速器加速下载中…」小胶囊；v2.2.0 重做为更醒目的圆角小框并换成「加速器加速中…」文案；v2.3.0 清理了幽灵注入；v2.4.0 修复 exports `"./client"` 缺失导致客户端模块不被加载的根本问题；v2.5.0 修复显式传 `mirror` 参数时 `ruleMatched` 为 `undefined` 触发 lossless JSON 校验失败的问题；v2.5.1 修复显式 `mirror` 对 host 型镜像（npmmirror/hf-mirror）被按 prefix 拼接而静默回退直连的问题，并新增 `mirrorStyle` 覆盖参数。
 
 ## 功能（5 个工具）
 
@@ -62,7 +99,7 @@
 ## 安装
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v2.5.0/gh-accel-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v2.5.1/gh-accel-plugin.tgz
 ```
 
 或「插件管理 → 添加插件」粘贴同一地址。

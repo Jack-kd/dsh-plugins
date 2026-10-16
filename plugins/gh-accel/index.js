@@ -170,7 +170,8 @@ export function apply(ctx, config = {}) {
         url: { type: 'string', description: 'GitHub 文件链接' },
         out: { type: 'string', description: '保存路径（建议绝对路径）' },
         threads: { type: 'integer', description: '并发分片数，默认 8', default: 8 },
-        mirror: { type: 'string', description: '可选：显式指定镜像 base，强制走该镜像' },
+        mirror: { type: 'string', description: '可选：显式指定镜像 base，强制走该镜像（样式自动识别）' },
+        mirrorStyle: { type: 'string', enum: ['prefix', 'host'], description: '可选：显式指定 mirror 改写样式。prefix=镜像地址拼在原 URL 前（GitHub 代理类）；host=只替换原 URL 的 origin（npmmirror/hf-mirror 类）。缺省按内置规则自动识别，识别不到用 prefix' },
       },
       required: ['url'],
       additionalProperties: false,
@@ -183,7 +184,7 @@ export function apply(ctx, config = {}) {
       if (exec.signal?.aborted) throw new Error('已取消');
       // threads 优先取调用参数，未传时回退插件配置（修复：之前参数被静默忽略）
       const t = clampInt(args.threads ?? threads, 8, 32);
-      return runDownload(url, { out: args.out || undefined, threads: t, rules, mirror: args.mirror || null, signal: exec.signal });
+      return runDownload(url, { out: args.out || undefined, threads: t, rules, mirror: args.mirror || null, mirrorStyle: args.mirrorStyle || null, signal: exec.signal });
     },
   }));
 
@@ -253,7 +254,8 @@ export function apply(ctx, config = {}) {
         url: { type: 'string', description: '任意非 GitHub 的 https 下载链接' },
         out: { type: 'string', description: '保存路径（建议绝对路径）' },
         threads: { type: 'integer', description: '并发分片数，默认 8', default: 8 },
-        mirror: { type: 'string', description: '可选：显式指定镜像 base，强制走该镜像' },
+        mirror: { type: 'string', description: '可选：显式指定镜像 base，强制走该镜像（样式自动识别，npmmirror/hf-mirror 等 host 型可直接传）' },
+        mirrorStyle: { type: 'string', enum: ['prefix', 'host'], description: '可选：显式指定 mirror 改写样式。prefix=镜像地址拼在原 URL 前；host=只替换原 URL 的 origin（npmmirror/hf-mirror 类）。缺省按内置规则自动识别，识别不到用 prefix' },
       },
       required: ['url'],
       additionalProperties: false,
@@ -269,7 +271,7 @@ export function apply(ctx, config = {}) {
       if (exec.signal?.aborted) throw new Error('已取消');
       // threads 优先取调用参数，未传时回退插件配置（修复：之前参数被静默忽略）
       const t = clampInt(args.threads ?? threads, 8, 32);
-      return runDownload(url, { out: args.out || undefined, threads: t, rules, mirror: args.mirror || null, signal: exec.signal });
+      return runDownload(url, { out: args.out || undefined, threads: t, rules, mirror: args.mirror || null, mirrorStyle: args.mirrorStyle || null, signal: exec.signal });
     },
   }));
 
