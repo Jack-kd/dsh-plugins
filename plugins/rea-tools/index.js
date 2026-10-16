@@ -292,29 +292,49 @@ export function apply(ctx) {
   const REA_TOOLS = ['rea_install', 'rea_doctor', 'rea_analyze', 'rea_function',
     'rea_inspect_apk', 'rea_inspect_apk_class', 'rea_inspect_apk_method', 'rea_status']
 
+  // 工具名 → 胶囊上的中文操作描述
+  const REA_LABELS = {
+    rea_install: '安装环境',
+    rea_doctor: '环境检查',
+    rea_analyze: '分析二进制',
+    rea_function: '反编译函数',
+    rea_inspect_apk: '分析 APK',
+    rea_inspect_apk_class: '分析 APK 类',
+    rea_inspect_apk_method: '反编译 APK 方法',
+    rea_status: '环境状态',
+  }
+
   const projection = {
     key: 'rea',
-    stateVersion: 2,
+    stateVersion: 3,
     stateSchema: anySchema,
     init: () => ({ calls: [] }),
     apply(state, event) {
       if (event.type === 'tool/call') {
         const { callId, name } = event.data || {}
         if (!REA_TOOLS.includes(name) || !callId) return state
-        if (Array.isArray(state.calls) && state.calls.includes(callId)) return state
-        return { calls: Array.isArray(state.calls) ? [...state.calls, callId] : [callId] }
+        const exists = Array.isArray(state.calls) && state.calls.some((c) => (typeof c === 'object' && c !== null) ? c.callId === callId : c === callId)
+        if (exists) return state
+        const entry = { callId, name }
+        return { calls: Array.isArray(state.calls) ? [...state.calls, entry] : [entry] }
       }
       if (event.type === 'tool/result') {
         const callId = event.data?.message?.toolCallId
-        if (!callId || !Array.isArray(state.calls) || !state.calls.includes(callId)) return state
-        return { calls: state.calls.filter((id) => id !== callId) }
+        if (!callId || !Array.isArray(state.calls)) return state
+        const has = state.calls.some((c) => (typeof c === 'object' && c !== null) ? c.callId === callId : c === callId)
+        if (!has) return state
+        return { calls: state.calls.filter((c) => (typeof c === 'object' && c !== null) ? c.callId !== callId : c !== callId) }
       }
       return state
     },
     wire: {
       viewSchema: anySchema,
       view: (state) => {
-        const reaCalled = (state && Array.isArray(state.calls)) ? state.calls.length > 0 : false
+        const calls = (state && Array.isArray(state.calls)) ? state.calls : []
+        const active = calls.length > 0
+        // 取最近一个正在执行的 rea 工具的中文操作描述
+        const last = calls.length ? calls[calls.length - 1] : null
+        const activeLabel = last ? (REA_LABELS[last.name] || last.name) : null
         return {
           tier: ui.tier,
           installing: ui.installing,
@@ -331,7 +351,8 @@ export function apply(ctx) {
           cacheMB: ui.cacheMB || 0,
           targetTier: ui.targetTier || null,
           doneStages: ui.doneStages || [],
-          active: reaCalled,
+          active,
+          activeLabel,
           sizes: SIZES,
         }
       },

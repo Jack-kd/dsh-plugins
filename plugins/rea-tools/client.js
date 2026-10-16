@@ -257,11 +257,12 @@
           // 仅在：安装中 / 有 rea 工具正在执行 时显示
           if (!installing && !active) return null
           if (active) {
-            // 工具执行中的「REA 逆向中…」胶囊：只显示文字 + 呼吸光点
+            // 工具执行中的胶囊：显示具体操作名 + 呼吸光点
+            const label = state.activeLabel || '逆向分析'
             return h('div', { className: S.pill },
               h('div', { className: S.pillCard, role: 'status', 'aria-live': 'polite', title: 'REA 逆向工具正在工作' },
                 h('span', { className: S.dot }),
-                h('span', null, 'REA 逆向中…')))
+                h('span', null, 'REA · ' + label + '…')))
           }
           const pct = Math.max(0, Math.min(100, state.percent || 0))
           return h('div', { className: S.pill },
