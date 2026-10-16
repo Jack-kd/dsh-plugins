@@ -287,36 +287,54 @@ export function apply(ctx) {
   let listeners = []
   const publish = () => { for (const fn of listeners) { try { fn() } catch { /* 忽略 */ } } }
 
+  // 事件驱动：任一个 rea_* 工具被调用 → 置「REA 逆向中」，返回后清除
+  // （与 gh-accel 同一套投影机制，由框架投喂 tool/call、tool/result 事件）
+  const REA_TOOLS = ['rea_install', 'rea_doctor', 'rea_analyze', 'rea_function',
+    'rea_inspect_apk', 'rea_inspect_apk_class', 'rea_inspect_apk_method', 'rea_status']
+
   const projection = {
     key: 'rea',
-    stateVersion: 1,
+    stateVersion: 2,
     stateSchema: anySchema,
-    init: () => ({ v: 0 }),
+    init: () => ({ calls: [] }),
     apply(state, event) {
-      // 状态由宿主主动 publish 驱动；这里只需保证投影存在且可订阅
-      if (event.type === 'turn/end') return state
+      if (event.type === 'tool/call') {
+        const { callId, name } = event.data || {}
+        if (!REA_TOOLS.includes(name) || !callId) return state
+        if (Array.isArray(state.calls) && state.calls.includes(callId)) return state
+        return { calls: Array.isArray(state.calls) ? [...state.calls, callId] : [callId] }
+      }
+      if (event.type === 'tool/result') {
+        const callId = event.data?.message?.toolCallId
+        if (!callId || !Array.isArray(state.calls) || !state.calls.includes(callId)) return state
+        return { calls: state.calls.filter((id) => id !== callId) }
+      }
       return state
     },
     wire: {
       viewSchema: anySchema,
-      view: () => ({
-        tier: ui.tier,
-        installing: ui.installing,
-        percent: ui.percent,
-        stageLabel: ui.stageLabel,
-        source: ui.source,
-        doneMB: ui.doneMB,
-        totalMB: ui.totalMB,
-        logTail: ui.logTail,
-        lastError: ui.lastError,
-        dismissed: ui.dismissed,
-        showDialog: ui.showDialog,
-        resumable: ui.resumable || false,
-        cacheMB: ui.cacheMB || 0,
-        targetTier: ui.targetTier || null,
-        doneStages: ui.doneStages || [],
-        sizes: SIZES,
-      }),
+      view: (state) => {
+        const reaCalled = (state && Array.isArray(state.calls)) ? state.calls.length > 0 : false
+        return {
+          tier: ui.tier,
+          installing: ui.installing,
+          percent: ui.percent,
+          stageLabel: ui.stageLabel,
+          source: ui.source,
+          doneMB: ui.doneMB,
+          totalMB: ui.totalMB,
+          logTail: ui.logTail,
+          lastError: ui.lastError,
+          dismissed: ui.dismissed,
+          showDialog: ui.showDialog,
+          resumable: ui.resumable || false,
+          cacheMB: ui.cacheMB || 0,
+          targetTier: ui.targetTier || null,
+          doneStages: ui.doneStages || [],
+          active: reaCalled,
+          sizes: SIZES,
+        }
+      },
     },
   }
 

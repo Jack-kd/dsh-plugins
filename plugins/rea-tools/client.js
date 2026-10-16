@@ -250,8 +250,19 @@
         }
 
         // ================= 进度胶囊 =================
-        function ProgressPill({ state, onOpen }) {
-          if (!state || !state.installing) return null
+        function ProgressPill({ state, onOpen, mode }) {
+          if (!state) return null
+          const installing = !!state.installing
+          const active = !!state.active
+          // 仅在：安装中 / 有 rea 工具正在执行 时显示
+          if (!installing && !active) return null
+          if (active) {
+            // 工具执行中的「REA 逆向中…」胶囊：只显示文字 + 呼吸光点
+            return h('div', { className: S.pill },
+              h('div', { className: S.pillCard, role: 'status', 'aria-live': 'polite', title: 'REA 逆向工具正在工作' },
+                h('span', { className: S.dot }),
+                h('span', null, 'REA 逆向中…')))
+          }
           const pct = Math.max(0, Math.min(100, state.percent || 0))
           return h('div', { className: S.pill },
             h('div', { className: S.pillCard, onClick: onOpen, role: 'status', 'aria-live': 'polite', title: '点击查看详情' },
@@ -449,8 +460,8 @@
           }, (props) => {
             const proj = props.useProjection ? props.useProjection('rea') : null
             const local = useStore(props.reaStore)
-            // 安装中显示进度胶囊；非安装中但用户手动打开了详情，也允许从胶囊进入
-            if (!proj || (!proj.installing && !local.dialog)) return null
+            // 显示条件：安装中 / 有 rea 工具正在执行 / 用户手动打开了详情
+            if (!proj || (!proj.installing && !proj.active && !local.dialog)) return null
             return h(ProgressPill, {
               state: proj,
               onOpen: () => props.reaStore.set({ dialog: true }),
