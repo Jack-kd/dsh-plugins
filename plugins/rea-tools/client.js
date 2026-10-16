@@ -265,6 +265,7 @@
         function SettingsRow({ state, onOpen, onInstallFull, onInstallBasic }) {
           const tier = state ? state.tier : 'none'
           const installing = state && state.installing
+          const [showDialog, setShowDialog] = React.useState(false)
           let status, desc, action = null
           if (installing) {
             status = '安装中 ' + (state.percent || 0) + '%'
@@ -272,7 +273,7 @@
             action = h('button', { className: S.btn + ' ' + S.btnGhost, onClick: onOpen }, '查看进度')
           } else if (tier === 'full') {
             status = '已就绪'
-            desc = '升级版本：APK 逆向 + 原生二进制逆向'
+            desc = '当前版本：APK 逆向 + 原生二进制逆向'
           } else if (tier === 'basic') {
             status = '初级版本'
             desc = '仅 APK 逆向。如需原生二进制逆向，可升级安装 Ghidra（+543 MB）'
@@ -284,9 +285,10 @@
           } else {
             status = '未安装'
             desc = '初级版本约 239 MB（APK 逆向）；升级版本约 784 MB（增加原生二进制逆向）'
-            action = h('button', { className: S.btn + ' ' + S.btnPrimary, onClick: onInstallBasic }, '安装环境')
+            // 未安装时点击整行弹出选择弹窗（初级/升级可选）
+            action = h('button', { className: S.btn + ' ' + S.btnPrimary, onClick: (e) => { e.stopPropagation(); setShowDialog(true) } }, '安装环境')
           }
-          return h('div', { className: S.settingRow },
+          return h('div', { className: S.settingRow, onClick: !installing && tier === 'none' ? () => setShowDialog(true) : undefined },
             h('div', { className: S.settingText },
               h('div', { className: S.settingName }, 'REA 逆向环境'),
               h('div', { className: S.settingDesc }, desc),
@@ -294,7 +296,17 @@
                 className: tier === 'full' && !installing ? S.ok : S.settingDesc,
                 style: { marginTop: '2px' },
               }, '当前状态：' + status)),
-            action)
+            action,
+            showDialog ? h(InstallDialogWrap, { state, onInstallFull, onInstallBasic, onClose: () => setShowDialog(false) }) : null)
+        }
+
+        // 设置页内弹出的安装选择弹窗（复用 InstallDialog，走设置行的动作）
+        function InstallDialogWrap({ state, onInstallFull, onInstallBasic, onClose }) {
+          return h(InstallDialog, {
+            state,
+            onInstall: (tier) => { onClose(); return tier === 'full' ? onInstallFull() : onInstallBasic() },
+            onDismiss: () => { onClose(); return Promise.resolve() },
+          })
         }
 
         // ================= 跨插槽共享的 UI 开关 =================
@@ -492,6 +504,7 @@
             const proj = props && props.useProjection ? props.useProjection('rea') : useReaProjection()
             return h(SettingsRow, {
               state: proj,
+              onOpen: () => {},
               onInstallBasic: () => props.reaActions.installBasic(),
               onInstallFull: () => props.reaActions.installFull(),
             })
