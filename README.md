@@ -163,6 +163,26 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v2.1.0/our-free-model-p
 
 > 装完重启一次 App。模型可用性按你自己这台机器的网络出口实测，切换网络后可在设置页「重新探测可用性」。升级需先卸载再装新版本。
 
+### ▶ dsh-plugin-wallpaper-engine · 壁纸引擎（把本地 Wallpaper Engine 壁纸放到对话背后）
+
+> 把本机 **Wallpaper Engine** 的场景、网页与视频壁纸渲染到 DSH 对话界面后方：Scene / Web 实时渲染（内置 WebWallGL 引擎）、Video 直接播放；配 iOS 风格液态玻璃、可调模糊 / 遮罩 / 描边 / 透明度、自定义字体与光标，贝壳整个设置窗口。不向 agent 注册任何工具、不注入提示文本，**不增加模型 token 开销**。需要宿主 DeepSeek Harness kernel ≥ 0.1.5（官方桌面版 / DSH Desktop ≥ 2.0.7）。
+>
+> **v1.3.3**：收录上游 dsh-wallpaper-engine 当前版本（原作者 elysia395，第三方收录）。
+
+**一条命令安装：**
+
+```bash
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v1.3.3/dsh-plugin-wallpaper-engine-plugin.tgz
+```
+
+**或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
+
+```
+https://github.com/Jack-kd/dsh-plugins/releases/download/v1.3.3/dsh-plugin-wallpaper-engine-plugin.tgz
+```
+
+> 装完需重启 Web，到 **设置 → Wallpaper Engine → 壁纸库** 选一张壁纸。前置是本地装有 Wallpaper Engine（Steam app 431960）。升级需先卸载再装新版本。
+
 <!--
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -201,7 +221,8 @@ dsh-plugins/
     ├── dsh-client-ui-skin-maid-atelier/ ← 女仆工坊皮肤（第三方）
     ├── gh-accel/            ← 下载加速（GitHub + 通用，合并版）
     ├── rea-tools/           ← REA 逆向工具链（安装 + 原生/APK 逆向）
-    └── our-free-model/      ← 免费模型（免登录免 Key，第三方收录）
+    ├── our-free-model/      ← 免费模型（免登录免 Key，第三方收录）
+    └── dsh-plugin-wallpaper-engine/ ← 壁纸引擎（本地 Wallpaper Engine 壁纸，第三方收录）
 ```
 
 ## ✏️ 添加新插件（作者）
