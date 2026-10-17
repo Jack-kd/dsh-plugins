@@ -147,13 +147,13 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v0.2.4/rea-tools-plugin
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v2.5.1/our-free-model-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/our-free-model-v2.5.1/our-free-model-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/v2.5.1/our-free-model-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/our-free-model-v2.5.1/our-free-model-plugin.tgz
 ```
 
 > 装完重启一次 App。模型可用性按你自己这台机器的网络出口实测，切换网络后可在设置页「重新探测可用性」。升级需先卸载再装新版本。
