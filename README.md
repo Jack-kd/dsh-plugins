@@ -7,7 +7,8 @@ Jack-kd 的 DeepSeek Harness（DSH）插件仓库 —— monorepo 结构：**一
 
 ## 📦 安装速查（看中哪个直接复制）
 
-### ▶ enter-newline · 回车换行
+<details>
+<summary><b>▶ enter-newline · 回车换行</b>　<code>v1.0.1</code></summary>
 
 > 把 DSH 输入框的回车键从「发送」改为「插入换行」；可在 **设置 → 通用设置 → 回车键** 切回「回车发送」。手机、电脑通用，不打断手机输入法。
 >
@@ -26,8 +27,10 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v1.0.1/enter-newline-pl
 ```
 
 > 装完无需重启，到输入框按一下回车即可验证（拼音输入法第一下是提交拼音，第二下才换行，属正常现象）。
+</details>
 
-### ▶ retry-count · 请求重试次数
+<details>
+<summary><b>▶ retry-count · 请求重试次数</b></summary>
 
 > 修改模型请求重试上限（默认 5）。在 **设置 → 通用设置 → 模型请求重试次数** 输入次数（如 10）点修改，或 **插件管理 → 请求重试次数 → 配置** 里改，立即生效。支持 deepseek 与 pi-ai（日日新）提供商。
 >
@@ -46,8 +49,10 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v2.0.8/retry-count-plug
 ```
 
 > 装完重启一次 App（让设置页入口出现）；之后改次数实时生效，无需再重启。卡顿重试提示会变成「已重试模型请求（1/10）」。
+</details>
 
-### ▶ chat-keeper-mobile · 对话管理（手机版）
+<details>
+<summary><b>▶ chat-keeper-mobile · 对话管理（手机版）</b></summary>
 
 > 跨工作区对话总表、正文搜索、批量归档、可恢复删除（回收站），以及会话「…」菜单里的「删除会话」。入口：**设置 → 对话管理**（基于 Sky-lll27 的 DSH-chat-keeper 客户端适配手机布局，Host 能力一致）。
 
@@ -64,8 +69,10 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v1.2.0/chat-keeper-mobi
 ```
 
 > 装完重启一次 App（工具 + 删除/恢复接口生效）。删除默认进回收站，可 `conversation_restore` 恢复；正在对话的会话删除会中断它（确认后执行）。
+</details>
 
-### ▶ dsh-client-ui-skin-maid-atelier · 深海女仆工坊皮肤
+<details>
+<summary><b>▶ dsh-client-ui-skin-maid-atelier · 深海女仆工坊皮肤</b></summary>
 
 > 鲸鱼娘女仆、深海蓝蕾丝与 Q 版侧栏 —— 把 DSH 变成女仆工坊（第三方皮肤，作者 Small-tailqwq，MIT 代码许可；美术素材保留版权、非商用、需署名，随包 LICENSE/NOTICE 保留）。
 >
@@ -84,8 +91,10 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v0.1.9/dsh-client-ui-sk
 ```
 
 > 皮肤类插件通常与官方/其他皮肤互斥；安装后若界面异常，先停用其他皮肤类插件。
+</details>
 
-### ▶ 加速器 · 下载加速（GitHub + 通用，合并版）
+<details>
+<summary><b>▶ 加速器 · 下载加速（GitHub + 通用，合并版）</b></summary>
 
 > **gh-accel 与 dl-accel 合二为一（v2.5.2）**：一个插件同时负责 GitHub 与任意站点的下载/上传加速。`github_accel_download`（GitHub 文件，自动测速选最快镜像 + 8 线程分段）、`github_accel_clone`（加速 clone）、`github_accel_push`（push 自动绕过只读镜像）、`url_accel_download`（任意非 GitHub 站点，规则驱动镜像：HuggingFace hf-mirror / npm npmmirror，可配置扩展）、`url_accel_probe`（选路诊断）。装好后自动配置 git 镜像改写、pip 清华源、**HF_ENDPOINT 与 npm registry 镜像**；GitHub 直链自动引导专用工具，国内服务器自动直连不绕路。实测比直连快数倍到数十倍。
 >
@@ -112,8 +121,10 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v2.5.2/gh-accel-plugin.
 > 镜像（ghfast.top 等）是公共第三方服务、有失效风险；可在配置里用 `mirrors`/`rules` 自行增删站点规则。下载大文件建议指定绝对 `out` 路径。
 >
 > **升级提示**：当前版本安装后不自动更新，升级需先卸载再装新版本。
+</details>
 
-### ▶ rea-tools · REA 逆向工具链（一键安装 + 原生/APK 逆向）
+<details>
+<summary><b>▶ rea-tools · REA 逆向工具链（一键安装 + 原生/APK 逆向）</b></summary>
 
 > 一键安装 **REA + Ghidra + JADX**（arm64 反编译器免编译、断点续传、zip 缓存、幂等），并提供 7 个逆向工具：`rea_install`（安装）、`rea_doctor`（就绪检查）、`rea_analyze`（二进制概览）、`rea_function`（函数伪代码，Ghidra）、`rea_inspect_apk` / `rea_inspect_apk_class` / `rea_inspect_apk_method`（APK 静态逆向，不运行目标代码）。已在 arm64 实测：NewPipe APK 7096 类，Manifest/类成员/方法反编译全部正常。
 >
@@ -142,8 +153,10 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v0.2.4/rea-tools-plugin
 ```
 
 > 首次打开自动弹窗选择版本后台安装；或在设置 → 通用 → REA 逆向环境 里安装；也可调 `rea_install` 工具。升级需先卸载再装新版本。
+</details>
 
-### ▶ our-free-model · 免费模型（免登录免 Key，多模型开箱即用）
+<details>
+<summary><b>▶ our-free-model · 免费模型（免登录免 Key，多模型开箱即用）</b></summary>
 
 > 装上即用，无需登录、注册或填 API Key：DeepSeek V4.1 Flash、Kimi K3 等前沿模型直接出现在输入框的 **Our Free Model** 分组，免费不限量（上游为 OpenCode Zen / Kilo 公共网关）。另含 Kilo 免费池、EAC 协付渠道（桌面端）、13 个账号渠道（CodeArts/CodeBuddy/Qoder/TRAE/Gemini 等）、76 家聚合提供商（自带 Key 接入）、Token 压缩、命名降级链（combo）、本地 OpenAI/Anthropic 兼容网关与局域网转发、数据看板与运行日志，九页毛玻璃设置界面（**设置 → Our Free Model**）。第三方插件，作者 Ebony-Vinyl，MIT。
 >
@@ -162,8 +175,10 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v2.1.0/our-free-model-p
 ```
 
 > 装完重启一次 App。模型可用性按你自己这台机器的网络出口实测，切换网络后可在设置页「重新探测可用性」。升级需先卸载再装新版本。
+</details>
 
-### ▶ dsh-plugin-wallpaper-engine · 壁纸引擎（把本地 Wallpaper Engine 壁纸放到对话背后）
+<details>
+<summary><b>▶ dsh-plugin-wallpaper-engine · 壁纸引擎（把本地 Wallpaper Engine 壁纸放到对话背后）</b></summary>
 
 > 把本机 **Wallpaper Engine** 的场景、网页与视频壁纸渲染到 DSH 对话界面后方：Scene / Web 实时渲染（内置 WebWallGL 引擎）、Video 直接播放；配 iOS 风格液态玻璃、可调模糊 / 遮罩 / 描边 / 透明度、自定义字体与光标，贝壳整个设置窗口。不向 agent 注册任何工具、不注入提示文本，**不增加模型 token 开销**。需要宿主 DeepSeek Harness kernel ≥ 0.1.5（官方桌面版 / DSH Desktop ≥ 2.0.7）。
 >
@@ -182,15 +197,17 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v1.3.3/dsh-plugin-wallp
 ```
 
 > 装完需重启 Web，到 **设置 → Wallpaper Engine → 壁纸库** 选一张壁纸。前置是本地装有 Wallpaper Engine（Steam app 431960）。升级需先卸载再装新版本。
+</details>
 
 <!--
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 新插件占位模板（作者添加新插件时复制下面这段，把「新插件名/一句话说明/安装地址」改掉，
-插到上面的速查列表里；不要放进 HTML 注释里，直接贴在列表末尾即可）：
+作为一条 <details> 折叠块插到上面的速查列表末尾，即最后一个 </details> 之后）：
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-### ▶ 新插件名 · 一句话说明
+<details>
+<summary><b>▶ 新插件名 · 一句话说明</b></summary>
 
 > 详细说明：它解决什么问题、在哪设置、有没有注意事项。
 
@@ -200,7 +217,12 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v1.3.3/dsh-plugin-wallp
 dsh plugin --profile web add <npm包名 或 https://.../xxx.tgz>
 ```
 
-**或者**：「插件管理 → 添加插件」粘贴：`<npm包名 或 https://.../xxx.tgz>`
+**或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
+
+```
+<npm包名 或 https://.../xxx.tgz>
+```
+</details>
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 -->
