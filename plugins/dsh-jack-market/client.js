@@ -1,0 +1,193 @@
+window.__ModuleLoader__.load({
+  id: 'dsh-jack-market',
+  factory(require) {
+    const React = require('react');
+    const { useState, useEffect, useCallback } = React;
+    const h = React.createElement;
+
+    const NS = 'dsh-jack-market';
+
+    /** Resolve an absolute API path against the page's base URI. */
+    function api(path) {
+      const relative = path.replace(/^\/+/, '');
+      if (typeof document === 'undefined') return `/${relative}`;
+      return new URL(relative, document.baseURI).pathname;
+    }
+
+    /** Fetch JSON from one of our routes. */
+    async function fetchJson(path) {
+      const res = await fetch(api(path), { cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    }
+
+    const cardStyle = {
+      background: 'var(--dsw-alias-bg-layer-1, #fff)',
+      border: '1px solid var(--dsw-alias-border-l1, #ddd)',
+      borderRadius: '8px',
+      padding: '12px 14px',
+      marginBottom: '10px',
+    };
+    const rowStyle = {
+      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+      gap: '12px',
+    };
+    const titleStyle = {
+      color: 'var(--dsw-alias-label-primary, #111)',
+      fontWeight: 600, fontSize: '14px', margin: 0,
+    };
+    const metaStyle = {
+      color: 'var(--dsw-alias-label-secondary, #666)',
+      fontSize: '12px', margin: '4px 0 0 0',
+    };
+    const btnBase = {
+      padding: '6px 14px', borderRadius: '6px', fontSize: '13px',
+      border: 'none', cursor: 'pointer', flexShrink: 0, whiteSpace: 'nowrap',
+    };
+
+    function PluginCard({ plugin, installedNames, busy, onInstall }) {
+      const installedLocal = installedNames.has(plugin.key);
+      const superseded = !!plugin.supersededBy;
+      const installable = plugin.installable !== false && !!plugin.url;
+      const version = plugin.version || plugin.tag || '';
+      let btnLabel = installedLocal ? '已安装' : (busy ? '安装中…' : '安装');
+      let btnDisabled = installedLocal || busy;
+      if (!installedLocal && superseded) { btnLabel = `已并入 ${plugin.supersededBy}`; btnDisabled = true; }
+      else if (!installedLocal && !superseded && !installable) { btnLabel = '未发布包'; btnDisabled = true; }
+      return h('div', { style: cardStyle },
+        h('div', { style: rowStyle },
+          h('div', { style: { minWidth: 0 } },
+            h('p', { style: titleStyle }, plugin.key,
+              version ? h('span', { style: { fontWeight: 400, color: 'var(--dsw-alias-label-secondary,#666)', marginLeft: 6, fontSize: 12 } }, `v${version}`) : null),
+            h('p', { style: metaStyle }, `${version ? `版本 v${version}` : ''}${plugin.publishedAt ? ` · ${new Date(plugin.publishedAt).toLocaleDateString()}` : ''}`),
+          ),
+          h('button', {
+            style: {
+              ...btnBase,
+              background: installedLocal
+                ? 'var(--dsw-alias-state-idle-primary, #ccc)'
+                : (superseded || !installable
+                  ? 'var(--dsw-alias-state-idle-primary,#ccc)'
+                  : (busy ? 'var(--dsw-alias-state-idle-primary,#ccc)' : 'var(--dsw-alias-brand-primary, #247bbf)')),
+              color: installedLocal || superseded || !installable ? 'var(--dsw-alias-label-secondary,#666)' : '#fff',
+            },
+            disabled: btnDisabled,
+            onClick: (e) => { e.preventDefault(); if (onInstall) onInstall(plugin); },
+          }, btnLabel),
+        ),
+        (superseded && !installedLocal) && h('p', {
+          style: { ...metaStyle, marginTop: 4, color: 'var(--dsw-alias-state-idle-primary,#888)' },
+        }, `此插件已并入 ${plugin.supersededBy}，无需单独安装；请安装 ${plugin.supersededBy} 即可。`),
+        plugin.note && h('div', {
+          style: { ...metaStyle, marginTop: 8, whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 90, overflow: 'hidden' },
+        }, plugin.note.slice(0, 500)),
+      );
+    }
+
+    function Market({ ownerProps }) {
+      const [plugins, setPlugins] = useState([]);
+      const [installedNames, setInstalledNames] = useState(new Set());
+      const [busyKey, setBusyKey] = useState(null);
+      const [error, setError] = useState('');
+      const [loading, setLoading] = useState(true);
+
+      const load = useCallback(async () => {
+        setLoading(true); setError('');
+        try {
+          const [list, inst] = await Promise.all([
+            fetchJson('/dsh-jack-market/plugins'),
+            fetchJson('/dsh-jack-market/installed'),
+          ]);
+          setPlugins(Array.isArray(list.plugins) ? list.plugins : []);
+          const deps = Array.isArray(inst.installed) ? inst.installed : [];
+          // Compare each plugin key against the dependency names (scoped names
+          // stripped to their final segment), e.g. "enter-newline" matches
+          // "@local/enter-newline".
+          setInstalledNames(new Set(deps.map((n) => n.replace(/^@[^/]+\//, ''))));
+        } catch (e) {
+          setError(String(e && e.message || e));
+        } finally {
+          setLoading(false);
+        }
+      }, []);
+
+      useEffect(() => { load(); }, [load]);
+
+      const install = useCallback(async (plugin) => {
+        setBusyKey(plugin.key); setError('');
+        try {
+          const res = await fetch(api('/dsh-jack-market/install'), {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ url: plugin.url, key: plugin.key, version: plugin.version }),
+          });
+          if (!res.ok) {
+            const j = await res.json().catch(() => ({}));
+            throw new Error((j && j.error) || `HTTP ${res.status}`);
+          }
+          // Poll the installed list until the package appears or timeout.
+          const deadline = Date.now() + 120000;
+          while (Date.now() < deadline) {
+            await new Promise((r) => setTimeout(r, 1500));
+            try {
+              const inst = await fetchJson('/dsh-jack-market/installed');
+              const deps = inst.installed || [];
+              // Installed once any dependency's unscoped name equals this key.
+              const hit = deps.some((n) => n.replace(/^@[^/]+\//, '') === plugin.key);
+              if (hit) break;
+            } catch { /* transient */ }
+          }
+          await load();
+        } catch (e) {
+          setError(String(e && e.message || e));
+        } finally {
+          setBusyKey(null);
+        }
+      }, [load]);
+
+      const rootStyle = { padding: '16px 4px', fontFamily: 'system-ui, sans-serif' };
+
+      return h('div', { style: rootStyle },
+        h('h3', {
+          style: { color: 'var(--dsw-alias-label-primary,#111)', margin: '0 0 4px 0', fontSize: '17px' },
+        }, 'Jack-kd 插件市场'),
+        h('p', { style: { ...metaStyle, fontSize: 12, marginBottom: 14 } },
+          `来自 GitHub 仓库 Jack-kd/dsh-plugins · ${plugins.length} 个插件`),
+        h('div', { style: { marginBottom: 12, display: 'flex', gap: 8 } },
+          h('button', {
+            style: { ...btnBase, background: 'var(--dsw-alias-bg-layer-2,#eee)', color: 'var(--dsw-alias-label-primary,#111)' },
+            onClick: () => load(),
+          }, '刷新')),
+        error && h('div', {
+          style: { color: 'var(--dsw-alias-state-error-primary,#c00)', fontSize: '13px', margin: '8px 0', padding: '8px', background: 'var(--dsw-alias-bg-layer-1,#fff)', borderRadius: 6 },
+        }, String(error)),
+        loading && h('p', { style: metaStyle }, '加载中…'),
+        !loading && plugins.length === 0 && !error && h('p', { style: metaStyle }, '没有可用的插件。'),
+        plugins.map((plugin) => h(PluginCard, { key: plugin.key, plugin, installedNames, busy: busyKey === plugin.key, onInstall: install })),
+        h('p', {
+          style: {
+            ...metaStyle, marginTop: 12, fontSize: 11, color: 'var(--dsw-alias-label-secondary,#999)',
+          },
+        }, '提示：安装后需重启 App 让插件生效（同官方的“升级需先卸载再装新版本”规则）。'),
+      );
+    }
+
+    return {
+      inject: ['slots'],
+      apply(ctx) {
+        const register = () => {
+          const off = ctx.slots.register({
+            name: 'settings.section',
+            id: NS,
+            order: 65,
+            label: () => 'Jack 插件市场',
+            locale: NS,
+            inject: () => ({ t: () => '' }),
+          }, (ownerProps = {}) => h(Market, { ownerProps }));
+          return typeof off === 'function' ? off : () => {};
+        };
+        ctx.slots.inject('settings.section', () => { register(); });
+      },
+    };
+  },
+});

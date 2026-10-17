@@ -202,6 +202,29 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v3.0.4/dsh-vision-route
 > ⬜ 仅 1 项可选前置：**`vision_html_screenshot`（HTML→截图）需要系统有 Chrome/Chromium**。它不受插件 `dsh install` 控制（系统级浏览器，Ubuntu 24 的 chromium 是 snap 壳），需手动装浏览器或在选单里指向已有浏览器；无浏览器时该单一工具不可用，其余视觉能力不受影响。
 </details>
 
+<details>
+<summary><b>▶ dsh-jack-market · 插件市场（本仓库一键装）</b>　<code>v0.3.0</code></summary>
+
+> 直接在 DSH 里浏览并一键安装本仓库的所有插件（类似内置的「插件市场」）。列出 `plugins/` 目录下当前发布的插件，自动识别已安装状态（按真实包名去 scope），点「安装」即调 `dsh plugin add` 安装；被合并的旧资源（如 `dl-accel` 已并入 `gh-accel`）会自动标注「已并入」，不再误导。
+>
+> 入口：**设置 → Jack 插件市场**。
+
+**一条命令安装：**
+
+```bash
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v0.3.0/dsh-jack-market-plugin.tgz
+```
+
+**或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
+
+```
+https://github.com/Jack-kd/dsh-plugins/releases/download/v0.3.0/dsh-jack-market-plugin.tgz
+```
+
+> 装完重启一次 App（让设置页入口出现）；之后打开 **设置 → Jack 插件市场** 即可浏览和安装本仓库的插件。
+> **升级提示**：升级需先卸载再装新版本。
+</details>
+
 <!--
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -248,6 +271,7 @@ dsh-plugins/
     ├── our-free-model/      ← 免费模型（免登录免 Key，第三方收录）
     ├── dsh-plugin-wallpaper-engine/ ← 壁纸引擎（本地 Wallpaper Engine 壁纸，第三方收录）
     └── dsh-vision-router/   ← 视觉路由（给 Agent 看图，免 Key，第三方收录）
+    └── dsh-jack-market/     ← 插件市场（本仓库一键安装）
 ```
 
 ## ✏️ 添加新插件（作者）
