@@ -197,6 +197,9 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v3.0.4/dsh-vision-route
 ```
 
 > ⚠️ 默认数据会出网（云端识图会发给供应商，新装默认开启 OVHcloud 免费兜底）；涉密/受限材料请先切到「严格纯本地」。装完重启一次 App。升级需先卸载再装新版本。
+>
+> 🟢 **开箱即用**：像素级视觉工具所需的 **sharp 已打包为固定依赖**，装完自动安装、无需额外配置；本地 OCR（`tesseract`）装上即走离线识别（README 收录版本为"完全体"打包）。
+> ⬜ 仅 1 项可选前置：**`vision_html_screenshot`（HTML→截图）需要系统有 Chrome/Chromium**。它不受插件 `dsh install` 控制（系统级浏览器，Ubuntu 24 的 chromium 是 snap 壳），需手动装浏览器或在选单里指向已有浏览器；无浏览器时该单一工具不可用，其余视觉能力不受影响。
 </details>
 
 <!--
