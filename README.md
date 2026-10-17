@@ -72,28 +72,6 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v1.2.0/chat-keeper-mobi
 </details>
 
 <details>
-<summary><b>▶ dsh-client-ui-skin-maid-atelier · 深海女仆工坊皮肤</b>　<code>v0.1.9</code></summary>
-
-> 鲸鱼娘女仆、深海蓝蕾丝与 Q 版侧栏 —— 把 DSH 变成女仆工坊（第三方皮肤，作者 Small-tailqwq，MIT 代码许可；美术素材保留版权、非商用、需署名，随包 LICENSE/NOTICE 保留）。
->
-> **v0.1.9 修复**：手机竖屏（≤700px）下「设置」打开后页面变暗、按钮点不动 —— 上一版曾在窄屏把设置弹窗挤成横排双栏（内容剩 124–178px）点不到；本仓库修复版改为单列纵向布局，按钮正常可点，桌面端保持皮肤原全屏样式。
-
-**一条命令安装：**
-
-```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v0.1.9/dsh-client-ui-skin-maid-atelier-plugin.tgz
-```
-
-**或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
-
-```
-https://github.com/Jack-kd/dsh-plugins/releases/download/v0.1.9/dsh-client-ui-skin-maid-atelier-plugin.tgz
-```
-
-> 皮肤类插件通常与官方/其他皮肤互斥；安装后若界面异常，先停用其他皮肤类插件。
-</details>
-
-<details>
 <summary><b>▶ 加速器 · 下载加速（GitHub + 通用，合并版）</b>　<code>v2.5.2</code></summary>
 
 > **gh-accel 与 dl-accel 合二为一（v2.5.2）**：一个插件同时负责 GitHub 与任意站点的下载/上传加速。`github_accel_download`（GitHub 文件，自动测速选最快镜像 + 8 线程分段）、`github_accel_clone`（加速 clone）、`github_accel_push`（push 自动绕过只读镜像）、`url_accel_download`（任意非 GitHub 站点，规则驱动镜像：HuggingFace hf-mirror / npm npmmirror，可配置扩展）、`url_accel_probe`（选路诊断）。装好后自动配置 git 镜像改写、pip 清华源、**HF_ENDPOINT 与 npm registry 镜像**；GitHub 直链自动引导专用工具，国内服务器自动直连不绕路。实测比直连快数倍到数十倍。
@@ -240,7 +218,6 @@ dsh-plugins/
     ├── enter-newline/       ← 回车换行插件
     ├── retry-count/         ← 请求重试次数插件
     ├── chat-keeper-mobile/          ← 对话管理（手机版）插件
-    ├── dsh-client-ui-skin-maid-atelier/ ← 女仆工坊皮肤（第三方）
     ├── gh-accel/            ← 下载加速（GitHub + 通用，合并版）
     ├── rea-tools/           ← REA 逆向工具链（安装 + 原生/APK 逆向）
     ├── our-free-model/      ← 免费模型（免登录免 Key，第三方收录）
