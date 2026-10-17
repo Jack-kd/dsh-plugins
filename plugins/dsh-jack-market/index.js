@@ -28,10 +28,39 @@ const API_PLUGINS_DIR = `https://api.github.com/repos/${OWNER}/${REPO}/contents/
  * install. Key = the superseded plugin's market key, value = the plugin whose
  * functionality absorbed it (the one users should install instead). The client
  * renders these as "已并入 <mergedInto>，无需单独安装" instead of "未安装".
+ *
+ * NOTE: a superseded key only shows up in the market if its directory still
+ * exists under plugins/. dl-accel 目录早已移除，市场不会再列出它，因此这里
+ * 保留空表以记录该机制（将来有真实并入时再填）。
  */
 const SUPERSEDED_BY = {
-  'dl-accel': 'gh-accel',
+  // 'dl-accel': 'gh-accel',
 };
+
+/** Extract a semantic version from a release tag. Accepts both the legacy
+ * bare tags (`v2.5.1`) and the new prefixed per-plugin tags
+ * (`<plugin>-v2.5.1`, e.g. `our-free-model-v2.5.1`). Returns just the
+ * version (e.g. `2.5.1`), or '' when it can't be parsed. */
+function versionFromTag(tag) {
+  const m = /(?:^|-|v)v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$/.exec(String(tag || '').trim());
+  return m ? m[1] : '';
+}
+
+/** In-memory TTL cache for GitHub API responses. The market is read from a
+ * browser settings page, which can refresh frequently; GitHub's anonymous
+ * rate limit is only 60 requests/hour, and each market load costs 2 calls
+ * (dir listing + releases). Caching for 60 s keeps us comfortably under the
+ * limit while still refreshing quickly enough to notice new releases. */
+const apiCache = new Map();
+const API_CACHE_TTL_MS = 60_000;
+async function cachedGhJson(url, controller) {
+  const cached = apiCache.get(url);
+  const now = Date.now();
+  if (cached && now - cached.at < API_CACHE_TTL_MS) return cached.value;
+  const value = await ghJson(url, controller);
+  apiCache.set(url, { at: now, value });
+  return value;
+}
 
 function resolveProfileName(ctx, config) {
   if (config && typeof config.profile === 'string' && config.profile.trim() !== '')
@@ -109,8 +138,8 @@ async function fetchPlugins() {
     // release asset yield an installable card; directory-only plugins (patch
     // not yet released) are shown but marked not-installable.
     const [dirEntries, releases] = await Promise.all([
-      ghJson(API_PLUGINS_DIR, controller),
-      ghJson(API_RELEASES, controller),
+      cachedGhJson(API_PLUGINS_DIR, controller),
+      cachedGhJson(API_RELEASES, controller),
     ]);
     const dirKeys = new Set(
       (Array.isArray(dirEntries) ? dirEntries : [])
@@ -132,7 +161,7 @@ async function fetchPlugins() {
         byKey.set(key, {
           key,
           name: asset.name,
-          version: String(release.tag_name || '').replace(/^v/, ''),
+          version: versionFromTag(release.tag_name),
           tag: release.tag_name,
           url: asset.browser_download_url,
           note: typeof release.body === 'string' ? release.body : '',

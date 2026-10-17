@@ -13,11 +13,17 @@ Jack-kd 的 DSH 插件市场：直接从本仓库浏览可安装的插件，并�
 ## 安装
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v0.3.2/dsh-jack-market-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.4.0/dsh-jack-market-plugin.tgz
 ```
 
 ## 使用
 
 装完重启一次 App（让设置页入口出现），然后打开 **设置 → Jack 插件市场**。列出插件点「安装」即可一键安装；已安装的插件显示「已安装」，若仓库有新版本则显示蓝色「更新」按钮，点击即升级。
+
+> **v0.4.0 修复**：
+> - 修复带前缀 tag（如 `our-free-model-v2.5.1`）时版本号解析出错，界面显示 `vour-free-model-v2.5.1` 且更新检测失效；
+> - 修复 `dsh-our-free-model` 等「包名与目录名不一致」的插件永远显示「未安装」；
+> - 移除失效的 `dl-accel` 已并入提示（该目录早已不在仓库）；
+> - 新增 GitHub API 60 秒缓存，避免匿名限流（60 次/小时）导致刷新失败。
 
 > **升级提示**：当前版本安装后不自动更新，升级需先卸载再装新版本。升级需先卸载当前版本，再装新版本。

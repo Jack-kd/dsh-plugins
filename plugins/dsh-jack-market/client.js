@@ -58,6 +58,21 @@ window.__ModuleLoader__.load({
       return 0;
     }
 
+    /** Normalize a dependency name to a set of candidate market keys, so
+     * "已安装" detection works even when the npm package name differs from
+     * the repo directory name. Handles three forms:
+     *   - npm scope:  "@local/gh-accel" → "gh-accel"
+     *   - dsh prefix: "dsh-our-free-model" → { "dsh-our-free-model", "our-free-model" }
+     *                (both kept: the market key may or may not carry dsh-)
+     *   - plain:      "dsh-jack-market" → { "dsh-jack-market", "jack-market" }
+     * A plugin is considered installed when any candidate equals the market key. */
+    function keyCandidates(name) {
+      const bare = String(name || '').replace(/^@[^/]+\//, '');
+      const set = new Set([bare]);
+      if (bare.startsWith('dsh-')) set.add(bare.slice(4));
+      return [...set];
+    }
+
     function PluginCard({ plugin, installedMap, busy, onInstall }) {
       const installedVersion = installedMap ? installedMap.get(plugin.key) : undefined;
       const installedLocal = installedVersion !== undefined;
@@ -127,7 +142,12 @@ window.__ModuleLoader__.load({
           for (const d of deps) {
             const name = typeof d === 'string' ? d : (d && d.name);
             const ver = typeof d === 'object' && d ? (d.version || '') : '';
-            if (typeof name === 'string') map.set(name.replace(/^@[^/]+\//, ''), ver || '');
+            if (typeof name === 'string') {
+              for (const cand of keyCandidates(name)) {
+                // Keep the highest version seen for the same candidate.
+                if (!map.has(cand) || compareVersions(ver, map.get(cand)) > 0) map.set(cand, ver || '');
+              }
+            }
           }
           setInstalledMap(map);
         } catch (e) {
@@ -158,10 +178,10 @@ window.__ModuleLoader__.load({
             try {
               const inst = await fetchJson('/dsh-jack-market/installed');
               const deps = inst.installed || [];
-              // Installed once any dependency's unscoped name equals this key.
+              // Installed once any dependency's key candidates include this key.
               const hit = deps.some((d) => {
                 const n = typeof d === 'string' ? d : (d && d.name);
-                return typeof n === 'string' && n.replace(/^@[^/]+\//, '') === plugin.key;
+                return typeof n === 'string' && keyCandidates(n).includes(plugin.key);
               });
               if (hit) break;
             } catch { /* transient */ }
