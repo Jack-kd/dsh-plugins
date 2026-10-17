@@ -265,8 +265,8 @@ export async function runDownload(url, {
   const reportProgress = (total) => {
     if (typeof onProgress !== 'function') return;
     const now = Date.now();
-    // 节流：至少 400ms 上报一次，避免高频调用拖慢下载
-    if (now - lastEmit < 400 && done < total) return;
+    // 节流：至少 200ms 上报一次，让胶囊进度/速度更顺滑（200ms 仍远低于下载压力）
+    if (now - lastEmit < 200 && done < total) return;
     lastEmit = now;
     const elapsed = Math.max(now - t0, 1) / 1000;
     const kbPerSec = Math.round(done / Math.max(elapsed, 0.01) / 1024);
@@ -288,7 +288,7 @@ export async function runDownload(url, {
   // 周期性进度上报：下载进行中每 400ms 发一次实时速度/进度
   // （onBytes 只累计字节，不触发上报；靠这个 interval 定时把 done 送给前端）
   const reporter = typeof onProgress === 'function'
-    ? setInterval(() => { if (size) reportProgress(size); }, 400)
+    ? setInterval(() => { if (size) reportProgress(size); }, 200)
     : null;
   const stopReporter = () => { if (reporter) clearInterval(reporter); };
 

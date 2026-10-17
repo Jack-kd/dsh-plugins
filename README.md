@@ -72,9 +72,11 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v1.2.0/chat-keeper-mobi
 </details>
 
 <details>
-<summary><b>▶ 加速器 · 下载加速（GitHub + 通用，合并版）</b>　<code>v2.6.0</code></summary>
+<summary><b>▶ 加速器 · 下载加速（GitHub + 通用，合并版）</b>　<code>v2.6.1</code></summary>
 
 > **gh-accel 与 dl-accel 合二为一（v2.6.0）**：一个插件同时负责 GitHub 与任意站点的下载/上传加速。`github_accel_download`（GitHub 文件，自动测速选最快镜像 + 8 线程分段）、`github_accel_clone`（加速 clone）、`github_accel_push`（push 自动绕过只读镜像）、`url_accel_download`（任意非 GitHub 站点，规则驱动镜像：HuggingFace hf-mirror / npm npmmirror，可配置扩展）、`url_accel_probe`（选路诊断）。装好后自动配置 git 镜像改写、pip 清华源、**HF_ENDPOINT 与 npm registry 镜像**；GitHub 直链自动引导专用工具，国内服务器自动直连不绕路。实测比直连快数倍到数十倍。
+>
+> **v2.6.1**：胶囊**刷新更顺滑**——进度上报 400ms→200ms、前端轮询 500ms→200ms，环形进度圈新增 rAF 平滑插值（每帧逼近目标百分比）并缩短过渡时间，转圈与「已下载/总量」动画不再一格一格跳，连续丝滑（此前上传 push 仍为「↑ 推送中…」不确定态）。
 >
 > **v2.6.0**：「⚡ 加速器加速中…」胶囊升级**实时速度/进度显示**——左侧新增**环形进度圈**（SVG，中心保留呼吸灯点，随下载进度转圈填满；拿不到总量时圈环走虚线旋转不确定态）；右侧改两行，次行小字号灰字显示数据。**下载态**（download/url_download/clone）：`↓ 12.4 MB/s · 10MB/30MB`（增速 + 「已完成/总量」分式，拿不到总量只显示速度）；**上传态**（push）：`↑ 推送中…`（git push 不吐逐字节进度，无真实速度/大小，只给方向）。host 新增 `/gh-accel/progress` 只读端点（`lib.js` 每 ~400ms 上报字节，胶囊每 500ms 轮询）。
 >
@@ -89,13 +91,13 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v1.2.0/chat-keeper-mobi
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v2.6.0/gh-accel-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v2.6.1/gh-accel-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/v2.6.0/gh-accel-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/v2.6.1/gh-accel-plugin.tgz
 ```
 
 > 镜像（ghfast.top 等）是公共第三方服务、有失效风险；可在配置里用 `mirrors`/`rules` 自行增删站点规则。下载大文件建议指定绝对 `out` 路径。

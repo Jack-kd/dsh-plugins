@@ -2,6 +2,20 @@
 
 **gh-accel 与 dl-accel 合二为一**：一个插件同时负责 GitHub 与任意站点的下载/上传加速。
 
+## v2.6.1 · 胶囊刷新更顺滑
+
+把胶囊的数据刷新与动画从"一格一格跳"改成**连续丝滑**：
+
+- **进度上报更快**：host `lib.js` 每 ~400ms → **200ms** 上报 `{doneB, totalB, kbPerSec}`。
+- **前端轮询更快**：胶囊每 500ms → **200ms** 轮询 `/gh-accel/progress`。
+- **环形圈平滑插值**：新增 rAF 每帧逼近目标百分比 + 过渡缩短到 `.12s linear`，转圈和「已下载/总量」进度动画连续不卡顿；不确定态（上传 / 无总量）仍走虚线旋转动画。
+- 数据链路不变（host 内存表 + 同源只读端点），节奏更快、画面更顺。
+
+> 安装：
+> ```bash
+> dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v2.6.1/gh-accel-plugin.tgz
+> ```
+
 ## v2.6.0 · 胶囊实时速度 / 进度显示（方案 A）
 
 输入框上方「⚡ 加速器加速中…」状态小框升级，下载时能看到**实时速度**和**下载进度**：
@@ -15,7 +29,7 @@
 
 > 安装：
 > ```bash
-> dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v2.6.0/gh-accel-plugin.tgz
+> dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v2.6.1/gh-accel-plugin.tgz
 > ```
 
 ## v2.5.2 · 修复系统提示从未注入 + 补全 HF/npm 全局镜像
@@ -105,7 +119,7 @@ https://registry.npmmirror.comhttps://registry.npmjs.org/typescript/...
 
 **v2.4.0**：修复「⚡ 加速器加速中…」状态小框不显示的问题——**`package.json` 的 `exports` 需暴露 `"./client"` 键**（此前误写为 `"./client.js"`，DSH 客户端模块加载器按 `exports["./client"]` 查找，找不到就把该插件客户端整体丢弃）；同时 `index.js` 声明 `sessionProjections` 注入（与 DSH 对客户端投影送达的要求一致）。此前 v2.3.0 已移除不存在的 `@deepseek-ai/dsh-client-runtime` 注入。
 
-> 更新记录：v2.6.0 胶囊新增实时速度/进度显示（左侧环形进度圈 + 中心呼吸灯，下载态显示「↓ 速度 · 已完成/总量」，上传 push 显示「↑ 推送中…」，host 新增 `/gh-accel/progress` 只读端点，lib.js 每 ~400ms 上报字节）；v2.1.0 首版为「⚫ 加速器加速下载中…」小胶囊；v2.2.0 重做为更醒目的圆角小框并换成「加速器加速中…」文案；v2.3.0 清理了幽灵注入；v2.4.0 修复 exports `"./client"` 缺失导致客户端模块不被加载的根本问题；v2.5.0 修复显式传 `mirror` 参数时 `ruleMatched` 为 `undefined` 触发 lossless JSON 校验失败的问题；v2.5.1 修复显式 `mirror` 对 host 型镜像（npmmirror/hf-mirror）被按 prefix 拼接而静默回退直连的问题，并新增 `mirrorStyle` 覆盖参数；v2.5.2 修复「文件下载优选规则」系统提示从未注入的问题（`sc.section` 用错内层上下文 + 缺 `section` 必需的 `order`，两处错误被静默吞掉），新增 HF_ENDPOINT / npm registry 全局镜像，并修复 git insteadOf 重复累积。
+> 更新记录：v2.6.1 胶囊刷新更顺滑（进度上报 400ms→200ms、前端轮询 500ms→200ms，环形圈 rAF 平滑插值 + 过渡缩短，转圈与分式进度动画连续丝滑）；v2.6.0 胶囊新增实时速度/进度显示（左侧环形进度圈 + 中心呼吸灯，下载态显示「↓ 速度 · 已完成/总量」，上传 push 显示「↑ 推送中…」，host 新增 `/gh-accel/progress` 只读端点，lib.js 每 ~400ms 上报字节）；v2.1.0 首版为「⚫ 加速器加速下载中…」小胶囊；v2.2.0 重做为更醒目的圆角小框并换成「加速器加速中…」文案；v2.3.0 清理了幽灵注入；v2.4.0 修复 exports `"./client"` 缺失导致客户端模块不被加载的根本问题；v2.5.0 修复显式传 `mirror` 参数时 `ruleMatched` 为 `undefined` 触发 lossless JSON 校验失败的问题；v2.5.1 修复显式 `mirror` 对 host 型镜像（npmmirror/hf-mirror）被按 prefix 拼接而静默回退直连的问题，并新增 `mirrorStyle` 覆盖参数；v2.5.2 修复「文件下载优选规则」系统提示从未注入的问题（`sc.section` 用错内层上下文 + 缺 `section` 必需的 `order`，两处错误被静默吞掉），新增 HF_ENDPOINT / npm registry 全局镜像，并修复 git insteadOf 重复累积。
 
 ## 功能（5 个工具）
 
@@ -155,7 +169,7 @@ https://registry.npmmirror.comhttps://registry.npmjs.org/typescript/...
 ## 安装
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v2.6.0/gh-accel-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v2.6.1/gh-accel-plugin.tgz
 ```
 
 或「插件管理 → 添加插件」粘贴同一地址。

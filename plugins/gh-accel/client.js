@@ -6,7 +6,7 @@
 // v2.3.0：新增实时速度/进度显示——左侧环形进度圈（中心呼吸灯点），右侧两行
 // 文案：首行「⚡ 加速器加速中…」，次行小字号灰字显示速度与分式进度
 // （下载态：↓ 速度 · 已完成/总量；拿不到总量时只显示速度；上传态：↑ 推送中…）。
-// 速度/进度数据来自 host 端 /gh-accel/progress 只读端点（每 500ms 轮询）。
+// 速度/进度数据来自 host 端 /gh-accel/progress 只读端点（每 200ms 轮询，更顺滑）。
 
 (() => {
   try {
@@ -82,6 +82,24 @@
 
           // 实时速度/进度：轮询 host /gh-accel/progress
           const [progress, setProgress] = React.useState(null);
+          // 环形圈平滑插值：真实进度每 200ms 才更新一格，用 rAF 每帧逼近目标，
+          // 让「转圈 + 已下载/总量」视觉上连续丝滑，不看数据更新节奏。
+          const [dispPct, setDispPct] = React.useState(0);
+          React.useEffect(() => {
+            if (!active || !progress || !(progress.totalB > 0)) { setDispPct(0); return; }
+            const target = Math.min(100, (progress.doneB / progress.totalB) * 100);
+            let raf = 0;
+            const step = () => {
+              setDispPct((p) => {
+                const diff = target - p;
+                if (Math.abs(diff) < 0.05) return target;
+                return p + diff * 0.35;
+              });
+              raf = requestAnimationFrame(step);
+            };
+            raf = requestAnimationFrame(step);
+            return () => cancelAnimationFrame(raf);
+          }, [active, progress]);
           React.useEffect(() => {
             if (!active) { setProgress(null); return; }
             let stopped = false;
@@ -105,7 +123,7 @@
               } finally {
                 if (!stopped) {
                   setProgress(next);
-                  timer = setTimeout(poll, 500);
+                  timer = setTimeout(poll, 200);
                 }
               }
             };
@@ -117,7 +135,8 @@
           if (!active) return null;
 
           const hasProgress = Boolean(progress && progress.totalB > 0);
-          const pct = hasProgress ? Math.min(100, (progress.doneB / progress.totalB) * 100) : 0;
+          // 用 rAF 插值后的平滑比例画环（视觉效果丝滑；无总量时认为无确定进度）
+          const pct = hasProgress ? Math.min(100, dispPct) : 0;
           const ringDash = (pct / 100) * RING_CIRCUM;
 
           let line2 = null;
@@ -169,7 +188,7 @@
                     strokeDasharray: hasProgress ? `${RING_CIRCUM} ${RING_CIRCUM}` : '2 4',
                     strokeDashoffset: hasProgress ? RING_CIRCUM - ringDash : 0,
                     style: hasProgress
-                      ? { transition: 'stroke-dashoffset .4s ease' }
+                      ? { transition: 'stroke-dashoffset .12s linear' }
                       : { animation: 'ghAccelSpin 1.1s linear infinite', transformOrigin: 'center' },
                   })),
                 h('span', {
