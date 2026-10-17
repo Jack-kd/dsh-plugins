@@ -5,7 +5,7 @@ Jack-kd 的 DeepSeek Harness（DSH）插件仓库 —— monorepo 结构：**一
 
 ---
 
-## 📦 安装速查（看中哪个直接复制）
+## 📦 安装速查（点击展开插件详情）
 
 <details>
 <summary><b>▶ enter-newline · 回车换行</b>　<code>v1.0.1</code></summary>
