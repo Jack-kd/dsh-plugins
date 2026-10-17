@@ -177,6 +177,28 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v1.3.3/dsh-plugin-wallp
 > 装完需重启 Web，到 **设置 → Wallpaper Engine → 壁纸库** 选一张壁纸。前置是本地装有 Wallpaper Engine（Steam app 431960）。升级需先卸载再装新版本。
 </details>
 
+<details>
+<summary><b>▶ dsh-vision-router · 视觉路由（给 Agent 看图）</b>　<code>v3.0.4</code></summary>
+
+> 给 DeepSeek Harness 的**纯文本 Agent 一双眼睛**：内置免费视觉链 + 14 个深度视觉工具（`vision_describe` / `vision_detect` / `vision_ocr` / `vision_crop` / `vision_ground` / `vision_pixel_diff` / `vision_trace` / `vision_html_screenshot` / `vision_long_screenshot_ocr` 等），开箱免费、免 Key、无需 Python。想看图时开启输入框旁「👁 识图」，图片按普通工具调用轮处理。第三方插件，作者 ysr666，MIT。
+>
+> **v3.0.4**：通过 DSH `0.2.1-alpha.5` 的 Host/Chromium 精确校验；CI 供应链 Action 刷新。支持远程视觉 Provider（含默认免费 OVHcloud 兜底），可配严格纯本地模式。
+
+**一条命令安装：**
+
+```bash
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v3.0.4/dsh-vision-router-plugin.tgz
+```
+
+**或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
+
+```
+https://github.com/Jack-kd/dsh-plugins/releases/download/v3.0.4/dsh-vision-router-plugin.tgz
+```
+
+> ⚠️ 默认数据会出网（云端识图会发给供应商，新装默认开启 OVHcloud 免费兜底）；涉密/受限材料请先切到「严格纯本地」。装完重启一次 App。升级需先卸载再装新版本。
+</details>
+
 <!--
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -221,7 +243,8 @@ dsh-plugins/
     ├── gh-accel/            ← 下载加速（GitHub + 通用，合并版）
     ├── rea-tools/           ← REA 逆向工具链（安装 + 原生/APK 逆向）
     ├── our-free-model/      ← 免费模型（免登录免 Key，第三方收录）
-    └── dsh-plugin-wallpaper-engine/ ← 壁纸引擎（本地 Wallpaper Engine 壁纸，第三方收录）
+    ├── dsh-plugin-wallpaper-engine/ ← 壁纸引擎（本地 Wallpaper Engine 壁纸，第三方收录）
+    └── dsh-vision-router/   ← 视觉路由（给 Agent 看图，免 Key，第三方收录）
 ```
 
 ## ✏️ 添加新插件（作者）
