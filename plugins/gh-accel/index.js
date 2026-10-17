@@ -15,7 +15,29 @@ import {
   DEFAULT_RULES,
 } from './lib.js';
 
-export const inject = ['tools', 'sessionProjections'];
+export const inject = ['tools', 'sessionProjections', 'webServer'];
+
+// ── 共享实时下载/上传进度存储 ─────────────────────────────────────────────
+// lib.js 的 runDownload 在下载中通过 onProgress 回调写入此表；胶囊轮询
+// /gh-accel/progress 只读端点读取。key 为 callId（工具调用），避免多下载并发串扰。
+// 只保留最近 10 个任务，防内存无限增长。
+export const progressStore = new Map();
+export function setProgress(key, value) {
+  if (key == null) return;
+  progressStore.set(String(key), { ...value, ts: Date.now() });
+  if (progressStore.size > 10) {
+    const oldest = progressStore.keys().next().value;
+    progressStore.delete(oldest);
+  }
+}
+export function getProgress() {
+  const now = Date.now();
+  for (const [k, v] of progressStore) {
+    // 清除 10 秒以上没有更新的陈旧记录（任务早已结束）
+    if (now - (v.ts || 0) > 10_000) progressStore.delete(k);
+  }
+  return [...progressStore.entries()].map(([k, v]) => ({ key: k, ...v }));
+}
 
 function textResult(text) {
   return [{ type: 'text', text }];
@@ -93,43 +115,47 @@ export function apply(ctx, config = {}) {
     rules = rules.map((r) => (/github/.test(r.match) ? { ...r, mirrors: config.mirrors } : r));
   }
 
-  // ── 下载中状态投影：会话事件折叠出「正走加速节点下载」状态 ─────────────
-  // tool/call 提交时，若该下载会走加速节点（命中镜像规则，或显式指定 mirror），
-  // 把 callId 记为活动；tool/result 完成、turn/end 兜底时清除。
-  // 客户端状态条只在 active 时渲染 —— 空闲/直连/下载完成一律不显示。
+  // ── 下载/上传中状态投影：会话事件折叠出「正走加速节点」状态 ─────────────
+  // tool/call 提交时，若该下载/上传会走加速节点，把 callId 记为活动（含方向
+  // download/upload）；tool/result 完成、turn/end 兜底时清除。
+  // 客户端状态条只在 active 时渲染 —— 空闲/直连/完成一律不显示。
   const DOWNLOAD_TOOLS = new Set(['github_accel_download', 'url_accel_download', 'github_accel_clone']);
+  const UPLOAD_TOOLS = new Set(['github_accel_push']);
   const anySchema = { parse: (value) => value };
   const ghAccelProjection = {
     key: 'gh-accel',
-    stateVersion: 1,
+    stateVersion: 2,
     stateSchema: anySchema,
-    init: () => ({ calls: [] }),
+    init: () => ({ calls: [] }), // calls: [{ callId, dir }]
     apply(state, event) {
       if (event.type === 'tool/call') {
         const { callId, name, arguments: argsText } = event.data;
-        if (!DOWNLOAD_TOOLS.has(name)) return state;
-        let url = '';
-        let mirror = null;
-        try {
-          const parsed = JSON.parse(argsText || '{}');
-          url = String(parsed.url || '');
-          mirror = parsed.mirror || null;
-        } catch {
-          return state;
+        const dir = DOWNLOAD_TOOLS.has(name) ? 'download' : (UPLOAD_TOOLS.has(name) ? 'upload' : null);
+        if (!dir) return state;
+        // 下载需确认走加速节点（显式 mirror 或命中镜像规则）才计入；
+        // 直连（国内不绕路）不显示加速胶囊。上传(push)一律计入。
+        if (dir === 'download') {
+          let url = '';
+          let mirror = null;
+          try {
+            const parsed = JSON.parse(argsText || '{}');
+            url = String(parsed.url || '');
+            mirror = parsed.mirror || null;
+          } catch { return state; }
+          let throughNode = Boolean(mirror);
+          if (!throughNode && url) {
+            try { throughNode = Boolean(matchRule(url, rules)); } catch { throughNode = false; }
+          }
+          if (!throughNode) return state;
         }
-        // 走加速节点 = 显式指定 mirror，或 URL 命中内置/自定义镜像规则
-        let throughNode = Boolean(mirror);
-        if (!throughNode && url) {
-          try { throughNode = Boolean(matchRule(url, rules)); } catch { /* 规则异常视为不走节点 */ }
-        }
-        if (!throughNode) return state;
-        if (state.calls.includes(callId)) return state;
-        return { calls: [...state.calls, callId] };
+        if (state.calls.some((c) => c.callId === callId)) return state;
+        return { calls: [...state.calls, { callId, dir }] };
       }
       if (event.type === 'tool/result') {
         const callId = event.data?.message?.toolCallId;
-        if (!callId || !state.calls.includes(callId)) return state;
-        return { calls: state.calls.filter((id) => id !== callId) };
+        if (!callId) return state;
+        const next = state.calls.filter((c) => c.callId !== callId);
+        return next.length === state.calls.length ? state : { calls: next };
       }
       if (event.type === 'turn/end') {
         return state.calls.length ? { calls: [] } : state;
@@ -138,7 +164,12 @@ export function apply(ctx, config = {}) {
     },
     wire: {
       viewSchema: anySchema,
-      view: (state) => ({ active: state.calls.length > 0, count: state.calls.length }),
+      view: (state) => ({
+        active: state.calls.length > 0,
+        count: state.calls.length,
+        // 下载与上传并存时，方向跟随最近一次活动调用
+        direction: state.calls.length ? state.calls[state.calls.length - 1].dir : null,
+      }),
     },
   };
   const registerGhAccelProjection = (p) => {
@@ -155,6 +186,34 @@ export function apply(ctx, config = {}) {
       if (p !== undefined) registerGhAccelProjection(p);
     });
   }
+
+  // ── 实时进度只读端点：胶囊每 500ms 轮询此接口取速度/进度 ────────────────
+  ctx.inject(['webServer'], (ws) => {
+    if (!ws || typeof ws.webServer !== 'object') return;
+    ctx.effect(() => ws.webServer.register({
+      kind: 'exact',
+      path: '/gh-accel/progress',
+      handler: (request, response) => {
+        if (request.method !== 'GET') { response.writeHead(405, { allow: 'GET' }); response.end(); return; }
+        const origin = request.headers.origin;
+        if (origin !== undefined) {
+          const hostHeader = (request.headers.host || '').replace(/[^A-Za-z0-9.:[\]]/g, '');
+          try {
+            const o = new URL(origin);
+            if (o.host !== hostHeader) { response.writeHead(403); response.end('forbidden'); return; }
+          } catch { response.writeHead(403); response.end('forbidden'); return; }
+        }
+        try {
+          const items = getProgress();
+          response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+          response.end(JSON.stringify({ active: items.length > 0, items }));
+        } catch (e) {
+          response.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
+          response.end(JSON.stringify({ error: String((e && e.message) || e) }));
+        }
+      },
+    }));
+  });
 
   ctx.effect(() => ctx.tools.register({
     name: 'github_accel_download',
@@ -184,7 +243,9 @@ export function apply(ctx, config = {}) {
       if (exec.signal?.aborted) throw new Error('已取消');
       // threads 优先取调用参数，未传时回退插件配置（修复：之前参数被静默忽略）
       const t = clampInt(args.threads ?? threads, 8, 32);
-      return runDownload(url, { out: args.out || undefined, threads: t, rules, mirror: args.mirror || null, mirrorStyle: args.mirrorStyle || null, signal: exec.signal });
+      const key = exec.callId || `dl-${Date.now()}`;
+      setProgress(key, { dir: 'download', doneB: 0, totalB: 0, kbPerSec: 0 });
+      return runDownload(url, { out: args.out || undefined, threads: t, rules, mirror: args.mirror || null, mirrorStyle: args.mirrorStyle || null, signal: exec.signal, onProgress: (p) => setProgress(key, { dir: 'download', ...p }) });
     },
   }));
 
@@ -271,7 +332,9 @@ export function apply(ctx, config = {}) {
       if (exec.signal?.aborted) throw new Error('已取消');
       // threads 优先取调用参数，未传时回退插件配置（修复：之前参数被静默忽略）
       const t = clampInt(args.threads ?? threads, 8, 32);
-      return runDownload(url, { out: args.out || undefined, threads: t, rules, mirror: args.mirror || null, mirrorStyle: args.mirrorStyle || null, signal: exec.signal });
+      const key = exec.callId || `dl-${Date.now()}`;
+      setProgress(key, { dir: 'download', doneB: 0, totalB: 0, kbPerSec: 0 });
+      return runDownload(url, { out: args.out || undefined, threads: t, rules, mirror: args.mirror || null, mirrorStyle: args.mirrorStyle || null, signal: exec.signal, onProgress: (p) => setProgress(key, { dir: 'download', ...p }) });
     },
   }));
 

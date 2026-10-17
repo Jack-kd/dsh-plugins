@@ -14,6 +14,7 @@ import https from 'node:https';
 import http from 'node:http';
 import { execFile } from 'node:child_process';
 import { pipeline } from 'node:stream/promises';
+import { Transform } from 'node:stream';
 
 export const UA = 'gh-accel/2.0.0 (+https://github.com)';
 
@@ -201,7 +202,17 @@ function delay(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-async function downloadRange(url, start, end, dest, { retries = 2, signal }) {
+// 字节统计 Transform：每流过 chunk 就回调累计已下载字节（用于实时速度/进度）
+function countingStream(onBytes) {
+  return new Transform({
+    transform(chunk, _enc, cb) {
+      try { onBytes(chunk.length); } catch { /* 上报失败不影响下载 */ }
+      cb(null, chunk);
+    },
+  });
+}
+
+async function downloadRange(url, start, end, dest, { retries = 2, signal, onBytes }) {
   for (let i = 0; i <= retries; i++) {
     try {
       const headers = end == null ? {} : { Range: `bytes=${start}-${end}` };
@@ -210,7 +221,12 @@ async function downloadRange(url, start, end, dest, { retries = 2, signal }) {
         stream.resume();
         throw new Error(`HTTP ${status}`);
       }
-      await pipeline(stream, fs.createWriteStream(dest));
+      // 无进度回调时保持原行为（纯管线直写）
+      if (typeof onBytes !== 'function') {
+        await pipeline(stream, fs.createWriteStream(dest));
+        return true;
+      }
+      await pipeline(stream, countingStream(onBytes), fs.createWriteStream(dest));
       return true;
     } catch {
       if (i === retries) return false;
@@ -240,8 +256,23 @@ export async function runDownload(url, {
   mirror = null,        // 显式指定镜像 base，跳过规则全表
   mirrorStyle = null,   // 可选：显式指定 mirror 的改写样式 'prefix' | 'host'；缺省按已知规则自动识别
   signal,
+  onProgress,           // 可选：进度上报回调 ({ doneB, totalB, kbPerSec })
 } = {}) {
   const t0 = Date.now();
+  // 已下载字节累计（多线程分片并发时各分片 onBytes 并发回调，用闭包共享计数）
+  let done = 0;
+  let lastEmit = 0;
+  const reportProgress = (total) => {
+    if (typeof onProgress !== 'function') return;
+    const now = Date.now();
+    // 节流：至少 400ms 上报一次，避免高频调用拖慢下载
+    if (now - lastEmit < 400 && done < total) return;
+    lastEmit = now;
+    const elapsed = Math.max(now - t0, 1) / 1000;
+    const kbPerSec = Math.round(done / Math.max(elapsed, 0.01) / 1024);
+    onProgress({ doneB: done, totalB: total, kbPerSec });
+  };
+  const sumBytes = (n) => { done += n; };
   const rule = mirror
     ? {
         style: mirrorStyle === 'host' || mirrorStyle === 'prefix'
@@ -254,21 +285,33 @@ export async function runDownload(url, {
   let size = picked.size;
   if (!size) size = await getSize(picked.u, signal);
 
+  // 周期性进度上报：下载进行中每 400ms 发一次实时速度/进度
+  // （onBytes 只累计字节，不触发上报；靠这个 interval 定时把 done 送给前端）
+  const reporter = typeof onProgress === 'function'
+    ? setInterval(() => { if (size) reportProgress(size); }, 400)
+    : null;
+  const stopReporter = () => { if (reporter) clearInterval(reporter); };
+
   if (!size || size <= SEGMENT_MIN || !picked.rangeOk) {
     let lastErr = null;
     for (const t of [picked.u, ...(rule ? rule.mirrors.map((m) => rewriteFor(url, m, rule.style)).filter((x) => x !== picked.u) : [])]) {
       try {
         // downloadRange 失败返回 false（不抛错），必须显式检查——否则会"假成功"
-        const okDl = await downloadRange(t, 0, size ? size - 1 : null, out, { retries: 1, signal });
+        const okDl = await downloadRange(t, 0, size ? size - 1 : null, out, { retries: 1, signal, onBytes: sumBytes });
         if (!okDl) {
           lastErr = new Error(`下载失败: ${t}`);
           continue;
         }
+        // 下载完成：上报 100%（进度收尾）
+        stopReporter();
+        const fin = fs.existsSync(out) ? fs.statSync(out).size : done;
+        if (typeof onProgress === 'function') onProgress({ doneB: fin, totalB: size || fin, kbPerSec: 0 });
         return summarize(out, picked.via, size, t0, rule);
       } catch (e) {
         lastErr = e;
       }
     }
+    stopReporter();
     throw lastErr || new Error('download failed');
   }
 
@@ -278,11 +321,15 @@ export async function runDownload(url, {
   const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'ghaccel-'));
   const parts = ranges.map((_, i) => path.join(tmp, `seg-${i}`));
   const okFlags = await mapLimit(ranges, threads, (r, i) =>
-    downloadRange(picked.u, r[0], r[1], parts[i], { signal }));
+    downloadRange(picked.u, r[0], r[1], parts[i], { signal, onBytes: sumBytes }));
   if (okFlags.some((f) => !f)) {
+    stopReporter();
     await fsp.rm(tmp, { recursive: true, force: true });
     throw new Error('部分分片下载失败');
   }
+  // 分片下载阶段已完成（done ≈ size），进合并前上报 100%
+  stopReporter();
+  if (typeof onProgress === 'function') onProgress({ doneB: size, totalB: size, kbPerSec: 0 });
   try {
     await pipeline(
       (async function* merge() {
