@@ -177,7 +177,7 @@ async function handleList(request, response) {
 
 async function handleInstalled(request, response, profileDir) {
   if (request.method !== 'GET') { response.writeHead(405, { allow: 'GET' }); response.end(); return; }
-  let names = [];
+  let result = [];
   try {
     const fs = await import('node:fs');
     const path = await import('node:path');
@@ -186,16 +186,30 @@ async function handleInstalled(request, response, profileDir) {
       const file = path.join(dir, 'package.json');
       if (fs.existsSync(file)) {
         const manifest = JSON.parse(fs.readFileSync(file, 'utf8'));
-        if (manifest && manifest.dependencies && typeof manifest.dependencies === 'object') {
-          names = Object.keys(manifest.dependencies);
-        }
+        const deps = manifest && manifest.dependencies && typeof manifest.dependencies === 'object'
+          ? manifest.dependencies
+          : {};
+        const names = Object.keys(deps);
+        // Resolve the actually-installed version from node_modules/<name>/package.json
+        const nodeModules = path.join(dir, 'node_modules');
+        const readVersion = (name) => {
+          try {
+            const pkgFile = path.join(nodeModules, ...name.split('/'), 'package.json');
+            if (fs.existsSync(pkgFile)) {
+              const v = JSON.parse(fs.readFileSync(pkgFile, 'utf8')).version;
+              return typeof v === 'string' ? v : '';
+            }
+          } catch { /* no-op */ }
+          return '';
+        };
+        result = names.map((name) => ({ name, version: readVersion(name) }));
         break;
       }
     }
   } catch {
-    names = [];
+    result = [];
   }
-  sendJson(response, 200, { installed: names });
+  sendJson(response, 200, { installed: result });
 }
 
 export const name = 'dsh-jack-market';

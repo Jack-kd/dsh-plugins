@@ -1,6 +1,6 @@
 {
   "name": "dsh-jack-market",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "type": "module",
   "description": "Jack-kd 的 DSH 插件市场：直接从 GitHub 仓库浏览并一键安装插件（类似内置的“插件市场”）。",

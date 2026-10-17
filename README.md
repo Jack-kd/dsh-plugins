@@ -203,22 +203,24 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v3.0.4/dsh-vision-route
 </details>
 
 <details>
-<summary><b>▶ dsh-jack-market · 插件市场（本仓库一键装）</b>　<code>v0.3.0</code></summary>
+<summary><b>▶ dsh-jack-market · 插件市场（本仓库一键装）</b>　<code>v0.3.1</code></summary>
 
-> 直接在 DSH 里浏览并一键安装本仓库的所有插件（类似内置的「插件市场」）。列出 `plugins/` 目录下当前发布的插件，自动识别已安装状态（按真实包名去 scope），点「安装」即调 `dsh plugin add` 安装；被合并的旧资源（如 `dl-accel` 已并入 `gh-accel`）会自动标注「已并入」，不再误导。
+> **v0.3.1**：新增「更新」检测——已安装插件若仓库发了更高版本，按钮显示蓝色「更新」，点击即升级。
+>
+> 直接在 DSH 里浏览并一键安装本仓库的所有插件（类似内置的「插件市场」）。列出 `plugins/` 目录下当前发布的插件，自动识别已安装状态（按真实包名去 scope），点「安装」即调 `dsh plugin add` 安装；已安装且仓库有新版时显示「更新」；被合并的旧资源（如 `dl-accel` 已并入 `gh-accel`）会自动标注「已并入」，不再误导。
 >
 > 入口：**设置 → Jack 插件市场**。
 
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v0.3.0/dsh-jack-market-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v0.3.1/dsh-jack-market-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/v0.3.0/dsh-jack-market-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/v0.3.1/dsh-jack-market-plugin.tgz
 ```
 
 > 装完重启一次 App（让设置页入口出现）；之后打开 **设置 → Jack 插件市场** 即可浏览和安装本仓库的插件。

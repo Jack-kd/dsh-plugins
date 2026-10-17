@@ -45,31 +45,46 @@ window.__ModuleLoader__.load({
       border: 'none', cursor: 'pointer', flexShrink: 0, whiteSpace: 'nowrap',
     };
 
-    function PluginCard({ plugin, installedNames, busy, onInstall }) {
-      const installedLocal = installedNames.has(plugin.key);
+    function compareVersions(a, b) {
+      const na = String(a || '').split('.').map(Number);
+      const nb = String(b || '').split('.').map(Number);
+      const len = Math.max(na.length, nb.length);
+      for (let i = 0; i < len; i++) {
+        const la = na[i] || 0;
+        const lb = nb[i] || 0;
+        if (la > lb) return 1;
+        if (la < lb) return -1;
+      }
+      return 0;
+    }
+
+    function PluginCard({ plugin, installedMap, busy, onInstall }) {
+      const installedVersion = installedMap ? installedMap.get(plugin.key) : undefined;
+      const installedLocal = installedVersion !== undefined;
       const superseded = !!plugin.supersededBy;
       const installable = plugin.installable !== false && !!plugin.url;
       const version = plugin.version || plugin.tag || '';
-      let btnLabel = installedLocal ? '已安装' : (busy ? '安装中…' : '安装');
-      let btnDisabled = installedLocal || busy;
-      if (!installedLocal && superseded) { btnLabel = `已并入 ${plugin.supersededBy}`; btnDisabled = true; }
-      else if (!installedLocal && !superseded && !installable) { btnLabel = '未发布包'; btnDisabled = true; }
+      const hasUpdate = installedLocal && version && plugin.version && compareVersions(plugin.version, installedVersion) > 0;
+      let btnLabel = installedLocal ? (hasUpdate ? '更新' : '已安装') : (busy ? '安装中…' : '安装');
+      let btnDisabled = (installedLocal && !hasUpdate) || busy || (!installedLocal && superseded) || (!installedLocal && !superseded && !installable);
+      if (!installedLocal && superseded) btnLabel = `已并入 ${plugin.supersededBy}`;
+      else if (!installedLocal && !superseded && !installable) btnLabel = '未发布包';
+      // Blue accent for actions that actually do something (install or update).
+      const brandBlue = 'var(--dsw-alias-brand-primary, #247bbf)';
+      const idleGray = 'var(--dsw-alias-state-idle-primary, #ccc)';
+      const active = busy || (installedLocal && hasUpdate) || (!installedLocal && !superseded && installable);
       return h('div', { style: cardStyle },
         h('div', { style: rowStyle },
           h('div', { style: { minWidth: 0 } },
             h('p', { style: titleStyle }, plugin.key,
               version ? h('span', { style: { fontWeight: 400, color: 'var(--dsw-alias-label-secondary,#666)', marginLeft: 6, fontSize: 12 } }, `v${version}`) : null),
-            h('p', { style: metaStyle }, `${version ? `版本 v${version}` : ''}${plugin.publishedAt ? ` · ${new Date(plugin.publishedAt).toLocaleDateString()}` : ''}`),
+            h('p', { style: metaStyle }, `${version ? `版本 v${version}` : ''}${installedVersion ? ` · 已装 v${installedVersion}` : ''}${plugin.publishedAt ? ` · ${new Date(plugin.publishedAt).toLocaleDateString()}` : ''}`),
           ),
           h('button', {
             style: {
               ...btnBase,
-              background: installedLocal
-                ? 'var(--dsw-alias-state-idle-primary, #ccc)'
-                : (superseded || !installable
-                  ? 'var(--dsw-alias-state-idle-primary,#ccc)'
-                  : (busy ? 'var(--dsw-alias-state-idle-primary,#ccc)' : 'var(--dsw-alias-brand-primary, #247bbf)')),
-              color: installedLocal || superseded || !installable ? 'var(--dsw-alias-label-secondary,#666)' : '#fff',
+              background: active ? brandBlue : idleGray,
+              color: active ? '#fff' : 'var(--dsw-alias-label-secondary,#666)',
             },
             disabled: btnDisabled,
             onClick: (e) => { e.preventDefault(); if (onInstall) onInstall(plugin); },
@@ -86,7 +101,7 @@ window.__ModuleLoader__.load({
 
     function Market({ ownerProps }) {
       const [plugins, setPlugins] = useState([]);
-      const [installedNames, setInstalledNames] = useState(new Set());
+      const [installedMap, setInstalledMap] = useState(new Map());
       const [busyKey, setBusyKey] = useState(null);
       const [error, setError] = useState('');
       const [loading, setLoading] = useState(true);
@@ -100,10 +115,16 @@ window.__ModuleLoader__.load({
           ]);
           setPlugins(Array.isArray(list.plugins) ? list.plugins : []);
           const deps = Array.isArray(inst.installed) ? inst.installed : [];
-          // Compare each plugin key against the dependency names (scoped names
-          // stripped to their final segment), e.g. "enter-newline" matches
-          // "@local/enter-newline".
-          setInstalledNames(new Set(deps.map((n) => n.replace(/^@[^/]+\//, ''))));
+          // Each dep is { name, version }. Build a map key -> installed version,
+          // stripping any scope to the final segment (e.g. "@local/enter-newline"
+          // matches the market key "enter-newline").
+          const map = new Map();
+          for (const d of deps) {
+            const name = typeof d === 'string' ? d : (d && d.name);
+            const ver = typeof d === 'object' && d ? (d.version || '') : '';
+            if (typeof name === 'string') map.set(name.replace(/^@[^/]+\//, ''), ver || '');
+          }
+          setInstalledMap(map);
         } catch (e) {
           setError(String(e && e.message || e));
         } finally {
@@ -133,7 +154,10 @@ window.__ModuleLoader__.load({
               const inst = await fetchJson('/dsh-jack-market/installed');
               const deps = inst.installed || [];
               // Installed once any dependency's unscoped name equals this key.
-              const hit = deps.some((n) => n.replace(/^@[^/]+\//, '') === plugin.key);
+              const hit = deps.some((d) => {
+                const n = typeof d === 'string' ? d : (d && d.name);
+                return typeof n === 'string' && n.replace(/^@[^/]+\//, '') === plugin.key;
+              });
               if (hit) break;
             } catch { /* transient */ }
           }
@@ -163,7 +187,7 @@ window.__ModuleLoader__.load({
         }, String(error)),
         loading && h('p', { style: metaStyle }, '加载中…'),
         !loading && plugins.length === 0 && !error && h('p', { style: metaStyle }, '没有可用的插件。'),
-        plugins.map((plugin) => h(PluginCard, { key: plugin.key, plugin, installedNames, busy: busyKey === plugin.key, onInstall: install })),
+        plugins.map((plugin) => h(PluginCard, { key: plugin.key, plugin, installedMap, busy: busyKey === plugin.key, onInstall: install })),
         h('p', {
           style: {
             ...metaStyle, marginTop: 12, fontSize: 11, color: 'var(--dsw-alias-label-secondary,#999)',
