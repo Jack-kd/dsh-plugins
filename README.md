@@ -30,7 +30,7 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v1.0.1/enter-newline-pl
 </details>
 
 <details>
-<summary><b>▶ retry-count · 请求重试次数</b></summary>
+<summary><b>▶ retry-count · 请求重试次数</b>　<code>v2.0.8</code></summary>
 
 > 修改模型请求重试上限（默认 5）。在 **设置 → 通用设置 → 模型请求重试次数** 输入次数（如 10）点修改，或 **插件管理 → 请求重试次数 → 配置** 里改，立即生效。支持 deepseek 与 pi-ai（日日新）提供商。
 >
@@ -52,7 +52,7 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v2.0.8/retry-count-plug
 </details>
 
 <details>
-<summary><b>▶ chat-keeper-mobile · 对话管理（手机版）</b></summary>
+<summary><b>▶ chat-keeper-mobile · 对话管理（手机版）</b>　<code>v1.2.0</code></summary>
 
 > 跨工作区对话总表、正文搜索、批量归档、可恢复删除（回收站），以及会话「…」菜单里的「删除会话」。入口：**设置 → 对话管理**（基于 Sky-lll27 的 DSH-chat-keeper 客户端适配手机布局，Host 能力一致）。
 
@@ -72,7 +72,7 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v1.2.0/chat-keeper-mobi
 </details>
 
 <details>
-<summary><b>▶ dsh-client-ui-skin-maid-atelier · 深海女仆工坊皮肤</b></summary>
+<summary><b>▶ dsh-client-ui-skin-maid-atelier · 深海女仆工坊皮肤</b>　<code>v0.1.9</code></summary>
 
 > 鲸鱼娘女仆、深海蓝蕾丝与 Q 版侧栏 —— 把 DSH 变成女仆工坊（第三方皮肤，作者 Small-tailqwq，MIT 代码许可；美术素材保留版权、非商用、需署名，随包 LICENSE/NOTICE 保留）。
 >
@@ -94,7 +94,7 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v0.1.9/dsh-client-ui-sk
 </details>
 
 <details>
-<summary><b>▶ 加速器 · 下载加速（GitHub + 通用，合并版）</b></summary>
+<summary><b>▶ 加速器 · 下载加速（GitHub + 通用，合并版）</b>　<code>v2.5.2</code></summary>
 
 > **gh-accel 与 dl-accel 合二为一（v2.5.2）**：一个插件同时负责 GitHub 与任意站点的下载/上传加速。`github_accel_download`（GitHub 文件，自动测速选最快镜像 + 8 线程分段）、`github_accel_clone`（加速 clone）、`github_accel_push`（push 自动绕过只读镜像）、`url_accel_download`（任意非 GitHub 站点，规则驱动镜像：HuggingFace hf-mirror / npm npmmirror，可配置扩展）、`url_accel_probe`（选路诊断）。装好后自动配置 git 镜像改写、pip 清华源、**HF_ENDPOINT 与 npm registry 镜像**；GitHub 直链自动引导专用工具，国内服务器自动直连不绕路。实测比直连快数倍到数十倍。
 >
@@ -124,7 +124,7 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v2.5.2/gh-accel-plugin.
 </details>
 
 <details>
-<summary><b>▶ rea-tools · REA 逆向工具链（一键安装 + 原生/APK 逆向）</b></summary>
+<summary><b>▶ rea-tools · REA 逆向工具链（一键安装 + 原生/APK 逆向）</b>　<code>v0.2.4</code></summary>
 
 > 一键安装 **REA + Ghidra + JADX**（arm64 反编译器免编译、断点续传、zip 缓存、幂等），并提供 7 个逆向工具：`rea_install`（安装）、`rea_doctor`（就绪检查）、`rea_analyze`（二进制概览）、`rea_function`（函数伪代码，Ghidra）、`rea_inspect_apk` / `rea_inspect_apk_class` / `rea_inspect_apk_method`（APK 静态逆向，不运行目标代码）。已在 arm64 实测：NewPipe APK 7096 类，Manifest/类成员/方法反编译全部正常。
 >
@@ -156,7 +156,7 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v0.2.4/rea-tools-plugin
 </details>
 
 <details>
-<summary><b>▶ our-free-model · 免费模型（免登录免 Key，多模型开箱即用）</b></summary>
+<summary><b>▶ our-free-model · 免费模型（免登录免 Key，多模型开箱即用）</b>　<code>v2.1.0</code></summary>
 
 > 装上即用，无需登录、注册或填 API Key：DeepSeek V4.1 Flash、Kimi K3 等前沿模型直接出现在输入框的 **Our Free Model** 分组，免费不限量（上游为 OpenCode Zen / Kilo 公共网关）。另含 Kilo 免费池、EAC 协付渠道（桌面端）、13 个账号渠道（CodeArts/CodeBuddy/Qoder/TRAE/Gemini 等）、76 家聚合提供商（自带 Key 接入）、Token 压缩、命名降级链（combo）、本地 OpenAI/Anthropic 兼容网关与局域网转发、数据看板与运行日志，九页毛玻璃设置界面（**设置 → Our Free Model**）。第三方插件，作者 Ebony-Vinyl，MIT。
 >
@@ -178,7 +178,7 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v2.1.0/our-free-model-p
 </details>
 
 <details>
-<summary><b>▶ dsh-plugin-wallpaper-engine · 壁纸引擎（把本地 Wallpaper Engine 壁纸放到对话背后）</b></summary>
+<summary><b>▶ dsh-plugin-wallpaper-engine · 壁纸引擎（把本地 Wallpaper Engine 壁纸放到对话背后）</b>　<code>v1.3.3</code></summary>
 
 > 把本机 **Wallpaper Engine** 的场景、网页与视频壁纸渲染到 DSH 对话界面后方：Scene / Web 实时渲染（内置 WebWallGL 引擎）、Video 直接播放；配 iOS 风格液态玻璃、可调模糊 / 遮罩 / 描边 / 透明度、自定义字体与光标，贝壳整个设置窗口。不向 agent 注册任何工具、不注入提示文本，**不增加模型 token 开销**。需要宿主 DeepSeek Harness kernel ≥ 0.1.5（官方桌面版 / DSH Desktop ≥ 2.0.7）。
 >
