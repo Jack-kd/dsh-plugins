@@ -13,12 +13,18 @@ Jack-kd 的 DSH 插件市场：直接从本仓库浏览可安装的插件，并�
 ## 安装
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.4.0/dsh-jack-market-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.4.1/dsh-jack-market-plugin.tgz
 ```
 
 ## 使用
 
 装完重启一次 App（让设置页入口出现），然后打开 **设置 → Jack 插件市场**。列出插件点「安装」即可一键安装；已安装的插件显示「已安装」，若仓库有新版本则显示蓝色「更新」按钮，点击即升级。
+
+> **v0.4.1 新增：安装实时进度反馈**
+> - 点击「安装 / 更新」后**立即显示进度条**，阶段实时更新（下载中 → 校验中 → 安装中 → ✓ 完成）；
+> - host 端采集 `dsh plugin add` 子进程的 stdout/stderr，按内容自动归类阶段；
+> - 失败时**立即显示具体原因**（如网络错误、校验失败、退出码），不再干等 120 秒超时；
+> - 成功显示「✓ 安装成功，重启 App 后生效」，按钮恢复可点。
 
 > **v0.4.0 修复**：
 > - 修复带前缀 tag（如 `our-free-model-v2.5.1`）时版本号解析出错，界面显示 `vour-free-model-v2.5.1` 且更新检测失效；

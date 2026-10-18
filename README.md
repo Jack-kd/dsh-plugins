@@ -209,8 +209,10 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-vision-router-v3.0.
 </details>
 
 <details>
-<summary><b>▶ dsh-jack-market · 插件市场（本仓库一键装）</b>　<code>v0.4.0</code></summary>
+<summary><b>▶ dsh-jack-market · 插件市场（本仓库一键装）</b>　<code>v0.4.1</code></summary>
 
+> **v0.4.1**：新增**安装实时进度反馈**——点击「安装 / 更新」后立即显示进度条（下载中 → 校验中 → 安装中 → ✓ 完成），host 端采集 `dsh plugin add` 子进程输出自动归类阶段；失败时立即显示具体原因，不再干等 120 秒超时。
+>
 > **v0.4.0**：修复带前缀 tag（如 `our-free-model-v2.5.1`）时版本号解析出错（界面曾显示 `vour-free-model-v2.5.1`、更新检测失效）；修复 `dsh-our-free-model` 等「包名与目录名不一致」的插件永远显示「未安装」；移除失效的 `dl-accel` 已并入提示；新增 GitHub API 60 秒缓存避免匿名限流刷新失败。
 >
 > **v0.3.2**：版本显示调整——卡片单独列出「当前版本」与「最新版本」，更清晰。
@@ -224,13 +226,13 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-vision-router-v3.0.
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.4.0/dsh-jack-market-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.4.1/dsh-jack-market-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.4.0/dsh-jack-market-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.4.1/dsh-jack-market-plugin.tgz
 ```
 
 > 装完重启一次 App（让设置页入口出现）；之后打开 **设置 → Jack 插件市场** 即可浏览和安装本仓库的插件。

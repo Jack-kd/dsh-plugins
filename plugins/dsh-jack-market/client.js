@@ -44,6 +44,27 @@ window.__ModuleLoader__.load({
       padding: '6px 14px', borderRadius: '6px', fontSize: '13px',
       border: 'none', cursor: 'pointer', flexShrink: 0, whiteSpace: 'nowrap',
     };
+    const progressTrack = {
+      width: '100%', height: '6px', borderRadius: '3px',
+      background: 'var(--dsw-alias-bg-layer-2, #eee)', marginTop: '8px',
+      overflow: 'hidden',
+    };
+    const progressFill = {
+      height: '100%', borderRadius: '3px',
+      background: 'var(--dsw-alias-brand-primary, #247bbf)',
+      transition: 'width .3s ease',
+    };
+    // 阶段 → 进度百分比（估算：下载 15-75%，校验 80%，安装 90%，完成/失败 100%）
+    const stagePct = { running: 10, downloading: 40, verifying: 75, installing: 88, done: 100, failed: 100 };
+    const stageLabel = {
+      running: '启动中…', downloading: '下载中…', verifying: '校验中…',
+      installing: '安装中…', done: '安装成功 ✓', failed: '安装失败 ✗',
+    };
+    const stageColor = {
+      running: 'var(--dsw-alias-label-secondary,#666)', downloading: 'var(--dsw-alias-brand-primary,#247bbf)',
+      verifying: 'var(--dsw-alias-brand-primary,#247bbf)', installing: 'var(--dsw-alias-brand-primary,#247bbf)',
+      done: 'var(--dsw-alias-state-success-primary,#2a8f4e)', failed: 'var(--dsw-alias-state-error-primary,#c00)',
+    };
 
     function compareVersions(a, b) {
       const na = String(a || '').split('.').map(Number);
@@ -73,13 +94,15 @@ window.__ModuleLoader__.load({
       return [...set];
     }
 
-    function PluginCard({ plugin, installedMap, busy, onInstall }) {
+    function PluginCard({ plugin, installedMap, busy, task, onInstall }) {
       const installedVersion = installedMap ? installedMap.get(plugin.key) : undefined;
       const installedLocal = installedVersion !== undefined;
       const superseded = !!plugin.supersededBy;
       const installable = plugin.installable !== false && !!plugin.url;
       const version = plugin.version || plugin.tag || '';
       const hasUpdate = installedLocal && version && plugin.version && compareVersions(plugin.version, installedVersion) > 0;
+      // 任务状态：running/done/failed 时显示进度反馈
+      const activeTask = task && (task.running || task.stage === 'done' || task.stage === 'failed');
       let btnLabel = installedLocal ? (hasUpdate ? '更新' : '已安装') : (busy ? '安装中…' : '安装');
       let btnDisabled = (installedLocal && !hasUpdate) || busy || (!installedLocal && superseded) || (!installedLocal && !superseded && !installable);
       if (!installedLocal && superseded) btnLabel = `已并入 ${plugin.supersededBy}`;
@@ -88,6 +111,41 @@ window.__ModuleLoader__.load({
       const brandBlue = 'var(--dsw-alias-brand-primary, #247bbf)';
       const idleGray = 'var(--dsw-alias-state-idle-primary, #ccc)';
       const active = busy || (installedLocal && hasUpdate) || (!installedLocal && !superseded && installable);
+      // 进度反馈渲染（阶段文字 + 进度条 + 失败原因）
+      let feedback = null;
+      if (activeTask) {
+        const pct = stagePct[task.stage] || 10;
+        const label = stageLabel[task.stage] || '进行中…';
+        const color = stageColor[task.stage] || '#666';
+        const isFail = task.stage === 'failed';
+        const isDone = task.stage === 'done';
+        if (isDone) {
+          feedback = h('p', {
+            style: { ...metaStyle, marginTop: 6, color: stageColor.done },
+          }, '✓ 安装成功，重启 App 后生效');
+        } else {
+          feedback = h('div', { style: { marginTop: 8 } },
+            h('div', {
+              style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 },
+            },
+              h('span', { style: { ...metaStyle, color, margin: 0 } }, label),
+              h('span', { style: { ...metaStyle, margin: 0 } }, `${pct}%`),
+            ),
+            h('div', { style: progressTrack },
+              h('div', {
+                style: {
+                  ...progressFill,
+                  width: `${pct}%`,
+                  background: isFail ? stageColor.failed : undefined,
+                },
+              }),
+            ),
+            (isFail && task.message) ? h('p', {
+              style: { ...metaStyle, marginTop: 6, color: stageColor.failed, wordBreak: 'break-all' },
+            }, String(task.message).slice(0, 240)) : null,
+          );
+        }
+      }
       return h('div', { style: cardStyle },
         h('div', { style: rowStyle },
           h('div', { style: { minWidth: 0 } },
@@ -113,6 +171,7 @@ window.__ModuleLoader__.load({
         (superseded && !installedLocal) && h('p', {
           style: { ...metaStyle, marginTop: 4, color: 'var(--dsw-alias-state-idle-primary,#888)' },
         }, `此插件已并入 ${plugin.supersededBy}，无需单独安装；请安装 ${plugin.supersededBy} 即可。`),
+        feedback,
         plugin.note && h('div', {
           style: { ...metaStyle, marginTop: 8, whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 90, overflow: 'hidden' },
         }, plugin.note.slice(0, 500)),
@@ -123,6 +182,7 @@ window.__ModuleLoader__.load({
       const [plugins, setPlugins] = useState([]);
       const [installedMap, setInstalledMap] = useState(new Map());
       const [busyKey, setBusyKey] = useState(null);
+      const [tasks, setTasks] = useState(new Map()); // key -> task
       const [error, setError] = useState('');
       const [loading, setLoading] = useState(true);
 
@@ -161,6 +221,8 @@ window.__ModuleLoader__.load({
 
       const install = useCallback(async (plugin) => {
         setBusyKey(plugin.key); setError('');
+        // 立即显示「启动中…」，让用户立刻有反馈
+        setTasks((prev) => new Map(prev).set(plugin.key, { stage: 'running', message: '启动中…', running: true }));
         try {
           const res = await fetch(api('/dsh-jack-market/install'), {
             method: 'POST',
@@ -171,24 +233,26 @@ window.__ModuleLoader__.load({
             const j = await res.json().catch(() => ({}));
             throw new Error((j && j.error) || `HTTP ${res.status}`);
           }
-          // Poll the installed list until the package appears or timeout.
-          const deadline = Date.now() + 120000;
+          // 轮询 /task 获取实时进度，直到任务结束（done/failed）或超时。
+          const deadline = Date.now() + 180000; // 3 分钟兜底
           while (Date.now() < deadline) {
-            await new Promise((r) => setTimeout(r, 1500));
+            await new Promise((r) => setTimeout(r, 700));
             try {
-              const inst = await fetchJson('/dsh-jack-market/installed');
-              const deps = inst.installed || [];
-              // Installed once any dependency's key candidates include this key.
-              const hit = deps.some((d) => {
-                const n = typeof d === 'string' ? d : (d && d.name);
-                return typeof n === 'string' && keyCandidates(n).includes(plugin.key);
-              });
-              if (hit) break;
+              const t = await fetchJson(`/dsh-jack-market/task?key=${encodeURIComponent(plugin.key)}`);
+              if (t && t.stage) {
+                setTasks((prev) => new Map(prev).set(plugin.key, t));
+                if (t.stage === 'done' || t.stage === 'failed') break;
+              }
             } catch { /* transient */ }
           }
           await load();
         } catch (e) {
           setError(String(e && e.message || e));
+          setTasks((prev) => {
+            const next = new Map(prev);
+            next.set(plugin.key, { stage: 'failed', message: String((e && e.message) || e), running: false });
+            return next;
+          });
         } finally {
           setBusyKey(null);
         }
@@ -212,7 +276,7 @@ window.__ModuleLoader__.load({
         }, String(error)),
         loading && h('p', { style: metaStyle }, '加载中…'),
         !loading && plugins.length === 0 && !error && h('p', { style: metaStyle }, '没有可用的插件。'),
-        plugins.map((plugin) => h(PluginCard, { key: plugin.key, plugin, installedMap, busy: busyKey === plugin.key, onInstall: install })),
+        plugins.map((plugin) => h(PluginCard, { key: plugin.key, plugin, installedMap, busy: busyKey === plugin.key, task: tasks.get(plugin.key), onInstall: install })),
         h('p', {
           style: {
             ...metaStyle, marginTop: 12, fontSize: 11, color: 'var(--dsw-alias-label-secondary,#999)',

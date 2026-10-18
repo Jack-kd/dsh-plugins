@@ -241,6 +241,47 @@ async function handleInstalled(request, response, profileDir) {
   sendJson(response, 200, { installed: result });
 }
 
+// ── 安装任务进度跟踪 ────────────────────────────────────────────────────
+// host 端把每次「dsh plugin add」子进程的 stdout/stderr 采集起来，按关键词
+// 归类成阶段（下载/校验/安装/完成/失败），供客户端轮询显示实时进度。
+// key: 插件市场 key；只保留最近一个任务（同一插件重复安装覆盖旧状态）。
+const installTasks = new Map(); // key -> { stage, message, at, running }
+
+/** 从子进程输出行归类出阶段。无精确匹配时维持当前阶段；有失败关键词即标 failed。 */
+function classifyStage(text, current) {
+  const t = String(text || '').toLowerCase();
+  const has = (...kws) => kws.some((k) => t.includes(k));
+  if (has('error', 'failed', 'denied', 'refused', 'enetdown', 'econnrefused', 'eacces', 'enoent', 'integrity check failed', 'checksum mismatch', '校验失败'))
+    return { stage: 'failed', message: text.trim().split('\n').slice(-6).join(' ') };
+  if (has('downloading', 'fetching', '下载', 'fetch failed', 'network') && current !== 'installing')
+    return { stage: 'downloading', message: '下载中…' };
+  if (has('verifying', 'integrity', 'checksum', '校验', 'sha256')) return { stage: 'verifying', message: '校验中…' };
+  if (has('installing', 'adding', '安装', 'add ', 'extract', '解压')) return { stage: 'installing', message: '安装中…' };
+  if (has('added', 'installed', 'complete', 'done', '完成', 'success')) return { stage: 'done', message: '完成' };
+  return current || 'running';
+}
+
+function updateTask(key, patch) {
+  const prev = installTasks.get(key) || { stage: 'running', message: '启动中…', at: Date.now(), running: true };
+  const next = { ...prev, ...patch, at: Date.now() };
+  installTasks.set(key, next);
+}
+
+/** GET /dsh-jack-market/task?key=<key> → 该插件当前安装任务进度（无任务返回 idle）。 */
+async function handleTask(request, response) {
+  if (request.method !== 'GET') { response.writeHead(405, { allow: 'GET' }); response.end(); return; }
+  try {
+    const url = new URL(request.url, 'http://localhost');
+    const key = url.searchParams.get('key') || '';
+    if (!key) { sendJson(response, 400, { error: 'missing key' }); return; }
+    const task = installTasks.get(key);
+    if (!task) { sendJson(response, 200, { key, stage: 'idle', message: '', running: false, at: 0 }); return; }
+    sendJson(response, 200, { key, ...task });
+  } catch (e) {
+    sendJson(response, 500, { error: String((e && e.message) || e) });
+  }
+}
+
 export const name = 'dsh-jack-market';
 export const inject = ['webServer'];
 
@@ -265,6 +306,11 @@ export function apply(ctx, config) {
       kind: 'exact',
       path: '/dsh-jack-market/installed',
       handler: (req, res) => handleInstalled(req, res, profileDir),
+    }));
+    disposers.push(host.webServer.register({
+      kind: 'exact',
+      path: '/dsh-jack-market/task',
+      handler: handleTask,
     }));
 
     disposers.push(host.webServer.register({
@@ -296,22 +342,50 @@ export function apply(ctx, config) {
           sendJson(response, 400, { error: '只允许安装本仓库的 Release 插件包 / only this repo\'s release tarballs are accepted' });
           return;
         }
+        const key = typeof body?.key === 'string' && body.key ? body.key : 'unknown';
 
         const { file, args } = dshArgv();
         const finalArgs = [...args, 'plugin', '--profile', profileName, 'add', url];
-        sendJson(response, 202, { status: 'started', target: url });
+        updateTask(key, { stage: 'running', message: '启动中…', running: true });
+        sendJson(response, 202, { status: 'started', target: url, key });
 
         const child = spawn(file, finalArgs, {
           cwd: profileDir || undefined,
           stdio: ['ignore', 'pipe', 'pipe'],
           env: { ...process.env, CI: 'true' },
         });
+        let out = '';
         let err = '';
-        child.stderr && child.stderr.on('data', (d) => { err += d; });
-        child.on('error', (e) => { console.error('[dsh-jack-market] spawn:', e && e.message); });
+        let lastClassify = 0;
+        const classifyNow = (chunk, isErr) => {
+          if (isErr) err += chunk; else out += chunk;
+          const now = Date.now();
+          // 节流：最多 300ms 更新一次任务状态，避免高频写 Map
+          if (now - lastClassify < 300) return;
+          lastClassify = now;
+          const stage = classifyStage(`${out}\n${err}`, installTasks.get(key)?.stage || 'running');
+          updateTask(key, { stage, message: stage === 'failed' ? '安装失败' : (installTasks.get(key)?.message || '进行中…') });
+        };
+        child.stdout && child.stdout.on('data', (d) => classifyNow(d, false));
+        child.stderr && child.stderr.on('data', (d) => classifyNow(d, true));
+        child.on('error', (e) => {
+          console.error('[dsh-jack-market] spawn:', e && e.message);
+          updateTask(key, { stage: 'failed', message: `启动失败: ${(e && e.message) || 'unknown'}`, running: false });
+        });
         child.on('close', (code) => {
           console.log(`[dsh-jack-market] install exited ${code} for ${url}`);
+          const prev = installTasks.get(key) || {};
+          const failedNow = code !== 0 || (prev.stage === 'failed');
           if (code !== 0) console.error('[dsh-jack-market] stderr:', err.slice(-4000));
+          updateTask(key, {
+            stage: failedNow ? 'failed' : 'done',
+            message: failedNow
+              ? (err.slice(-400).trim() || `退出码 ${code}`)
+              : '安装成功',
+            running: false,
+          });
+          // 任务已结束：5 秒后清除记录，避免 stale 状态残留
+          setTimeout(() => { if (installTasks.get(key)?.running === false) installTasks.delete(key); }, 5000);
         });
       },
     }));
