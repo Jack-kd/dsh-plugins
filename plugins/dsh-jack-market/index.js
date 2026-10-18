@@ -250,24 +250,116 @@ function auditLogText() {
 }
 
 /**
- * 下载 GitHub release 资产到本地稳定路径（跟随重定向，Node 原生实现）。
- * 返回 { dest, bytes }；失败抛错。onProgress 用于阶段/字节反馈。
+ * 下载 GitHub release 资产到本地稳定路径——带「加速器式」多节点选路。
+ * 返回 { dest, bytes, via }；全部节点失败抛错。
  *
- * 关键：市场安装必须走「下载到本地 → `pnpm add file:<稳定路径>`」而不是
- * `pnpm add <url>`。实测（2026-10-18）pnpm 10.34.5 对 URL tarball 在
- * 网络慢/CI 环境下会**不写 integrity** 导致 ERR_PNPM_MISSING_TARBALL_INTEGRITY
- * 反复失败；而 file: 本地引用**永远稳定**（写 integrity、成功）。
- * 稳定路径（profile/.dsh-market/pkgs/）不能删——pnpm 的 file: 引用会长期指向它。
+ * 关键（2026-10-18 审计日志实证）：本机直连 `github.com/releases/download`
+ * 会超时（retry-count 9KB 都 30s 下不完），而加速镜像（ghfast.top 等）稳定。
+ * 因此移植 gh-accel 的选路逻辑：并行测速直连 + 全部镜像，选最快节点下载；
+ * 选中的节点失败时自动降级到下一个最快节点，不再只死磕直连。
+ *
+ * 另一关键：市场安装必须「下载到本地 → `pnpm add file:<稳定路径>`」而不是
+ * `pnpm add <url>`（pnpm 对 URL tarball 在网络慢/CI 下不写 integrity 必失败）；
+ * 稳定路径（profile/.dsh-market/pkgs/）不能删——pnpm 的 file: 引用长期指向它。
  */
-async function downloadTgz(url, { dest, signal, onProgress } = {}) {
+
+// 加速镜像列表（复用 gh-accel 实测可用节点；prefix 拼接）
+const GH_MIRRORS = [
+  'https://ghfast.top/',
+  'https://gh.monlor.com/',
+  'https://down.mxw.xx.kg/',
+  'https://github.geekery.cn/',
+  'https://js.jiangss.shop/',
+  'https://github.mxw.qzz.io/',
+  'https://gh.acmsz.top/',
+  'https://ghproxy.net/',
+  'https://gh-proxy.com/',
+];
+
+/** prefix 改写：镜像 base 拼在原 URL 前（gh 代理类）。 */
+function rewriteViaMirror(url, base) {
+  try {
+    const u = new URL(url);
+    if (!/^https?:\/\//i.test(base)) return url;
+    const b = new URL(base);
+    return b.toString().replace(/\/+$/, '') + u.toString();
+  } catch {
+    return base + url;
+  }
+}
+
+/** 单节点测速：3 秒预算内读前 256KB，算持续带宽 bps（gh-accel probe 同款）。 */
+async function probeNode(url, { signal, budgetMs = 3000, maxBytes = 256 * 1024 } = {}) {
+  const https = await import('node:https');
+  const http = await import('node:http');
+  const mod = url.startsWith('https:') ? https : http;
+  const t0 = Date.now();
+  return new Promise((resolveP) => {
+    let len = 0;
+    let settled = false;
+    let req;
+    try {
+      req = mod.get(url, {
+        headers: { 'user-agent': 'dsh-jack-market', accept: '*/*', range: 'bytes=0-1048575' },
+        signal,
+      }, (res) => {
+        const status = res.statusCode || 0;
+        const loc = res.headers.location;
+        if (status >= 300 && status < 400 && loc) {
+          res.resume();
+          // 跟随一次重定向后重试（避免递归过深）
+          probeNode(new URL(loc, url).toString(), { signal, budgetMs, maxBytes })
+            .then((r) => { if (!settled) { settled = true; resolveP(r); } }, () => { if (!settled) { settled = true; resolveP({ bps: 0, ok: false }); } });
+          return;
+        }
+        if (status !== 200 && status !== 206) {
+          res.resume();
+          if (!settled) { settled = true; resolveP({ bps: 0, ok: false }); }
+          return;
+        }
+        res.on('data', (c) => {
+          if (Date.now() - t0 >= budgetMs || len >= maxBytes) {
+            if (!settled) { settled = true; res.destroy(); resolveP({ bps: Math.max(len / Math.max((Date.now() - t0) / 1000, 0.01), 1), ok: len > 0 }); }
+            return;
+          }
+          len += c.length;
+        });
+        res.on('end', () => { if (!settled) { settled = true; resolveP({ bps: Math.max(len / Math.max((Date.now() - t0) / 1000, 0.01), 1), ok: len > 0 }); } });
+        res.on('error', () => { if (!settled) { settled = true; resolveP({ bps: 0, ok: false }); } });
+      });
+      req.on('error', () => { if (!settled) { settled = true; resolveP({ bps: 0, ok: false }); } });
+      req.setTimeout(5000, () => req.destroy(new Error('probe timeout')));
+    } catch {
+      if (!settled) { settled = true; resolveP({ bps: 0, ok: false }); }
+    }
+  });
+}
+
+/** 选路：并行测速直连 + 全部镜像，按带宽降序返回候选 URL 列表（含直连兜底）。 */
+async function pickFastest(url, { signal } = {}) {
+  const cands = [
+    { u: url, via: 'direct' },
+    ...GH_MIRRORS.map((m) => ({ u: rewriteViaMirror(url, m), via: m })),
+  ];
+  const results = await Promise.allSettled(cands.map((c) => probeNode(c.u, { signal })));
+  const ranked = cands
+    .map((c, i) => ({ u: c.u, via: c.via, bps: results[i].status === 'fulfilled' ? results[i].value.bps : 0 }))
+    .sort((a, b) => b.bps - a.bps);
+  // 直连恒在最后兜底（镜像都失败时用原 URL）
+  const direct = ranked.find((r) => r.via === 'direct');
+  const mirrors = ranked.filter((r) => r.via !== 'direct' && r.bps > 0);
+  const order = [...mirrors, direct ? { ...direct, via: 'direct(fallback)' } : null].filter(Boolean);
+  return order.length ? order : [{ u: url, via: 'direct', bps: 0 }];
+}
+
+/** 从单个 URL 下载到 dest（失败抛错；onProgress 字节回调）。 */
+async function downloadFrom(url, dest, { signal, onProgress } = {}) {
   const https = await import('node:https');
   const http = await import('node:http');
   const fs = await import('node:fs');
-  const fsp = await import('node:fs/promises');
   const mod = url.startsWith('https:') ? https : http;
   let bytes = 0;
   let lastEmit = 0;
-  await fsp.mkdir((await import('node:path')).dirname(dest), { recursive: true });
   await new Promise((resolveP, rejectP) => {
     const run = (u, redirects) => {
       const req = mod.get(u, { headers: { 'user-agent': 'dsh-jack-market', accept: '*/*' }, signal }, (res) => {
@@ -280,7 +372,7 @@ async function downloadTgz(url, { dest, signal, onProgress } = {}) {
         }
         if (status !== 200) {
           res.resume();
-          rejectP(new Error(`下载失败: HTTP ${status}`));
+          rejectP(new Error(`HTTP ${status}`));
           return;
         }
         const ws = fs.createWriteStream(dest);
@@ -301,7 +393,33 @@ async function downloadTgz(url, { dest, signal, onProgress } = {}) {
     };
     run(url, 5);
   });
-  return { dest, bytes };
+  return bytes;
+}
+
+/** 总入口：选路 + 按优先级逐个节点下载，全部失败抛错。 */
+async function downloadTgz(url, { dest, signal, onProgress } = {}) {
+  const fs = await import('node:fs');
+  const fsp = await import('node:fs/promises');
+  await fsp.mkdir((await import('node:path')).dirname(dest), { recursive: true });
+  const order = await pickFastest(url, { signal });
+  let lastErr = null;
+  for (const cand of order) {
+    audit('download.try', `${cand.via} bps=${cand.bps}`);
+    try {
+      const t0 = Date.now();
+      const bytes = await downloadFrom(cand.u, dest, { signal, onProgress });
+      // 下载完成但文件可能是坏的/空的 → 校验非空
+      const size = (await fsp.stat(dest)).size;
+      if (size <= 0) throw new Error('下载文件为空');
+      audit('download.done', `via=${cand.via} bytes=${size} 耗时=${Date.now() - t0}ms`);
+      return { dest, bytes, via: cand.via };
+    } catch (e) {
+      lastErr = e;
+      audit('download.nodeFail', `${cand.via} err=${(e && e.message) || e}`);
+      await fsp.rm(dest, { force: true }).catch(() => {});
+    }
+  }
+  throw lastErr || new Error('下载失败: 所有节点不可达');
 }
 
 /**

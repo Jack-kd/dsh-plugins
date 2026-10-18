@@ -13,12 +13,18 @@ Jack-kd 的 DSH 插件市场：直接从本仓库浏览可安装的插件，并�
 ## 安装
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.6.0/dsh-jack-market-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.6.1/dsh-jack-market-plugin.tgz
 ```
 
 ## 使用
 
 装完重启一次 App（让设置页入口出现），然后打开 **设置 → Jack 插件市场**。列出插件点「安装」即可一键安装；已安装的插件显示「已安装」，若仓库有新版本则显示蓝色「更新」按钮，点击即升级。
+
+> **v0.6.1 移植加速器选路（下载不再卡死）**
+> - **审计日志实证**（2026-10-18）：安装卡住的根因是**直连 `github.com/releases/download` 超时**（retry-count 9KB 都 30s 下不完，日志 `download.fail 下载超时 耗时=30266ms`）；
+> - **修复**：把「加速器（gh-accel）」的多节点选路逻辑移植进来——并行测速直连 + 9 个加速镜像（ghfast.top / gh-proxy.com 等），选最快节点下载，失败自动降级到下一个；
+> - 实测：直连 0 KB/s（不通），镜像 112ms 下载成功——安装不再卡 30 秒；
+> - 下载审计新增 `download.try` / `download.nodeFail` / `download.done(via=...)` 记录实际走的节点。
 
 > **v0.6.0 新增：审计日志导出（诊断「安装卡住」）**
 > - 页面新增 **「📋 导出日志」按钮**：点击导出完整审计日志为 `.log` 文件；
