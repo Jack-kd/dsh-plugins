@@ -14,11 +14,8 @@
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync, createWriteStream } from 'node:fs';
-import { mkdir } from 'node:fs/promises';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
-import https from 'node:https';
-import http from 'node:http';
+import { existsSync } from 'node:fs';
+import { dirname, isAbsolute, resolve } from 'node:path';
 
 const OWNER = 'Jack-kd';
 const REPO = 'dsh-plugins';
@@ -251,52 +248,62 @@ async function handleInstalled(request, response, profileDir) {
 const installTasks = new Map(); // key -> { stage, message, at, running }
 
 /**
- * 下载 GitHub release 资产到本地稳定路径（跟随重定向，Node 原生实现）。
- * 返回 { dest, bytes }；失败抛错。onProgress 用于阶段/字节反馈。
- * 关键：先下载到本地再用 `file:` 引用安装，避免 pnpm 对 URL tarball
- * 不写 integrity 导致 ERR_PNPM_MISSING_TARBALL_INTEGRITY（pnpm 已知坑）。
- * 目标必须是**稳定路径**（如 <profileDir>/.dsh-market/pkgs/<key>-plugin.tgz），
- * 不能是随机临时目录——pnpm 会把 file: 路径写进 lockfile 并复用，临时文件
- * 被删会导致下次 ENOENT。
+ * 安装前快照 profile 的 package.json 与 pnpm-lock.yaml（内存字符串）。
+ * 官方 dsh-plugin-manager 同款策略：pnpm 失败会污染 lockfile（URL tarball
+ * 条目缺 integrity 或残留坏条目），失败后 restore() 恢复快照，再用
+ * `pnpm install --frozen-lockfile` 按原 lockfile 重装，洗掉污染条目，
+ * 保证后续安装永远干净可重试。
  */
-async function downloadTgz(url, { dest, signal, onProgress } = {}) {
-  const mod = url.startsWith('https:') ? https : http;
-  let bytes = 0;
-  let lastEmit = 0;
-  await new Promise((resolveP, rejectP) => {
-    const run = (u, redirects) => {
-      const req = mod.get(u, { headers: { 'user-agent': 'dsh-jack-market', accept: '*/*' }, signal }, (res) => {
-        const status = res.statusCode || 0;
-        const loc = res.headers.location;
-        if (status >= 300 && status < 400 && loc && redirects > 0) {
-          res.resume();
-          run(new URL(loc, u).toString(), redirects - 1);
-          return;
-        }
-        if (status !== 200) {
-          res.resume();
-          rejectP(new Error(`下载失败: HTTP ${status}`));
-          return;
-        }
-        const ws = createWriteStream(dest);
-        res.on('data', (c) => {
-          bytes += c.length;
-          if (typeof onProgress === 'function') {
-            const now = Date.now();
-            if (now - lastEmit >= 300) { lastEmit = now; onProgress(bytes); }
-          }
-        });
-        res.pipe(ws);
-        ws.on('finish', () => resolveP());
-        ws.on('error', rejectP);
-        res.on('error', rejectP);
-      });
-      req.on('error', rejectP);
-      req.setTimeout(20_000, () => req.destroy(new Error(`下载超时: ${u}`)));
-    };
-    run(url, 5);
+async function snapshotProfileFiles(profileDir) {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const files = ['package.json', 'pnpm-lock.yaml'];
+  const saved = {};
+  for (const name of files) {
+    const file = path.join(profileDir, name);
+    if (fs.existsSync(file)) saved[name] = fs.readFileSync(file, 'utf8');
+  }
+  return saved;
+}
+
+async function restoreProfileFiles(profileDir, saved) {
+  const fs = await import('node:fs');
+  const fsp = await import('node:fs/promises');
+  const path = await import('node:path');
+  for (const [name, text] of Object.entries(saved)) {
+    const file = path.join(profileDir, name);
+    if (text === undefined) continue;
+    try { await fsp.writeFile(file, text, { mode: 0o600 }); } catch { /* no-op */ }
+  }
+}
+
+/** 按恢复后的 lockfile 重装 node_modules（官方同款 repair 步骤）。 */
+async function repairProfile(profileDir, env) {
+  const path = await import('node:path');
+  const fs = await import('node:fs');
+  const hadLockfile = fs.existsSync(path.join(profileDir, 'pnpm-lock.yaml'));
+  const args = ['install', hadLockfile ? '--frozen-lockfile' : '--config.lockfile=false'];
+  return new Promise((resolveP) => {
+    const child = spawn('pnpm', args, { cwd: profileDir, stdio: ['ignore', 'pipe', 'pipe'], env });
+    let out = '';
+    child.stdout && child.stdout.on('data', (d) => { out += d; });
+    child.stderr && child.stderr.on('data', (d) => { out += d; });
+    child.on('close', (code) => resolveP({ code, out }));
+    child.on('error', (e) => resolveP({ code: -1, out: String((e && e.message) || e) }));
   });
-  return { dest, bytes };
+}
+
+/** 从 pnpm 输出归类失败类型（官方 install-failure.js 的简化版）。 */
+function classifyFailure(log) {
+  const t = String(log || '');
+  if (/ERR_PNPM_TARBALL_INTEGRITY|ERR_PNPM_BAD_TARBALL_SIZE|\bEINTEGRITY\b/i.test(t)) return 'integrity';
+  if (/ERR_PNPM_IGNORED_BUILDS|Ignored build scripts/i.test(t)) return 'build-blocked';
+  if (/ERR_PNPM_FETCH_404|\bE404\b|404 Not Found/i.test(t)) return 'not-found';
+  if (/ERR_PNPM_NO_MATCHING_VERSION|\bETARGET\b|No matching version/i.test(t)) return 'no-matching-version';
+  if (/\bENOSPC\b|no space left on device/i.test(t)) return 'disk-full';
+  if (/\bEACCES\b|\bEPERM\b|permission denied/i.test(t)) return 'permission';
+  if (/\bENOTFOUND\b|\bECONNRESET\b|\bETIMEDOUT\b|\bECONNREFUSED\b|\bEAI_AGAIN\b|ERR_PNPM_META_FETCH_FAIL|ERR_PNPM_FETCH_5\d\d|socket hang up|Could not resolve host/i.test(t)) return 'network';
+  return 'unknown';
 }
 
 /** 从子进程输出行归类出阶段。无精确匹配时维持当前阶段；有失败关键词即标 failed。
@@ -404,38 +411,21 @@ export function apply(ctx, config) {
         }
         const key = typeof body?.key === 'string' && body.key ? body.key : 'unknown';
 
-        // ① 先下载 tgz 到 profile 目录下的稳定路径（阶段：下载中）
-        // 稳定路径（非临时）：pnpm 会把 file: 路径写进 lockfile 并长期复用，
-        // 随机临时目录会被删导致下次 ENOENT（v0.4.3 的坑）。
-        const pkgsDir = join(profileDir || '/root/.dsh/profiles/web', '.dsh-market', 'pkgs');
-        const localTgz = join(pkgsDir, `${key}-plugin.tgz`);
-        updateTask(key, { stage: 'downloading', message: '下载中…', running: true });
+        // ① 安装前快照 package.json + pnpm-lock.yaml（官方 dsh-plugin-manager 同款）
+        // 直接 `pnpm add <url>`（官方做法）。pnpm 对 URL tarball 不写 integrity
+        // 是已知行为，失败后靠恢复快照 + frozen-lockfile 重装把坏条目洗掉，
+        // 保证后续安装永远干净可重试——不再用 file: 本地引用绕路（v0.4.3/0.4.4
+        // 的临时路径/ENOENT/进度卡住都源于那个方向）。
+        const dir = profileDir || '/root/.dsh/profiles/web';
+        let saved;
+        try { saved = await snapshotProfileFiles(dir); } catch { saved = {}; }
+        updateTask(key, { stage: 'installing', message: '安装中…', running: true });
         sendJson(response, 202, { status: 'started', target: url, key });
 
-        try {
-          await mkdir(pkgsDir, { recursive: true });
-          await downloadTgz(url, {
-            dest: localTgz,
-            onProgress: (n) => {
-              const cur = installTasks.get(key);
-              if (cur && (cur.stage === 'downloading' || cur.stage === 'running')) {
-                installTasks.set(key, { ...cur, stage: 'downloading', message: `下载中… ${(n / 1024).toFixed(0)} KB`, at: Date.now() });
-              }
-            },
-          });
-        } catch (e) {
-          updateTask(key, { stage: 'failed', message: `下载失败: ${(e && e.message) || e}`, running: false });
-          console.error('[dsh-jack-market] 下载失败:', e && e.message);
-          return;
-        }
-
-        // ② 用 file: 本地引用安装（pnpm 对本地 tgz 写 integrity，不再 ERR_PNPM_MISSING_TARBALL_INTEGRITY）
         const { file, args } = dshArgv();
-        const finalArgs = [...args, 'plugin', '--profile', profileName, 'add', `file:${localTgz}`];
-        updateTask(key, { stage: 'installing', message: '安装中…', running: true });
-
+        const finalArgs = [...args, 'plugin', '--profile', profileName, 'add', url];
         const child = spawn(file, finalArgs, {
-          cwd: profileDir || undefined,
+          cwd: dir,
           stdio: ['ignore', 'pipe', 'pipe'],
           env: { ...process.env, CI: 'true' },
         });
@@ -463,27 +453,30 @@ export function apply(ctx, config) {
           console.error('[dsh-jack-market] spawn:', e && e.message);
           updateTask(key, { stage: 'failed', message: `启动失败: ${(e && e.message) || 'unknown'}`, running: false });
         });
-        child.on('close', (code) => {
+        child.on('close', async (code) => {
           console.log(`[dsh-jack-market] install exited ${code} for ${url}`);
-          // 注意：不删除下载的 tgz——pnpm 的 file: 引用会长期指向它，
-          // 删除会导致下次 ENOENT。pkgs/ 目录留着做稳定缓存。
           const prev = installTasks.get(key) || {};
-          // 用分类器对完整输出做一次最终判定（捕获 pnpm 的 ERR_PNPM_* 等）
-          const finalStage = classifyStage(`${out}\n${err}`, prev.stage || 'running');
+          const fullLog = `${out}\n${err}`;
+          const finalStage = classifyStage(fullLog, prev.stage || 'running');
           const failedNow = code !== 0 || prev.stage === 'failed' || finalStage.stage === 'failed';
-          if (code !== 0) console.error('[dsh-jack-market] stderr:', err.slice(-4000));
           let message = '安装成功';
           if (failedNow) {
-            // 优先取分类器识别到的失败行；无则取 stderr 尾部；再无则给可读提示
-            const failLine = String(finalStage.message || '').trim();
+            const kind = classifyFailure(fullLog);
             const errTail = err.trim().slice(-400);
-            message = failLine && !failLine.includes('安装失败') ? failLine : (errTail || '安装失败（退出码 ' + code + '，详见 pnpm 日志）');
-            if (message.length > 500) message = message.slice(0, 500);
+            message = kind !== 'unknown' ? `安装失败（${kind}）` : (errTail || `安装失败（退出码 ${code}，详见 pnpm 日志）`);
+            if (errTail && message.length > 500) message = message.slice(0, 500);
+            // ② 失败：恢复快照（洗掉 pnpm 写入的坏 lockfile 条目），再按原 lockfile 重装
+            try {
+              await restoreProfileFiles(dir, saved);
+              const repaired = await repairProfile(dir, { ...process.env, CI: 'true' });
+              console.log(`[dsh-jack-market] 已恢复 profile 快照, repair exit=${repaired.code}`);
+            } catch (e) {
+              console.error('[dsh-jack-market] 恢复快照失败:', e && e.message);
+            }
           }
           updateTask(key, { stage: failedNow ? 'failed' : 'done', message, running: false });
           // 任务已结束：保留 30 秒（让客户端能轮询到最终 done/failed 状态），
-          // 之后清除避免 stale 残留。此前 5 秒太短——客户端 700ms 轮询可能
-          // 正好错过 done/failed，拿到 idle 后无法判断结果导致进度条卡住。
+          // 之后清除避免 stale 残留。
           setTimeout(() => { if (installTasks.get(key)?.running === false) installTasks.delete(key); }, 30_000);
         });
       },
