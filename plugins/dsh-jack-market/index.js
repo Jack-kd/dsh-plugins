@@ -396,15 +396,25 @@ async function downloadFrom(url, dest, { signal, onProgress } = {}) {
   return bytes;
 }
 
-/** 总入口：选路 + 按优先级逐个节点下载，全部失败抛错。 */
+/** 总入口：按序尝试全部节点（直连 + 全部镜像，probe 只排序不过滤），成功即停。 */
 async function downloadTgz(url, { dest, signal, onProgress } = {}) {
-  const fs = await import('node:fs');
   const fsp = await import('node:fs/promises');
   await fsp.mkdir((await import('node:path')).dirname(dest), { recursive: true });
-  const order = await pickFastest(url, { signal });
+  // probe 测速排序（镜像快→慢，直连最后兜底）；**不因 bps=0 过滤节点**——
+  // 镜像 probe 可能因 Range 不支持/首字慢而测为 0，但实际下载可用
+  // （2026-10-18 实测：直连 probe 4.7KB/s 排第一但下载 redirect 后 socket hang up，
+  //  镜像 probe 可能低但下载 0.6s 成功——所以全部节点都要试）。
+  const ranked = await pickFastest(url, { signal });
+  // pickFastest 已把 bps=0 的镜像过滤了 → 这里强制补回全部镜像
+  const seen = new Set(ranked.map((r) => r.via));
+  const direct = ranked.find((r) => r.via === 'direct' || r.via === 'direct(fallback)');
+  const mirrorCands = GH_MIRRORS
+    .map((m) => ({ u: rewriteViaMirror(url, m), via: m, bps: 0 }))
+    .filter((m) => !seen.has(m.via));
+  const order = [...ranked.filter((r) => r.via !== 'direct' && r.via !== 'direct(fallback)'), ...mirrorCands, direct || { u: url, via: 'direct', bps: 0 }];
   let lastErr = null;
   for (const cand of order) {
-    audit('download.try', `${cand.via} bps=${cand.bps}`);
+    audit('download.try', `${cand.via} bps=${Math.round(cand.bps)}`);
     try {
       const t0 = Date.now();
       const bytes = await downloadFrom(cand.u, dest, { signal, onProgress });

@@ -13,12 +13,18 @@ Jack-kd 的 DSH 插件市场：直接从本仓库浏览可安装的插件，并�
 ## 安装
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.6.2/dsh-jack-market-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.6.3/dsh-jack-market-plugin.tgz
 ```
 
 ## 使用
 
 装完重启一次 App（让设置页入口出现），然后打开 **设置 → Jack 插件市场**。列出插件点「安装」即可一键安装；已安装的插件显示「已安装」，若仓库有新版本则显示蓝色「更新」按钮，点击即升级。
+
+> **v0.6.3 修复：下载节点被错误过滤（只剩直连兜底 → 直连失败就整体失败）**
+> - **审计日志实证**（2026-10-18 1105 日志）：`download.try: direct(fallback)` 后 `download.nodeFail: socket hang up`——**只试了直连，没试任何镜像**；
+> - **根因**：`pickFastest` 的 probe 把 bps=0 的镜像过滤掉了，候选只剩 `direct(fallback)`；而直连 redirect 到 `release-assets.githubusercontent.com` CDN 后 socket hang up → 没有别的节点可试 → 整体失败；
+> - **修复**：下载候选 = 直连 + **全部 9 个镜像**（probe 只排序不过滤），逐个尝试、成功即停；
+> - 实测（2026-10-18）：直连 redirect 后不通，**5 个镜像全部 0.6~1.4s 下载成功**。
 
 > **v0.6.2 修复：阶段判定 bug（进度卡住但实际已装的直接原因）**
 > - **审计日志实证**（2026-10-18 1051 日志）：安装实际**成功**（下载 1.2s + pnpm 10.7s，`install.final done`），但日志显示 `pnpm.stage: installing→[object Object]`——阶段被序列化坏了；
