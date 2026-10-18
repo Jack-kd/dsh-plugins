@@ -57,9 +57,50 @@ const PROBE_MAX = 512 * 1024;      // 每个探测最多读 512KB
 const SEGMENT_MIN = 4 * 1024 * 1024; // 小于此值不切片
 const CONNECT_TIMEOUT = 12_000;
 
+// ── 下载优先策略（prefer）───────────────────────────────────────────────
+// 'mirror'：镜像优先 —— 只要任一镜像测速达标就用镜像，直连仅作兜底（门槛很高）。
+//           国内访问 GitHub 慢、镜像普遍可达时最合适；对镜像按历史速度排序后
+//           逐个测、命中即用（early-exit），不再 10 个镜像全量并行测速。
+// 'smart'：智能平衡（默认）—— 镜像门槛提高到「明显快」才选（150 KB/s），
+//           直连门槛降低（120 KB/s）；大文件用 5s 测准，避免「直连忽快忽慢被误选」。
+// 'direct'：直连优先（老行为）—— 直连 200 KB/s 门槛，镜像仅 40 KB/s 兜底。
+const PREFER_PRESETS = {
+  mirror: { mirrorMin: MIN_MIRROR_OK, directMin: 800 * 1024, probeMs: 5000, maxProbes: 4, earlyExit: true },
+  smart:  { mirrorMin: 150 * 1024,    directMin: 120 * 1024, probeMs: 5000, maxProbes: 6, earlyExit: false },
+  direct: { mirrorMin: MIN_MIRROR_OK, directMin: MIN_DIRECT_OK, probeMs: 3500, maxProbes: 10, earlyExit: false },
+};
+
+// 镜像历史测速缓存：进程内记住每个镜像最近一次的实测带宽，用于下次排序预热
+// （快的镜像排前面先测；mirror 档命中即用）。5 分钟过期，避免陈旧数据误导。
+const mirrorSpeedCache = new Map(); // normBase(mirror) -> { bps, at }
+const MIRROR_CACHE_TTL_MS = 5 * 60_000;
+
 export function clampInt(v, lo, hi) {
   const n = Number.isFinite(v) ? Math.floor(v) : lo;
   return Math.max(lo, Math.min(hi, n));
+}
+
+/** 归一化 prefer 参数，非法值回退 smart（保持向后兼容）。 */
+export function normalizePrefer(v) {
+  return v === 'mirror' || v === 'smart' || v === 'direct' ? v : 'smart';
+}
+
+/** 记住某个镜像的实测带宽（供下次排序预热）。 */
+function rememberMirrorSpeed(base, bps) {
+  if (!base || base === 'direct' || !Number.isFinite(bps) || bps <= 0) return;
+  try { mirrorSpeedCache.set(normBase(base), { bps, at: Date.now() }); } catch { /* no-op */ }
+}
+
+/** 按历史速度把镜像从快到慢排序；无缓存记录的新镜像按原顺序排在缓存之后。 */
+function sortMirrorsByHistory(mirrors) {
+  const now = Date.now();
+  return [...mirrors].sort((a, b) => {
+    const ca = mirrorSpeedCache.get(normBase(a));
+    const cb = mirrorSpeedCache.get(normBase(b));
+    const va = ca && now - ca.at < MIRROR_CACHE_TTL_MS ? ca.bps : 0;
+    const vb = cb && now - cb.at < MIRROR_CACHE_TTL_MS ? cb.bps : 0;
+    return vb - va;
+  });
 }
 
 function rewriteFor(url, base, style) {
@@ -143,7 +184,7 @@ function httpGet(url, { headers = {}, followRedirects = 5, signal, timeoutMs = C
   });
 }
 
-export async function probe(url, { followRedirects = 1, signal } = {}) {
+export async function probe(url, { followRedirects = 1, signal, budgetMs = PROBE_BUDGET_MS, maxBytes = PROBE_MAX } = {}) {
   const t0 = Date.now();
   try {
     const { status, headers, stream } = await httpGet(url, {
@@ -163,7 +204,7 @@ export async function probe(url, { followRedirects = 1, signal } = {}) {
     let settled = false;
     await new Promise((resolve) => {
       stream.on('data', (c) => {
-        if (Date.now() - t0 >= PROBE_BUDGET_MS || len >= PROBE_MAX) {
+        if (Date.now() - t0 >= budgetMs || len >= maxBytes) {
           if (!settled) { settled = true; stream.destroy(); resolve(); }
           return;
         }
@@ -181,21 +222,65 @@ export async function probe(url, { followRedirects = 1, signal } = {}) {
   }
 }
 
-async function pick(url, { rule, directOnly = false, signal } = {}) {
-  const cands = [{ u: url, via: 'direct', follow: 0 }];
+/**
+ * 选路核心：按 prefer 策略在「直连 + 镜像」之间挑最快的可用路线。
+ *
+ * - direct 档：老行为，直连 200 KB/s 门槛优先。
+ * - smart 档：直连降到 120 KB/s、镜像提到 150 KB/s，测速 5s（大文件更准）。
+ * - mirror 档：镜像优先，按历史速度排序后逐个测、命中即用（early-exit），
+ *   直连门槛 800 KB/s 只作强兜底（镜像全挂才轮到它）。
+ *
+ * 返回 { u, via, speed, size, rangeOk }；完全无合格候选时回退直连。
+ */
+async function pick(url, { rule, directOnly = false, signal, prefer = 'smart', fileSizeHint = null } = {}) {
+  const presets = PREFER_PRESETS[prefer] || PREFER_PRESETS.smart;
+  // 测速预算：小文件（<5MB，或未知大小）用短预算快速决策；大文件用长预算测准。
+  const isSmall = fileSizeHint != null && fileSizeHint > 0 && fileSizeHint < SEGMENT_MIN;
+  const budgetMs = isSmall ? 2500 : presets.probeMs;
+
+  // 直连候选
+  const direct = { u: url, via: 'direct', follow: 0, min: presets.directMin };
+
+  // 镜像候选（mirror 档先按历史速度排序）
+  let mirrorCands = [];
   if (!directOnly && rule) {
-    for (const m of rule.mirrors) cands.push({ u: rewriteFor(url, m, rule.style), via: m, follow: 1 });
+    const mirrors = prefer === 'mirror' ? sortMirrorsByHistory(rule.mirrors) : rule.mirrors;
+    mirrorCands = mirrors
+      .slice(0, presets.maxProbes) // 并行探针减负：最多测前 N 个
+      .map((m) => ({ u: rewriteFor(url, m, rule.style), via: m, follow: 1, min: presets.mirrorMin }));
   }
-  const results = await Promise.allSettled(cands.map((c) => probe(c.u, { followRedirects: c.follow, signal })));
+
+  // mirror 档：逐个测、命中即用（early-exit），不并行
+  if (prefer === 'mirror' && mirrorCands.length) {
+    for (const c of mirrorCands) {
+      const r = await probe(c.u, { followRedirects: c.follow, signal, budgetMs });
+      if (r.bps >= c.min) {
+        rememberMirrorSpeed(c.via, r.bps);
+        return { u: c.u, via: c.via, speed: r.bps, size: r.size, rangeOk: r.rangeOk };
+      }
+      rememberMirrorSpeed(c.via, r.bps); // 低于门槛也记，供下次排序参考
+    }
+    // 所有镜像都低于门槛：直连门槛较高（800KB/s），此处直接回退直连探测
+    const dr = await probe(direct.u, { followRedirects: 0, signal, budgetMs });
+    if (dr.bps >= direct.min) return { u: direct.u, via: 'direct', speed: dr.bps, size: dr.size, rangeOk: dr.rangeOk };
+    // 直连也不达标：仍选镜像中最快的（好过没有），并保留直连作为最终兜底
+    return { u: mirrorCands[0].u, via: mirrorCands[0].via, speed: 0, size: null, rangeOk: false };
+  }
+
+  // smart / direct 档：并行测速，取达标中带宽最高者
+  const cands = [direct, ...mirrorCands];
+  const results = await Promise.allSettled(cands.map((c) => probe(c.u, { followRedirects: c.follow, signal, budgetMs })));
   let best = null;
   cands.forEach((c, i) => {
     const r = results[i].status === 'fulfilled' ? results[i].value : { bps: 0, size: null, rangeOk: false };
-    const okMin = c.via === 'direct' ? MIN_DIRECT_OK : MIN_MIRROR_OK;
-    if (r.bps >= okMin && (!best || r.bps > best.bps)) {
+    if (r.bps >= c.min && (!best || r.bps > best.bps)) {
       best = { u: c.u, via: c.via, speed: r.bps, size: r.size, rangeOk: r.rangeOk };
     }
+    if (c.via !== 'direct') rememberMirrorSpeed(c.via, r.bps);
   });
-  return best || { u: url, via: 'direct(fallback)', speed: 0, size: null, rangeOk: false };
+  if (best) return best;
+  // 无合格候选：回退直连（保持老行为），若连直连都失败由上层报错
+  return { u: url, via: 'direct(fallback)', speed: 0, size: null, rangeOk: false };
 }
 
 function delay(ms) {
@@ -255,10 +340,12 @@ export async function runDownload(url, {
   rules = DEFAULT_RULES,
   mirror = null,        // 显式指定镜像 base，跳过规则全表
   mirrorStyle = null,   // 可选：显式指定 mirror 的改写样式 'prefix' | 'host'；缺省按已知规则自动识别
+  prefer = 'smart',     // 下载优先策略：'mirror' | 'smart' | 'direct'
   signal,
   onProgress,           // 可选：进度上报回调 ({ doneB, totalB, kbPerSec })
 } = {}) {
   const t0 = Date.now();
+  const pref = normalizePrefer(prefer);
   // 已下载字节累计（多线程分片并发时各分片 onBytes 并发回调，用闭包共享计数）
   let done = 0;
   let lastEmit = 0;
@@ -281,7 +368,9 @@ export async function runDownload(url, {
         mirrors: [mirror],
       }
     : matchRule(url, rules);
-  const picked = await pick(url, { rule, directOnly: !rule });
+
+  // 先探测拿 size（供选路判断小文件、以及分片决策）；选路用同一轮探测结果避免重复请求
+  const picked = await pick(url, { rule, directOnly: !rule, signal, prefer: pref });
   let size = picked.size;
   if (!size) size = await getSize(picked.u, signal);
 
@@ -292,9 +381,20 @@ export async function runDownload(url, {
     : null;
   const stopReporter = () => { if (reporter) clearInterval(reporter); };
 
+  // 候选下载路线（按「镜像历史速度从快到慢」排列，供失败降级）
+  // mirror 档 pick 已经 early-exit，但下载中途失败仍要按速度降级到下一个镜像。
+  const candidates = (() => {
+    if (mirror) return [rewriteFor(url, mirror, rule.style)];
+    if (!rule) return [picked.u];
+    const mirrorUrls = sortMirrorsByHistory(rule.mirrors).map((m) => rewriteFor(url, m, rule.style));
+    const directFirst = pref === 'direct' ? [url] : [];
+    // 已选中路线放最前（首试），其余镜像按历史速度降序，直连兜底放最后
+    return [...directFirst, picked.u, ...mirrorUrls.filter((x) => x !== picked.u), ...(pref !== 'direct' ? [url] : [])];
+  })();
+
   if (!size || size <= SEGMENT_MIN || !picked.rangeOk) {
     let lastErr = null;
-    for (const t of [picked.u, ...(rule ? rule.mirrors.map((m) => rewriteFor(url, m, rule.style)).filter((x) => x !== picked.u) : [])]) {
+    for (const t of candidates) {
       try {
         // downloadRange 失败返回 false（不抛错），必须显式检查——否则会"假成功"
         const okDl = await downloadRange(t, 0, size ? size - 1 : null, out, { retries: 1, signal, onBytes: sumBytes });
@@ -306,7 +406,7 @@ export async function runDownload(url, {
         stopReporter();
         const fin = fs.existsSync(out) ? fs.statSync(out).size : done;
         if (typeof onProgress === 'function') onProgress({ doneB: fin, totalB: size || fin, kbPerSec: 0 });
-        return summarize(out, picked.via, size, t0, rule);
+        return summarize(out, t === url ? 'direct' : t, size, t0, rule);
       } catch (e) {
         lastErr = e;
       }
@@ -320,9 +420,42 @@ export async function runDownload(url, {
   for (let s = 0; s < size; s += seg) ranges.push([s, Math.min(s + seg - 1, size - 1)]);
   const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'ghaccel-'));
   const parts = ranges.map((_, i) => path.join(tmp, `seg-${i}`));
-  const okFlags = await mapLimit(ranges, threads, (r, i) =>
+  let okFlags = await mapLimit(ranges, threads, (r, i) =>
     downloadRange(picked.u, r[0], r[1], parts[i], { signal, onBytes: sumBytes }));
+
+  // 失败降级：分片有失败时，把整个任务切到「下一个候选镜像」重试一次。
+  // （部分镜像对 Range 多线程支持不完整，换路线常能恢复。）
   if (okFlags.some((f) => !f)) {
+    const next = candidates.find((x) => x !== picked.u);
+    if (next) {
+      await fsp.rm(tmp, { recursive: true, force: true });
+      const tmp2 = await fsp.mkdtemp(path.join(os.tmpdir(), 'ghaccel-'));
+      const parts2 = ranges.map((_, i) => path.join(tmp2, `seg-${i}`));
+      okFlags = await mapLimit(ranges, threads, (r, i) =>
+        downloadRange(next, r[0], r[1], parts2[i], { signal, onBytes: sumBytes }));
+      if (okFlags.some((f) => !f)) {
+        stopReporter();
+        await fsp.rm(tmp2, { recursive: true, force: true });
+        throw new Error('部分分片下载失败（含降级后重试）');
+      }
+      // 合并降级路线产物
+      await fsp.rm(tmp, { recursive: true, force: true });
+      try {
+        await pipeline(
+          (async function* merge() {
+            for (const p of parts2) yield* fs.createReadStream(p);
+          })(),
+          fs.createWriteStream(out),
+        );
+      } finally {
+        await fsp.rm(tmp2, { recursive: true, force: true });
+      }
+      const got = (await fsp.stat(out)).size;
+      if (size && got !== size) throw new Error(`大小不一致: 预期 ${size} 实际 ${got}`);
+      stopReporter();
+      if (typeof onProgress === 'function') onProgress({ doneB: size, totalB: size, kbPerSec: 0 });
+      return summarize(out, next === url ? 'direct' : next, size, t0, rule);
+    }
     stopReporter();
     await fsp.rm(tmp, { recursive: true, force: true });
     throw new Error('部分分片下载失败');
@@ -387,16 +520,30 @@ export async function getSize(url, signal) {
 }
 
 // 诊断：返回命中的规则 + 各候选取路实测带宽（不下文件）
-export async function runProbe(url, { rules = DEFAULT_RULES, signal } = {}) {
+export async function runProbe(url, { rules = DEFAULT_RULES, signal, prefer = 'smart' } = {}) {
+  const pref = normalizePrefer(prefer);
   const rule = matchRule(url, rules);
-  const cands = [{ u: url, via: 'direct', follow: 0 }];
-  if (rule) for (const m of rule.mirrors) cands.push({ u: rewriteFor(url, m, rule.style), via: m, follow: 1 });
-  const results = await Promise.allSettled(cands.map((c) => probe(c.u, { followRedirects: c.follow, signal })));
+  const mirrorCands = rule
+    ? sortMirrorsByHistory(rule.mirrors).map((m) => ({ u: rewriteFor(url, m, rule.style), via: m, follow: 1 }))
+    : [];
+  const cands = [{ u: url, via: 'direct', follow: 0 }, ...mirrorCands];
+  const results = await Promise.allSettled(cands.map((c) => probe(c.u, { followRedirects: c.follow, signal, budgetMs: 3500 })));
   const routes = cands.map((c, i) => {
     const r = results[i].status === 'fulfilled' ? results[i].value : { bps: 0, size: null, rangeOk: false };
+    if (c.via !== 'direct') rememberMirrorSpeed(c.via, r.bps);
     return { via: c.via, kbPerSec: Math.round(r.bps / 1024), rangeOk: r.rangeOk };
   });
-  return { url, ruleMatched: rule ? rule.match : '', routes };
+  // 策略建议：根据实测数据给出当前 prefer 档下的最优选择
+  const best = [...routes].sort((a, b) => b.kbPerSec - a.kbPerSec)[0] || { via: 'direct', kbPerSec: 0 };
+  const p = PREFER_PRESETS[pref];
+  const mirrorRoutes = routes.filter((r) => r.via !== 'direct');
+  const fastMirror = mirrorRoutes.find((r) => r.kbPerSec * 1024 >= p.mirrorMin);
+  let suggestion;
+  if (fastMirror) suggestion = `建议 prefer=${pref === 'mirror' ? 'mirror（已在用）' : 'mirror'}：镜像 ${fastMirror.via} 达 ${fastMirror.kbPerSec} KB/s`;
+  else if (best.via === 'direct' && best.kbPerSec * 1024 >= p.directMin) suggestion = `建议 prefer=direct：直连 ${best.kbPerSec} KB/s 已达标`;
+  else if (mirrorRoutes.length && best.kbPerSec > 0) suggestion = `建议保持 ${pref}：最快路线 ${best.via} ${best.kbPerSec} KB/s（未达镜像门槛，可考虑 direct）`;
+  else suggestion = `建议 prefer=mirror：当前网络直连/镜像均慢，镜像优先更稳`;
+  return { url, ruleMatched: rule ? rule.match : '', routes, prefer: pref, suggestion };
 }
 
 /* ---------------- git 相关 ---------------- */

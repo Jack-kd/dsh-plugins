@@ -12,6 +12,7 @@ import {
   setupGlobal,
   clampInt,
   matchRule,
+  normalizePrefer,
   DEFAULT_RULES,
 } from './lib.js';
 
@@ -82,6 +83,8 @@ const probeOutputSchema = {
   properties: {
     url: { type: 'string' },
     ruleMatched: { type: 'string' },
+    prefer: { type: 'string' },
+    suggestion: { type: 'string' },
     routes: {
       type: 'array',
       items: {
@@ -111,6 +114,7 @@ export function apply(ctx, config = {}) {
     ? [...config.rules, ...DEFAULT_RULES]
     : [...DEFAULT_RULES];
   const threads = clampInt(config.threads, 8, 32);
+  const prefer = normalizePrefer(config.prefer); // 'smart' | 'mirror' | 'direct'，默认 smart
   if (Array.isArray(config.mirrors) && config.mirrors.length) {
     rules = rules.map((r) => (/github/.test(r.match) ? { ...r, mirrors: config.mirrors } : r));
   }
@@ -222,13 +226,15 @@ export function apply(ctx, config = {}) {
       '自动对直连与多个 GitHub 加速镜像并行测速（每个 3.5 秒封顶）选最快路线；大文件按 Range 切片多线程并发下载，失败自动重试。' +
       '下载 GitHub 站内文件时优先使用本工具（比直接 curl 快数倍到数十倍）。' +
       '参数: url 必须是 github.com / raw.githubusercontent.com / codeload.github.com 开头的 https 链接；out 建议绝对路径；' +
-      'threads 并发分片数；mirror 可显式指定镜像 base 强制走它。',
+      'threads 并发分片数；prefer 下载优先策略（mirror=镜像优先/国内推荐，smart=智能平衡/默认，direct=直连优先）；' +
+      'mirror 可显式指定镜像 base 强制走它。',
     parameters: {
       type: 'object',
       properties: {
         url: { type: 'string', description: 'GitHub 文件链接' },
         out: { type: 'string', description: '保存路径（建议绝对路径）' },
         threads: { type: 'integer', description: '并发分片数，默认 8', default: 8 },
+        prefer: { type: 'string', enum: ['smart', 'mirror', 'direct'], description: '下载优先策略：mirror=镜像优先（国内推荐）；smart=智能平衡（默认）；direct=直连优先' },
         mirror: { type: 'string', description: '可选：显式指定镜像 base，强制走该镜像（样式自动识别）' },
         mirrorStyle: { type: 'string', enum: ['prefix', 'host'], description: '可选：显式指定 mirror 改写样式。prefix=镜像地址拼在原 URL 前（GitHub 代理类）；host=只替换原 URL 的 origin（npmmirror/hf-mirror 类）。缺省按内置规则自动识别，识别不到用 prefix' },
       },
@@ -243,9 +249,10 @@ export function apply(ctx, config = {}) {
       if (exec.signal?.aborted) throw new Error('已取消');
       // threads 优先取调用参数，未传时回退插件配置（修复：之前参数被静默忽略）
       const t = clampInt(args.threads ?? threads, 8, 32);
+      const pref = normalizePrefer(args.prefer ?? prefer);
       const key = exec.callId || `dl-${Date.now()}`;
       setProgress(key, { dir: 'download', doneB: 0, totalB: 0, kbPerSec: 0 });
-      return runDownload(url, { out: args.out || undefined, threads: t, rules, mirror: args.mirror || null, mirrorStyle: args.mirrorStyle || null, signal: exec.signal, onProgress: (p) => setProgress(key, { dir: 'download', ...p }) });
+      return runDownload(url, { out: args.out || undefined, threads: t, rules, prefer: pref, mirror: args.mirror || null, mirrorStyle: args.mirrorStyle || null, signal: exec.signal, onProgress: (p) => setProgress(key, { dir: 'download', ...p }) });
     },
   }));
 
@@ -308,13 +315,15 @@ export function apply(ctx, config = {}) {
       '自动匹配内置/自定义镜像规则（HuggingFace hf-mirror、npm npmmirror 等，可在插件配置里给任意站点加镜像），' +
       '对直连与各镜像并行测速选最快；大文件按 Range 切片多线程并发下载，失败自动重试并校验大小。' +
       '注意: GitHub 站内文件请使用 github_accel_download（本工具会拒收 GitHub 直链）。' +
-      '参数: url 为任意非 GitHub 的 https 链接；out 建议绝对路径；threads 并发分片数；mirror 可显式指定镜像 base。',
+      '参数: url 为任意非 GitHub 的 https 链接；out 建议绝对路径；threads 并发分片数；' +
+      'prefer 下载优先策略（mirror=镜像优先/国内推荐，smart=智能平衡/默认，direct=直连优先）；mirror 可显式指定镜像 base。',
     parameters: {
       type: 'object',
       properties: {
         url: { type: 'string', description: '任意非 GitHub 的 https 下载链接' },
         out: { type: 'string', description: '保存路径（建议绝对路径）' },
         threads: { type: 'integer', description: '并发分片数，默认 8', default: 8 },
+        prefer: { type: 'string', enum: ['smart', 'mirror', 'direct'], description: '下载优先策略：mirror=镜像优先（国内推荐）；smart=智能平衡（默认）；direct=直连优先' },
         mirror: { type: 'string', description: '可选：显式指定镜像 base，强制走该镜像（样式自动识别，npmmirror/hf-mirror 等 host 型可直接传）' },
         mirrorStyle: { type: 'string', enum: ['prefix', 'host'], description: '可选：显式指定 mirror 改写样式。prefix=镜像地址拼在原 URL 前；host=只替换原 URL 的 origin（npmmirror/hf-mirror 类）。缺省按内置规则自动识别，识别不到用 prefix' },
       },
@@ -332,21 +341,24 @@ export function apply(ctx, config = {}) {
       if (exec.signal?.aborted) throw new Error('已取消');
       // threads 优先取调用参数，未传时回退插件配置（修复：之前参数被静默忽略）
       const t = clampInt(args.threads ?? threads, 8, 32);
+      const pref = normalizePrefer(args.prefer ?? prefer);
       const key = exec.callId || `dl-${Date.now()}`;
       setProgress(key, { dir: 'download', doneB: 0, totalB: 0, kbPerSec: 0 });
-      return runDownload(url, { out: args.out || undefined, threads: t, rules, mirror: args.mirror || null, mirrorStyle: args.mirrorStyle || null, signal: exec.signal, onProgress: (p) => setProgress(key, { dir: 'download', ...p }) });
+      return runDownload(url, { out: args.out || undefined, threads: t, rules, prefer: pref, mirror: args.mirror || null, mirrorStyle: args.mirrorStyle || null, signal: exec.signal, onProgress: (p) => setProgress(key, { dir: 'download', ...p }) });
     },
   }));
 
   ctx.effect(() => ctx.tools.register({
     name: 'url_accel_probe',
     description:
-      '诊断某 URL 的下载选路：显示命中的镜像规则、直连与各镜像的实测带宽和 Range 支持（不下文件）。' +
-      '用于测试/调整插件配置里的 rules/mirrors，或对比哪个节点当前最快。',
+      '诊断某 URL 的下载选路：显示命中的镜像规则、直连与各镜像的实测带宽和 Range 支持，并给出下载优先策略建议（不下文件）。' +
+      '用于测试/调整插件配置里的 rules/mirrors，或对比哪个节点当前最快。' +
+      '参数: url 为任意 https 下载链接；prefer 可选（默认 smart），按该策略评估建议。',
     parameters: {
       type: 'object',
       properties: {
         url: { type: 'string', description: '任意 https 下载链接' },
+        prefer: { type: 'string', enum: ['smart', 'mirror', 'direct'], description: '评估所用策略，默认 smart' },
       },
       required: ['url'],
       additionalProperties: false,
@@ -355,14 +367,14 @@ export function apply(ctx, config = {}) {
     output: {
       schema: probeOutputSchema,
       render: (a, v) => textResult(
-        `URL: ${v.url}\n命中规则: ${v.ruleMatched || '无（将走直连分段加速）'}\n` +
+        `URL: ${v.url}\n命中规则: ${v.ruleMatched || '无（将走直连分段加速）'}\n策略: ${v.prefer}\n建议: ${v.suggestion || ''}\n` +
         v.routes.map((r) => `  ${r.via}  →  ${r.kbPerSec} KB/s  ${r.rangeOk ? 'Range✔' : ''}`).join('\n'),
       ),
     },
     async execute(args, exec) {
       const url = String(args.url || '').trim();
       if (!/^https?:\/\//i.test(url)) throw new Error('url 必须是 http(s) 链接');
-      return runProbe(url, { rules, signal: exec.signal });
+      return runProbe(url, { rules, signal: exec.signal, prefer: normalizePrefer(args.prefer ?? prefer) });
     },
   }));
 

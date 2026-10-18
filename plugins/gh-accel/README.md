@@ -2,6 +2,31 @@
 
 **gh-accel 与 dl-accel 合二为一**：一个插件同时负责 GitHub 与任意站点的下载/上传加速。
 
+## v2.7.0 · 下载优先策略（prefer 三档）
+
+新增**下载优先策略**配置，下载选路更聪明，国内网络提速明显：
+
+- **`smart`（默认，智能平衡）**：镜像门槛从 40 KB/s 提到 **150 KB/s**（只有「明显快」的镜像才选）；直连门槛从 200 KB/s 降到 **120 KB/s**；大文件测速预算 **3.5s → 5s**，避免「直连忽快忽慢被误选」。
+- **`mirror`（镜像优先，国内推荐）**：只要任一镜像测速达标（40 KB/s）就**命中即用**（early-exit），直连仅作 800 KB/s 强兜底；按历史实测速度给镜像排序，**每次最多只测前 4 个**，不再 10 个全量并行。
+- **`direct`（直连优先）**：保持 v2.6 老行为（直连 200 KB/s 门槛）。
+
+配套改进（三档都受益）：
+
+- **镜像历史速度缓存**：进程内记住每个镜像最近一次实测带宽（5 分钟），下次下载**快的镜像先测**，慢镜像靠后；
+- **小文件快速决策**：<4MB 文件用 2.5s 短探测，大文件才用 5s 测准，小下载不再等半天；
+- **失败降级链**：选中路线分片失败时，自动切到「历史第二快镜像」整任务重试一次，不再直接失败；
+- **probe 输出策略建议**：`url_accel_probe` 现在额外返回 `prefer` + `suggestion`（例如「建议 prefer=mirror：镜像 X 达 Y KB/s」），帮你判断当前网络该用哪档。
+
+**用法**：
+
+- 插件配置加 `prefer`（`smart` / `mirror` / `direct`，默认 `smart`）；
+- 工具参数也可临时指定：`github_accel_download(url=..., prefer="mirror")` 或 `url_accel_download(..., prefer="mirror")`，单次覆盖配置。
+
+> 安装：
+> ```bash
+> dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.7.0/gh-accel-plugin.tgz
+> ```
+
 ## v2.6.1 · 胶囊刷新更顺滑
 
 把胶囊的数据刷新与动画从"一格一格跳"改成**连续丝滑**：
@@ -13,7 +38,7 @@
 
 > 安装：
 > ```bash
-> dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.6.1/gh-accel-plugin.tgz
+> dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.7.0/gh-accel-plugin.tgz
 > ```
 
 ## v2.6.0 · 胶囊实时速度 / 进度显示（方案 A）
@@ -29,7 +54,7 @@
 
 > 安装：
 > ```bash
-> dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.6.1/gh-accel-plugin.tgz
+> dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.7.0/gh-accel-plugin.tgz
 > ```
 
 ## v2.5.2 · 修复系统提示从未注入 + 补全 HF/npm 全局镜像
@@ -169,7 +194,7 @@ https://registry.npmmirror.comhttps://registry.npmjs.org/typescript/...
 ## 安装
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.6.1/gh-accel-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.7.0/gh-accel-plugin.tgz
 ```
 
 或「插件管理 → 添加插件」粘贴同一地址。

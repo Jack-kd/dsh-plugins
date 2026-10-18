@@ -72,8 +72,10 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/chat-keeper-mobile-v1.2
 </details>
 
 <details>
-<summary><b>▶ 加速器 · 下载加速（GitHub + 通用，合并版）</b>　<code>v2.6.1</code></summary>
+<summary><b>▶ 加速器 · 下载加速（GitHub + 通用，合并版）</b>　<code>v2.7.0</code></summary>
 
+> **v2.7.0**：新增**下载优先策略 `prefer`**（三档：`mirror` 镜像优先/国内推荐 / `smart` 智能平衡/默认 / `direct` 直连优先/老行为）。`smart` 档镜像门槛 40→**150 KB/s**、直连门槛 200→**120 KB/s**、大文件测速 3.5s→5s；`mirror` 档按镜像历史速度排序后**命中即用**（最多测 4 个，不再 10 个全量并行）；新增镜像历史测速缓存（5 分钟）、小文件 2.5s 快速决策、失败自动切第二快镜像降级重试；`url_accel_probe` 新增 `prefer`+`suggestion` 策略建议输出。工具参数可临时指定 `prefer` 覆盖配置。
+>
 > **gh-accel 与 dl-accel 合二为一（v2.6.0）**：一个插件同时负责 GitHub 与任意站点的下载/上传加速。`github_accel_download`（GitHub 文件，自动测速选最快镜像 + 8 线程分段）、`github_accel_clone`（加速 clone）、`github_accel_push`（push 自动绕过只读镜像）、`url_accel_download`（任意非 GitHub 站点，规则驱动镜像：HuggingFace hf-mirror / npm npmmirror，可配置扩展）、`url_accel_probe`（选路诊断）。装好后自动配置 git 镜像改写、pip 清华源、**HF_ENDPOINT 与 npm registry 镜像**；GitHub 直链自动引导专用工具，国内服务器自动直连不绕路。实测比直连快数倍到数十倍。
 >
 > **v2.6.1**：胶囊**刷新更顺滑**——进度上报 400ms→200ms、前端轮询 500ms→200ms，环形进度圈新增 rAF 平滑插值（每帧逼近目标百分比）并缩短过渡时间，转圈与「已下载/总量」动画不再一格一格跳，连续丝滑（此前上传 push 仍为「↑ 推送中…」不确定态）。
@@ -91,13 +93,13 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/chat-keeper-mobile-v1.2
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.6.1/gh-accel-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.7.0/gh-accel-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.6.1/gh-accel-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.7.0/gh-accel-plugin.tgz
 ```
 
 > 镜像（ghfast.top 等）是公共第三方服务、有失效风险；可在配置里用 `mirrors`/`rules` 自行增删站点规则。下载大文件建议指定绝对 `out` 路径。

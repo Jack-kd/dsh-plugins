@@ -1,6 +1,6 @@
 {
   "name": "@local/gh-accel",
-  "version": "2.6.1",
+  "version": "2.7.0",
   "private": true,
   "type": "module",
   "description": "加速器（gh-accel v2）：GitHub 与通用 URL 下载加速合并版。规则驱动镜像 + 多线程分段下载，自动配置 git/pip 全局加速，实测比直连快数倍到数十倍；v2.6.1 胶囊更顺滑：进度上报与前端轮询 400/500ms→200ms，环形圈加 rAF 平滑插值，转动与分式进度动画丝滑不卡顿；v2.6.0 新增胶囊实时速度/进度显示（环形进度圈+中心呼吸灯，下载态显示 ↓速度·已完成/总量，上传push显示↑推送中，host 新增 /gh-accel/progress 只读端点 + lib.js 字节采集）；v2.5.2 修复「文件下载优选规则」系统提示从未注入的问题（sc.section 写成内层上下文缺 systemPrompt、且缺 section 必需的 order，两处错误被 catch 静默吞掉）；v2.5.1 修复显式 mirror 对 host 型镜像被按 prefix 拼接的问题；v2.5.0 修复显式指定 mirror 参数时必失败的问题；v2.4.0 修复「⚡ 加速器加速中…」状态小框不显示的根本原因",
