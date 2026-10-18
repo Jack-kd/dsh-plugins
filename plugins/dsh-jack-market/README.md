@@ -13,12 +13,18 @@ Jack-kd 的 DSH 插件市场：直接从本仓库浏览可安装的插件，并�
 ## 安装
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.6.1/dsh-jack-market-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.6.2/dsh-jack-market-plugin.tgz
 ```
 
 ## 使用
 
 装完重启一次 App（让设置页入口出现），然后打开 **设置 → Jack 插件市场**。列出插件点「安装」即可一键安装；已安装的插件显示「已安装」，若仓库有新版本则显示蓝色「更新」按钮，点击即升级。
+
+> **v0.6.2 修复：阶段判定 bug（进度卡住但实际已装的直接原因）**
+> - **审计日志实证**（2026-10-18 1051 日志）：安装实际**成功**（下载 1.2s + pnpm 10.7s，`install.final done`），但日志显示 `pnpm.stage: installing→[object Object]`——阶段被序列化坏了；
+> - **bug 1**：`classifyStage` 返回 `{stage, message}` 对象，但调用处把整个对象当 `stage` 存 → client 拿到的 `t.stage` 是 `[object Object]`，**永远不等于 `'done'`/`'idle'`** → 收尾判断不成立 → 进度条轮询到超时（实际已装好）；
+> - **bug 2**：pnpm 的 `Progress: ... added 0` 行误判为 `done`（`added ` 关键词命中），阶段闪烁错乱；
+> - **修复**：解构 stage/message 分别存储；`Progress:` 行一律归为「安装中」，只有 `Done in` / `Added N packages` 才算完成。
 
 > **v0.6.1 移植加速器选路（下载不再卡死）**
 > - **审计日志实证**（2026-10-18）：安装卡住的根因是**直连 `github.com/releases/download` 超时**（retry-count 9KB 都 30s 下不完，日志 `download.fail 下载超时 耗时=30266ms`）；

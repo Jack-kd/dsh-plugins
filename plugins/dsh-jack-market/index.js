@@ -490,16 +490,23 @@ function classifyFailure(log) {
 function classifyStage(text, current) {
   const t = String(text || '').toLowerCase();
   const has = (...kws) => kws.some((k) => t.includes(k));
+  // 失败优先（稳定）
   if (has('err_pnpm_', 'error:', 'failed', 'denied', 'refused', 'enetdown', 'econnrefused',
           'eacces', 'enoent', 'integrity check failed', 'checksum mismatch', 'tarball integrity',
           'missing_tarball', 'lockfile', 'cannot install', 'frozen-lockfile', '校验失败',
           'pnpm error', 'exit code'))
     return { stage: 'failed', message: text.trim().split('\n').filter(Boolean).slice(-6).join(' | ') };
-  if (has('progress:', 'resolved ', 'downloaded ', 'fetching', 'downloading', '下载') && current !== 'installing')
+  // pnpm 的 Progress 行（每行都带 resolved/reused/downloaded/added 计数）——
+  // 一律归为「安装中」，不能当成完成（其中 `added N` 不是完成标志）。
+  if (has('progress:')) return { stage: 'installing', message: '安装中…' };
+  // 真正完成标志：`Done in` / `added N packages` / `Already up to date`
+  if (has('done in', 'already up to date') || /added \d+ packages/.test(t))
+    return { stage: 'done', message: '完成' };
+  if (has('downloading', 'fetching', '下载') && current !== 'installing')
     return { stage: 'downloading', message: '下载中…' };
   if (has('verifying', 'integrity', 'checksum', '校验', 'sha256')) return { stage: 'verifying', message: '校验中…' };
   if (has('installing', 'adding', '安装', 'add ', 'extract', '解压', 'packages')) return { stage: 'installing', message: '安装中…' };
-  if (has('added ', 'installed', 'complete', 'done', '完成', 'success', 'done in')) return { stage: 'done', message: '完成' };
+  if (has('added ', 'installed', 'complete', '完成', 'success')) return { stage: 'done', message: '完成' };
   return current || 'running';
 }
 
@@ -658,15 +665,17 @@ export function apply(ctx, config) {
           if (now - lastClassify < 300 && !/err_pnpm_|error:|\bfailed\b/i.test(String(chunk || ''))) return;
           lastClassify = now;
           const prevStage = installTasks.get(key)?.stage || 'running';
-          const stage = classifyStage(`${out}\n${err}`, prevStage);
+          const cls = classifyStage(`${out}\n${err}`, prevStage);
+          const newStage = cls.stage;
+          const stageMsg = cls.message;
           updateTask(key, {
-            stage,
-            message: stage === 'failed'
-              ? (String(stage.message || '').trim() || '安装失败')
+            stage: newStage,
+            message: newStage === 'failed'
+              ? (String(stageMsg || '').trim() || '安装失败')
               : (installTasks.get(key)?.message || '进行中…'),
           });
           // 记录阶段变化（只记变化，不刷屏）
-          if (stage !== prevStage) audit('pnpm.stage', `${key} ${prevStage}→${stage}`);
+          if (newStage !== prevStage) audit('pnpm.stage', `${key} ${prevStage}→${newStage}`);
         };
         child.stdout && child.stdout.on('data', (d) => { audit('pnpm.out', String(d).slice(0, 300)); classifyNow(d, false); });
         child.stderr && child.stderr.on('data', (d) => { audit('pnpm.err', String(d).slice(0, 300)); classifyNow(d, true); });
