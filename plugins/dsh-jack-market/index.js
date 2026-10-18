@@ -282,7 +282,10 @@ function rewriteViaMirror(url, base) {
     const u = new URL(url);
     if (!/^https?:\/\//i.test(base)) return url;
     const b = new URL(base);
-    return b.toString().replace(/\/+$/, '') + u.toString();
+    // prefix 代理格式：镜像 base（**保留尾斜杠**）+ 完整原 URL
+    // 例：https://ghfast.top/ + https://github.com/a/b → https://ghfast.top/https://github.com/a/b
+    // （v0.6.3 曾误删尾斜杠，拼成 ghfast.tophttps://... 域名解析失败 ENOTFOUND）
+    return b.toString() + u.toString();
   } catch {
     return base + url;
   }

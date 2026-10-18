@@ -13,12 +13,18 @@ Jack-kd 的 DSH 插件市场：直接从本仓库浏览可安装的插件，并�
 ## 安装
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.6.3/dsh-jack-market-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.6.4/dsh-jack-market-plugin.tgz
 ```
 
 ## 使用
 
 装完重启一次 App（让设置页入口出现），然后打开 **设置 → Jack 插件市场**。列出插件点「安装」即可一键安装；已安装的插件显示「已安装」，若仓库有新版本则显示蓝色「更新」按钮，点击即升级。
+
+> **v0.6.4 修复：镜像 URL 拼接错误（镜像全挂的根因）**
+> - **审计日志实证**（2026-10-18 1118 日志）：9 个镜像全部 `getaddrinfo ENOTFOUND ghfast.tophttps`——**域名拼错了**；
+> - **根因**：`rewriteViaMirror` 把镜像 base 的**尾斜杠删掉**后拼接，得到 `https://ghfast.tophttps://github.com/...`（域名变 `ghfast.tophttps`）→ 解析失败；
+> - **修复**：保留 base 尾斜杠 → `https://ghfast.top/https://github.com/...`（标准 prefix 代理格式）；
+> - 实测：`https://ghfast.top/https://github.com/...` 下载 9206B，sha256 正确（`a4b38495` = retry-count v2.0.8）。
 
 > **v0.6.3 修复：下载节点被错误过滤（只剩直连兜底 → 直连失败就整体失败）**
 > - **审计日志实证**（2026-10-18 1105 日志）：`download.try: direct(fallback)` 后 `download.nodeFail: socket hang up`——**只试了直连，没试任何镜像**；
