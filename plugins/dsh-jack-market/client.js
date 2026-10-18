@@ -241,19 +241,34 @@ window.__ModuleLoader__.load({
             try {
               const t = await fetchJson(`/dsh-jack-market/task?key=${encodeURIComponent(plugin.key)}`);
               if (t && t.stage) {
+                // idle = host 任务已清理（安装已结束但状态可能刚被删）→ 停止轮询
+                if (t.stage === 'idle') { finalTask = null; break; }
                 setTasks((prev) => new Map(prev).set(plugin.key, t));
                 finalTask = t;
                 if (t.stage === 'done' || t.stage === 'failed') break;
               }
             } catch { /* transient */ }
           }
-          // 超时兜底：3 分钟后仍未结束 → 标记失败，避免永久卡在「进行中」
-          if (!finalTask || (finalTask.stage !== 'done' && finalTask.stage !== 'failed')) {
-            setTasks((prev) => {
-              const next = new Map(prev);
-              next.set(plugin.key, { stage: 'failed', message: '安装超时（3 分钟未完成），请重试或查看 pnpm 日志', running: false });
-              return next;
+          // 收尾判定：
+          //   - 轮询到 done → 成功
+          //   - 轮询到 failed → 失败（保留任务状态供展示）
+          //   - 轮询到 idle / 超时 → 以「实际是否已安装」为准：装了即成功，否则超时
+          if (finalTask && finalTask.stage === 'done') {
+            setTasks((prev) => new Map(prev).set(plugin.key, { stage: 'done', message: '安装成功', running: false }));
+          } else if (finalTask && finalTask.stage === 'failed') {
+            // 保留 host 的失败状态（含原因）
+          } else {
+            const inst = await fetchJson('/dsh-jack-market/installed').catch(() => ({ installed: [] }));
+            const deps = inst.installed || [];
+            const hit = deps.some((d) => {
+              const n = typeof d === 'string' ? d : (d && d.name);
+              return typeof n === 'string' && keyCandidates(n).includes(plugin.key);
             });
+            if (hit) {
+              setTasks((prev) => new Map(prev).set(plugin.key, { stage: 'done', message: '安装成功', running: false }));
+            } else {
+              setTasks((prev) => new Map(prev).set(plugin.key, { stage: 'failed', message: '安装超时或失败，请重试或查看 pnpm 日志', running: false }));
+            }
           }
           await load();
         } catch (e) {

@@ -15,8 +15,7 @@
 
 import { spawn } from 'node:child_process';
 import { existsSync, createWriteStream } from 'node:fs';
-import { mkdtemp, rm, rename } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import https from 'node:https';
 import http from 'node:http';
@@ -252,14 +251,16 @@ async function handleInstalled(request, response, profileDir) {
 const installTasks = new Map(); // key -> { stage, message, at, running }
 
 /**
- * 下载 GitHub release 资产到本地临时文件（跟随重定向，Node 原生实现）。
+ * 下载 GitHub release 资产到本地稳定路径（跟随重定向，Node 原生实现）。
  * 返回 { dest, bytes }；失败抛错。onProgress 用于阶段/字节反馈。
  * 关键：先下载到本地再用 `file:` 引用安装，避免 pnpm 对 URL tarball
  * 不写 integrity 导致 ERR_PNPM_MISSING_TARBALL_INTEGRITY（pnpm 已知坑）。
+ * 目标必须是**稳定路径**（如 <profileDir>/.dsh-market/pkgs/<key>-plugin.tgz），
+ * 不能是随机临时目录——pnpm 会把 file: 路径写进 lockfile 并复用，临时文件
+ * 被删会导致下次 ENOENT。
  */
-async function downloadTgz(url, { signal, onProgress } = {}) {
+async function downloadTgz(url, { dest, signal, onProgress } = {}) {
   const mod = url.startsWith('https:') ? https : http;
-  const dest = join(await mkdtemp(join(tmpdir(), 'jm-dl-')), 'pkg.tgz');
   let bytes = 0;
   let lastEmit = 0;
   await new Promise((resolveP, rejectP) => {
@@ -403,13 +404,18 @@ export function apply(ctx, config) {
         }
         const key = typeof body?.key === 'string' && body.key ? body.key : 'unknown';
 
-        // ① 先下载 tgz 到临时目录（阶段：下载中）
+        // ① 先下载 tgz 到 profile 目录下的稳定路径（阶段：下载中）
+        // 稳定路径（非临时）：pnpm 会把 file: 路径写进 lockfile 并长期复用，
+        // 随机临时目录会被删导致下次 ENOENT（v0.4.3 的坑）。
+        const pkgsDir = join(profileDir || '/root/.dsh/profiles/web', '.dsh-market', 'pkgs');
+        const localTgz = join(pkgsDir, `${key}-plugin.tgz`);
         updateTask(key, { stage: 'downloading', message: '下载中…', running: true });
         sendJson(response, 202, { status: 'started', target: url, key });
 
-        let localTgz;
         try {
-          const dl = await downloadTgz(url, {
+          await mkdir(pkgsDir, { recursive: true });
+          await downloadTgz(url, {
+            dest: localTgz,
             onProgress: (n) => {
               const cur = installTasks.get(key);
               if (cur && (cur.stage === 'downloading' || cur.stage === 'running')) {
@@ -417,7 +423,6 @@ export function apply(ctx, config) {
               }
             },
           });
-          localTgz = dl.dest;
         } catch (e) {
           updateTask(key, { stage: 'failed', message: `下载失败: ${(e && e.message) || e}`, running: false });
           console.error('[dsh-jack-market] 下载失败:', e && e.message);
@@ -460,8 +465,8 @@ export function apply(ctx, config) {
         });
         child.on('close', (code) => {
           console.log(`[dsh-jack-market] install exited ${code} for ${url}`);
-          // 清理临时下载的 tgz
-          if (localTgz) { rm(dirname(localTgz), { recursive: true, force: true }).catch(() => {}); }
+          // 注意：不删除下载的 tgz——pnpm 的 file: 引用会长期指向它，
+          // 删除会导致下次 ENOENT。pkgs/ 目录留着做稳定缓存。
           const prev = installTasks.get(key) || {};
           // 用分类器对完整输出做一次最终判定（捕获 pnpm 的 ERR_PNPM_* 等）
           const finalStage = classifyStage(`${out}\n${err}`, prev.stage || 'running');
@@ -476,8 +481,10 @@ export function apply(ctx, config) {
             if (message.length > 500) message = message.slice(0, 500);
           }
           updateTask(key, { stage: failedNow ? 'failed' : 'done', message, running: false });
-          // 任务已结束：5 秒后清除记录，避免 stale 状态残留
-          setTimeout(() => { if (installTasks.get(key)?.running === false) installTasks.delete(key); }, 5000);
+          // 任务已结束：保留 30 秒（让客户端能轮询到最终 done/failed 状态），
+          // 之后清除避免 stale 残留。此前 5 秒太短——客户端 700ms 轮询可能
+          // 正好错过 done/failed，拿到 idle 后无法判断结果导致进度条卡住。
+          setTimeout(() => { if (installTasks.get(key)?.running === false) installTasks.delete(key); }, 30_000);
         });
       },
     }));
