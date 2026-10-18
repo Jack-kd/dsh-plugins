@@ -14,8 +14,12 @@
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { dirname, isAbsolute, resolve } from 'node:path';
+import { existsSync, createWriteStream } from 'node:fs';
+import { mkdtemp, rm, rename } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
+import https from 'node:https';
+import http from 'node:http';
 
 const OWNER = 'Jack-kd';
 const REPO = 'dsh-plugins';
@@ -247,6 +251,53 @@ async function handleInstalled(request, response, profileDir) {
 // key: 插件市场 key；只保留最近一个任务（同一插件重复安装覆盖旧状态）。
 const installTasks = new Map(); // key -> { stage, message, at, running }
 
+/**
+ * 下载 GitHub release 资产到本地临时文件（跟随重定向，Node 原生实现）。
+ * 返回 { dest, bytes }；失败抛错。onProgress 用于阶段/字节反馈。
+ * 关键：先下载到本地再用 `file:` 引用安装，避免 pnpm 对 URL tarball
+ * 不写 integrity 导致 ERR_PNPM_MISSING_TARBALL_INTEGRITY（pnpm 已知坑）。
+ */
+async function downloadTgz(url, { signal, onProgress } = {}) {
+  const mod = url.startsWith('https:') ? https : http;
+  const dest = join(await mkdtemp(join(tmpdir(), 'jm-dl-')), 'pkg.tgz');
+  let bytes = 0;
+  let lastEmit = 0;
+  await new Promise((resolveP, rejectP) => {
+    const run = (u, redirects) => {
+      const req = mod.get(u, { headers: { 'user-agent': 'dsh-jack-market', accept: '*/*' }, signal }, (res) => {
+        const status = res.statusCode || 0;
+        const loc = res.headers.location;
+        if (status >= 300 && status < 400 && loc && redirects > 0) {
+          res.resume();
+          run(new URL(loc, u).toString(), redirects - 1);
+          return;
+        }
+        if (status !== 200) {
+          res.resume();
+          rejectP(new Error(`下载失败: HTTP ${status}`));
+          return;
+        }
+        const ws = createWriteStream(dest);
+        res.on('data', (c) => {
+          bytes += c.length;
+          if (typeof onProgress === 'function') {
+            const now = Date.now();
+            if (now - lastEmit >= 300) { lastEmit = now; onProgress(bytes); }
+          }
+        });
+        res.pipe(ws);
+        ws.on('finish', () => resolveP());
+        ws.on('error', rejectP);
+        res.on('error', rejectP);
+      });
+      req.on('error', rejectP);
+      req.setTimeout(20_000, () => req.destroy(new Error(`下载超时: ${u}`)));
+    };
+    run(url, 5);
+  });
+  return { dest, bytes };
+}
+
 /** 从子进程输出行归类出阶段。无精确匹配时维持当前阶段；有失败关键词即标 failed。
  * 针对 dsh plugin add（内部是 pnpm）的实际输出做了适配：
  *   - 失败：ERR_PNPM_* / pnpm 的 WARN+ERR 组合 / 常见网络与校验错误；
@@ -352,10 +403,31 @@ export function apply(ctx, config) {
         }
         const key = typeof body?.key === 'string' && body.key ? body.key : 'unknown';
 
-        const { file, args } = dshArgv();
-        const finalArgs = [...args, 'plugin', '--profile', profileName, 'add', url];
-        updateTask(key, { stage: 'running', message: '启动中…', running: true });
+        // ① 先下载 tgz 到临时目录（阶段：下载中）
+        updateTask(key, { stage: 'downloading', message: '下载中…', running: true });
         sendJson(response, 202, { status: 'started', target: url, key });
+
+        let localTgz;
+        try {
+          const dl = await downloadTgz(url, {
+            onProgress: (n) => {
+              const cur = installTasks.get(key);
+              if (cur && (cur.stage === 'downloading' || cur.stage === 'running')) {
+                installTasks.set(key, { ...cur, stage: 'downloading', message: `下载中… ${(n / 1024).toFixed(0)} KB`, at: Date.now() });
+              }
+            },
+          });
+          localTgz = dl.dest;
+        } catch (e) {
+          updateTask(key, { stage: 'failed', message: `下载失败: ${(e && e.message) || e}`, running: false });
+          console.error('[dsh-jack-market] 下载失败:', e && e.message);
+          return;
+        }
+
+        // ② 用 file: 本地引用安装（pnpm 对本地 tgz 写 integrity，不再 ERR_PNPM_MISSING_TARBALL_INTEGRITY）
+        const { file, args } = dshArgv();
+        const finalArgs = [...args, 'plugin', '--profile', profileName, 'add', `file:${localTgz}`];
+        updateTask(key, { stage: 'installing', message: '安装中…', running: true });
 
         const child = spawn(file, finalArgs, {
           cwd: profileDir || undefined,
@@ -388,6 +460,8 @@ export function apply(ctx, config) {
         });
         child.on('close', (code) => {
           console.log(`[dsh-jack-market] install exited ${code} for ${url}`);
+          // 清理临时下载的 tgz
+          if (localTgz) { rm(dirname(localTgz), { recursive: true, force: true }).catch(() => {}); }
           const prev = installTasks.get(key) || {};
           // 用分类器对完整输出做一次最终判定（捕获 pnpm 的 ERR_PNPM_* 等）
           const finalStage = classifyStage(`${out}\n${err}`, prev.stage || 'running');

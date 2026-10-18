@@ -209,8 +209,10 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-vision-router-v3.0.
 </details>
 
 <details>
-<summary><b>▶ dsh-jack-market · 插件市场（本仓库一键装）</b>　<code>v0.4.2</code></summary>
+<summary><b>▶ dsh-jack-market · 插件市场（本仓库一键装）</b>　<code>v0.4.3</code></summary>
 
+> **v0.4.3**：根治安装失败——pnpm 对 URL 直加 tgz 在 lockfile 不写 integrity（`ERR_PNPM_MISSING_TARBALL_INTEGRITY` 的根因）；市场安装改为**先下载到本地再用 `file:` 引用安装**，lockfile 条目稳定，下载阶段实时显示 KB 数，安装后清理临时文件。
+>
 > **v0.4.2**：修复安装卡在「启动中」——`dsh plugin add` 内部是 pnpm，失败输出 `ERR_PNPM_*` 未被识别导致 UI 停在 10%；新增 pnpm 错误识别（`ERR_PNPM_`/`MISSING_TARBALL`/`lockfile`）、`Progress:` 下载中识别、3 分钟超时兜底，失败立即显示原因。
 >
 > **v0.4.1**：新增**安装实时进度反馈**——点击「安装 / 更新」后立即显示进度条（下载中 → 校验中 → 安装中 → ✓ 完成），host 端采集 `dsh plugin add` 子进程输出自动归类阶段；失败时立即显示具体原因，不再干等 120 秒超时。
@@ -228,13 +230,13 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-vision-router-v3.0.
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.4.2/dsh-jack-market-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.4.3/dsh-jack-market-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.4.2/dsh-jack-market-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.4.3/dsh-jack-market-plugin.tgz
 ```
 
 > 装完重启一次 App（让设置页入口出现）；之后打开 **设置 → Jack 插件市场** 即可浏览和安装本仓库的插件。
