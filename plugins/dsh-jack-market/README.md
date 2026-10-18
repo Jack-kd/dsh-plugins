@@ -13,12 +13,18 @@ Jack-kd 的 DSH 插件市场：直接从本仓库浏览可安装的插件，并�
 ## 安装
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.5.0/dsh-jack-market-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.5.1/dsh-jack-market-plugin.tgz
 ```
 
 ## 使用
 
 装完重启一次 App（让设置页入口出现），然后打开 **设置 → Jack 插件市场**。列出插件点「安装」即可一键安装；已安装的插件显示「已安装」，若仓库有新版本则显示蓝色「更新」按钮，点击即升级。
+
+> **v0.5.1 最终修复：改回「下载到稳定路径 → file: 引用」（实测验证）**
+> - **v0.5.0 的教训**：URL 直加 `pnpm add <url>` 在**网络慢/CI 环境**下，pnpm 10.34.5 **不写 integrity** → `ERR_PNPM_MISSING_TARBALL_INTEGRITY` 反复失败（实测复现：删干净 lockfile 后 URL 直加仍失败、不写 integrity）；
+> - **最终方案（实测通过）**：市场安装 = **下载 tgz 到 profile 下稳定路径**（`.dsh-market/pkgs/<key>-plugin.tgz`，不删除）→ **`pnpm add file:<稳定路径>`**（pnpm 对本地文件**永远写 integrity**、稳定成功）→ 失败时**快照恢复** package.json + lockfile；
+> - 保留失败分类显示（integrity/network/not-found 等）+ 30 秒任务状态保留 + 客户端 idle 即收尾；
+> - 进度条：下载中… X KB → 安装中 → ✓ 完成 / ✗ 失败+原因。
 
 > **v0.5.0 重写安装流程（学官方 dsh-plugin-manager）**
 > - **根因**（v0.4.3/0.4.4 的教训）：用「下载到本地 → `file:` 引用」绕开 pnpm 的 URL tarball integrity 坑，反而引入了临时路径被删 → `ENOENT`、lockfile 残留坏条目、进度卡住等一系列新问题；

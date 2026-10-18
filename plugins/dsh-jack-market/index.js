@@ -14,8 +14,6 @@
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { dirname, isAbsolute, resolve } from 'node:path';
 
 const OWNER = 'Jack-kd';
 const REPO = 'dsh-plugins';
@@ -73,22 +71,6 @@ function resolveProfileName(ctx, config) {
   if (flag !== -1 && flag + 1 < argv.length && !argv[flag + 1].startsWith('-'))
     return argv[flag + 1];
   return 'web';
-}
-
-function nodeExecutable() {
-  const argv0 = process.argv0;
-  if (typeof argv0 === 'string' && argv0 !== '' && isAbsolute(argv0) && existsSync(argv0))
-    return argv0;
-  return process.execPath;
-}
-
-function dshArgv() {
-  const entry = process.argv[1];
-  if (entry !== undefined && /[\\/](?:bin\.(?:js|ts)|dsh)$/.test(entry)) {
-    const abs = resolve(entry);
-    return { file: nodeExecutable(), args: [...process.execArgv, abs], cwd: dirname(abs) };
-  }
-  return { file: 'dsh', args: [], cwd: undefined };
 }
 
 function sendJson(response, status, payload) {
@@ -246,6 +228,61 @@ async function handleInstalled(request, response, profileDir) {
 // 归类成阶段（下载/校验/安装/完成/失败），供客户端轮询显示实时进度。
 // key: 插件市场 key；只保留最近一个任务（同一插件重复安装覆盖旧状态）。
 const installTasks = new Map(); // key -> { stage, message, at, running }
+
+/**
+ * 下载 GitHub release 资产到本地稳定路径（跟随重定向，Node 原生实现）。
+ * 返回 { dest, bytes }；失败抛错。onProgress 用于阶段/字节反馈。
+ *
+ * 关键：市场安装必须走「下载到本地 → `pnpm add file:<稳定路径>`」而不是
+ * `pnpm add <url>`。实测（2026-10-18）pnpm 10.34.5 对 URL tarball 在
+ * 网络慢/CI 环境下会**不写 integrity** 导致 ERR_PNPM_MISSING_TARBALL_INTEGRITY
+ * 反复失败；而 file: 本地引用**永远稳定**（写 integrity、成功）。
+ * 稳定路径（profile/.dsh-market/pkgs/）不能删——pnpm 的 file: 引用会长期指向它。
+ */
+async function downloadTgz(url, { dest, signal, onProgress } = {}) {
+  const https = await import('node:https');
+  const http = await import('node:http');
+  const fs = await import('node:fs');
+  const fsp = await import('node:fs/promises');
+  const mod = url.startsWith('https:') ? https : http;
+  let bytes = 0;
+  let lastEmit = 0;
+  await fsp.mkdir((await import('node:path')).dirname(dest), { recursive: true });
+  await new Promise((resolveP, rejectP) => {
+    const run = (u, redirects) => {
+      const req = mod.get(u, { headers: { 'user-agent': 'dsh-jack-market', accept: '*/*' }, signal }, (res) => {
+        const status = res.statusCode || 0;
+        const loc = res.headers.location;
+        if (status >= 300 && status < 400 && loc && redirects > 0) {
+          res.resume();
+          run(new URL(loc, u).toString(), redirects - 1);
+          return;
+        }
+        if (status !== 200) {
+          res.resume();
+          rejectP(new Error(`下载失败: HTTP ${status}`));
+          return;
+        }
+        const ws = fs.createWriteStream(dest);
+        res.on('data', (c) => {
+          bytes += c.length;
+          if (typeof onProgress === 'function') {
+            const now = Date.now();
+            if (now - lastEmit >= 300) { lastEmit = now; onProgress(bytes); }
+          }
+        });
+        res.pipe(ws);
+        ws.on('finish', () => resolveP());
+        ws.on('error', rejectP);
+        res.on('error', rejectP);
+      });
+      req.on('error', rejectP);
+      req.setTimeout(30_000, () => req.destroy(new Error(`下载超时: ${u}`)));
+    };
+    run(url, 5);
+  });
+  return { dest, bytes };
+}
 
 /**
  * 安装前快照 profile 的 package.json 与 pnpm-lock.yaml（内存字符串）。
@@ -412,19 +449,39 @@ export function apply(ctx, config) {
         const key = typeof body?.key === 'string' && body.key ? body.key : 'unknown';
 
         // ① 安装前快照 package.json + pnpm-lock.yaml（官方 dsh-plugin-manager 同款）
-        // 直接 `pnpm add <url>`（官方做法）。pnpm 对 URL tarball 不写 integrity
-        // 是已知行为，失败后靠恢复快照 + frozen-lockfile 重装把坏条目洗掉，
-        // 保证后续安装永远干净可重试——不再用 file: 本地引用绕路（v0.4.3/0.4.4
-        // 的临时路径/ENOENT/进度卡住都源于那个方向）。
+        // 失败后恢复快照，防止污染后续安装。
         const dir = profileDir || '/root/.dsh/profiles/web';
         let saved;
         try { saved = await snapshotProfileFiles(dir); } catch { saved = {}; }
-        updateTask(key, { stage: 'installing', message: '安装中…', running: true });
+        updateTask(key, { stage: 'downloading', message: '下载中…', running: true });
         sendJson(response, 202, { status: 'started', target: url, key });
 
-        const { file, args } = dshArgv();
-        const finalArgs = [...args, 'plugin', '--profile', profileName, 'add', url];
-        const child = spawn(file, finalArgs, {
+        // ② 下载 tgz 到 profile 下的稳定路径（.dsh-market/pkgs/<key>-plugin.tgz）
+        // 实测（2026-10-18）：pnpm 对 URL tarball 在网络慢/CI 下不写 integrity →
+        // ERR_PNPM_MISSING_TARBALL_INTEGRITY 反复失败；file: 本地引用永远稳定。
+        // 稳定路径不删除（pnpm 的 file: 引用长期指向它）。
+        const pathMod = await import('node:path');
+        const pkgsDir = pathMod.join(dir, '.dsh-market', 'pkgs');
+        const localTgz = pathMod.join(pkgsDir, `${key}-plugin.tgz`);
+        try {
+          await downloadTgz(url, {
+            dest: localTgz,
+            onProgress: (n) => {
+              const cur = installTasks.get(key);
+              if (cur && (cur.stage === 'downloading' || cur.stage === 'running')) {
+                installTasks.set(key, { ...cur, stage: 'downloading', message: `下载中… ${(n / 1024).toFixed(0)} KB`, at: Date.now() });
+              }
+            },
+          });
+        } catch (e) {
+          updateTask(key, { stage: 'failed', message: `下载失败: ${(e && e.message) || e}`, running: false });
+          console.error('[dsh-jack-market] 下载失败:', e && e.message);
+          return;
+        }
+
+        // ③ `pnpm add file:<稳定路径>` —— 稳定写 integrity、成功
+        updateTask(key, { stage: 'installing', message: '安装中…', running: true });
+        const child = spawn('pnpm', ['add', `file:${localTgz}`], {
           cwd: dir,
           stdio: ['ignore', 'pipe', 'pipe'],
           env: { ...process.env, CI: 'true' },
