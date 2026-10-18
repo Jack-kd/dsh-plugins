@@ -17,13 +17,13 @@ Jack-kd 的 DeepSeek Harness（DSH）插件仓库 —— monorepo 结构：**一
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v1.0.1/enter-newline-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/enter-newline-v1.0.1/enter-newline-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/v1.0.1/enter-newline-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/enter-newline-v1.0.1/enter-newline-plugin.tgz
 ```
 
 > 装完无需重启，到输入框按一下回车即可验证（拼音输入法第一下是提交拼音，第二下才换行，属正常现象）。
@@ -59,13 +59,13 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/retry-count-v2.0.8/retr
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v1.2.0/chat-keeper-mobile-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/chat-keeper-mobile-v1.2.0/chat-keeper-mobile-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/v1.2.0/chat-keeper-mobile-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/chat-keeper-mobile-v1.2.0/chat-keeper-mobile-plugin.tgz
 ```
 
 > 装完重启一次 App（工具 + 删除/恢复接口生效）。删除默认进回收站，可 `conversation_restore` 恢复；正在对话的会话删除会中断它（确认后执行）。
@@ -91,13 +91,13 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v1.2.0/chat-keeper-mobi
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v2.6.1/gh-accel-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.6.1/gh-accel-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/v2.6.1/gh-accel-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.6.1/gh-accel-plugin.tgz
 ```
 
 > 镜像（ghfast.top 等）是公共第三方服务、有失效风险；可在配置里用 `mirrors`/`rules` 自行增删站点规则。下载大文件建议指定绝对 `out` 路径。
@@ -125,13 +125,13 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v2.6.1/gh-accel-plugin.
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v0.2.4/rea-tools-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/rea-tools-v0.2.4/rea-tools-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/v0.2.4/rea-tools-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/rea-tools-v0.2.4/rea-tools-plugin.tgz
 ```
 
 > 首次打开自动弹窗选择版本后台安装；或在设置 → 通用 → REA 逆向环境 里安装；也可调 `rea_install` 工具。升级需先卸载再装新版本。
@@ -169,13 +169,13 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/our-free-model-v2.5.1/o
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v1.3.3/dsh-plugin-wallpaper-engine-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-plugin-wallpaper-engine-v1.3.3/dsh-plugin-wallpaper-engine-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/v1.3.3/dsh-plugin-wallpaper-engine-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-plugin-wallpaper-engine-v1.3.3/dsh-plugin-wallpaper-engine-plugin.tgz
 ```
 
 > 装完需重启 Web，到 **设置 → Wallpaper Engine → 壁纸库** 选一张壁纸。前置是本地装有 Wallpaper Engine（Steam app 431960）。升级需先卸载再装新版本。
@@ -191,13 +191,13 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/v1.3.3/dsh-plugin-wallp
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/v3.0.4/dsh-vision-router-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-vision-router-v3.0.4/dsh-vision-router-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/v3.0.4/dsh-vision-router-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-vision-router-v3.0.4/dsh-vision-router-plugin.tgz
 ```
 
 > ⚠️ 默认数据会出网（云端识图会发给供应商，新装默认开启 OVHcloud 免费兜底）；涉密/受限材料请先切到「严格纯本地」。装完重启一次 App。升级需先卸载再装新版本。
@@ -280,7 +280,7 @@ dsh-plugins/
     ├── rea-tools/           ← REA 逆向工具链（安装 + 原生/APK 逆向）
     ├── our-free-model/      ← 免费模型（免登录免 Key，第三方收录）
     ├── dsh-plugin-wallpaper-engine/ ← 壁纸引擎（本地 Wallpaper Engine 壁纸，第三方收录）
-    └── dsh-vision-router/   ← 视觉路由（给 Agent 看图，免 Key，第三方收录）
+    ├── dsh-vision-router/   ← 视觉路由（给 Agent 看图，免 Key，第三方收录）
     └── dsh-jack-market/     ← 插件市场（本仓库一键安装）
 ```
 
