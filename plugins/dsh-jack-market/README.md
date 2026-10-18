@@ -13,12 +13,18 @@ Jack-kd 的 DSH 插件市场：直接从本仓库浏览可安装的插件，并�
 ## 安装
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.4.1/dsh-jack-market-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.4.2/dsh-jack-market-plugin.tgz
 ```
 
 ## 使用
 
 装完重启一次 App（让设置页入口出现），然后打开 **设置 → Jack 插件市场**。列出插件点「安装」即可一键安装；已安装的插件显示「已安装」，若仓库有新版本则显示蓝色「更新」按钮，点击即升级。
+
+> **v0.4.2 修复：安装卡在「启动中」不动的 bug**
+> - 根因：`dsh plugin add` 内部是 pnpm，失败时输出 `ERR_PNPM_*`，而旧版分类器没识别这些关键词 → 安装其实失败了，UI 却一直显示「启动中 10%」；
+> - 修复：分类器新增 `ERR_PNPM_` / `MISSING_TARBALL` / `lockfile` / `cannot install` 等 pnpm 错误识别，**失败立即标红并显示具体原因**；
+> - 新增 `Progress:` 行识别为「下载中」，进度不再停留在「启动中」；
+> - 新增 3 分钟超时兜底：超时未完成自动标失败，杜绝永久卡住。
 
 > **v0.4.1 新增：安装实时进度反馈**
 > - 点击「安装 / 更新」后**立即显示进度条**，阶段实时更新（下载中 → 校验中 → 安装中 → ✓ 完成）；

@@ -235,15 +235,25 @@ window.__ModuleLoader__.load({
           }
           // 轮询 /task 获取实时进度，直到任务结束（done/failed）或超时。
           const deadline = Date.now() + 180000; // 3 分钟兜底
+          let finalTask = null;
           while (Date.now() < deadline) {
             await new Promise((r) => setTimeout(r, 700));
             try {
               const t = await fetchJson(`/dsh-jack-market/task?key=${encodeURIComponent(plugin.key)}`);
               if (t && t.stage) {
                 setTasks((prev) => new Map(prev).set(plugin.key, t));
+                finalTask = t;
                 if (t.stage === 'done' || t.stage === 'failed') break;
               }
             } catch { /* transient */ }
+          }
+          // 超时兜底：3 分钟后仍未结束 → 标记失败，避免永久卡在「进行中」
+          if (!finalTask || (finalTask.stage !== 'done' && finalTask.stage !== 'failed')) {
+            setTasks((prev) => {
+              const next = new Map(prev);
+              next.set(plugin.key, { stage: 'failed', message: '安装超时（3 分钟未完成），请重试或查看 pnpm 日志', running: false });
+              return next;
+            });
           }
           await load();
         } catch (e) {

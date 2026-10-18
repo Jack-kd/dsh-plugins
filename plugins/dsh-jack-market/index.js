@@ -247,17 +247,25 @@ async function handleInstalled(request, response, profileDir) {
 // key: 插件市场 key；只保留最近一个任务（同一插件重复安装覆盖旧状态）。
 const installTasks = new Map(); // key -> { stage, message, at, running }
 
-/** 从子进程输出行归类出阶段。无精确匹配时维持当前阶段；有失败关键词即标 failed。 */
+/** 从子进程输出行归类出阶段。无精确匹配时维持当前阶段；有失败关键词即标 failed。
+ * 针对 dsh plugin add（内部是 pnpm）的实际输出做了适配：
+ *   - 失败：ERR_PNPM_* / pnpm 的 WARN+ERR 组合 / 常见网络与校验错误；
+ *   - 下载：pnpm 的 `Progress: resolved…, downloaded…` 行；
+ *   - 校验：integrity / checksum / lockfile 校验相关；
+ *   - 完成：`added N packages` 等 pnpm 成功标志。 */
 function classifyStage(text, current) {
   const t = String(text || '').toLowerCase();
   const has = (...kws) => kws.some((k) => t.includes(k));
-  if (has('error', 'failed', 'denied', 'refused', 'enetdown', 'econnrefused', 'eacces', 'enoent', 'integrity check failed', 'checksum mismatch', '校验失败'))
-    return { stage: 'failed', message: text.trim().split('\n').slice(-6).join(' ') };
-  if (has('downloading', 'fetching', '下载', 'fetch failed', 'network') && current !== 'installing')
+  if (has('err_pnpm_', 'error:', 'failed', 'denied', 'refused', 'enetdown', 'econnrefused',
+          'eacces', 'enoent', 'integrity check failed', 'checksum mismatch', 'tarball integrity',
+          'missing_tarball', 'lockfile', 'cannot install', 'frozen-lockfile', '校验失败',
+          'pnpm error', 'exit code'))
+    return { stage: 'failed', message: text.trim().split('\n').filter(Boolean).slice(-6).join(' | ') };
+  if (has('progress:', 'resolved ', 'downloaded ', 'fetching', 'downloading', '下载') && current !== 'installing')
     return { stage: 'downloading', message: '下载中…' };
   if (has('verifying', 'integrity', 'checksum', '校验', 'sha256')) return { stage: 'verifying', message: '校验中…' };
-  if (has('installing', 'adding', '安装', 'add ', 'extract', '解压')) return { stage: 'installing', message: '安装中…' };
-  if (has('added', 'installed', 'complete', 'done', '完成', 'success')) return { stage: 'done', message: '完成' };
+  if (has('installing', 'adding', '安装', 'add ', 'extract', '解压', 'packages')) return { stage: 'installing', message: '安装中…' };
+  if (has('added ', 'installed', 'complete', 'done', '完成', 'success', 'done in')) return { stage: 'done', message: '完成' };
   return current || 'running';
 }
 
@@ -360,11 +368,17 @@ export function apply(ctx, config) {
         const classifyNow = (chunk, isErr) => {
           if (isErr) err += chunk; else out += chunk;
           const now = Date.now();
-          // 节流：最多 300ms 更新一次任务状态，避免高频写 Map
-          if (now - lastClassify < 300) return;
+          // 节流：最多 300ms 更新一次任务状态，避免高频写 Map（失败行不节流，立即呈现）
+          if (now - lastClassify < 300 && !/err_pnpm_|error:|\bfailed\b/i.test(String(chunk || ''))) return;
           lastClassify = now;
-          const stage = classifyStage(`${out}\n${err}`, installTasks.get(key)?.stage || 'running');
-          updateTask(key, { stage, message: stage === 'failed' ? '安装失败' : (installTasks.get(key)?.message || '进行中…') });
+          const prevStage = installTasks.get(key)?.stage || 'running';
+          const stage = classifyStage(`${out}\n${err}`, prevStage);
+          updateTask(key, {
+            stage,
+            message: stage === 'failed'
+              ? (String(stage.message || '').trim() || '安装失败')
+              : (installTasks.get(key)?.message || '进行中…'),
+          });
         };
         child.stdout && child.stdout.on('data', (d) => classifyNow(d, false));
         child.stderr && child.stderr.on('data', (d) => classifyNow(d, true));
@@ -375,15 +389,19 @@ export function apply(ctx, config) {
         child.on('close', (code) => {
           console.log(`[dsh-jack-market] install exited ${code} for ${url}`);
           const prev = installTasks.get(key) || {};
-          const failedNow = code !== 0 || (prev.stage === 'failed');
+          // 用分类器对完整输出做一次最终判定（捕获 pnpm 的 ERR_PNPM_* 等）
+          const finalStage = classifyStage(`${out}\n${err}`, prev.stage || 'running');
+          const failedNow = code !== 0 || prev.stage === 'failed' || finalStage.stage === 'failed';
           if (code !== 0) console.error('[dsh-jack-market] stderr:', err.slice(-4000));
-          updateTask(key, {
-            stage: failedNow ? 'failed' : 'done',
-            message: failedNow
-              ? (err.slice(-400).trim() || `退出码 ${code}`)
-              : '安装成功',
-            running: false,
-          });
+          let message = '安装成功';
+          if (failedNow) {
+            // 优先取分类器识别到的失败行；无则取 stderr 尾部；再无则给可读提示
+            const failLine = String(finalStage.message || '').trim();
+            const errTail = err.trim().slice(-400);
+            message = failLine && !failLine.includes('安装失败') ? failLine : (errTail || '安装失败（退出码 ' + code + '，详见 pnpm 日志）');
+            if (message.length > 500) message = message.slice(0, 500);
+          }
+          updateTask(key, { stage: failedNow ? 'failed' : 'done', message, running: false });
           // 任务已结束：5 秒后清除记录，避免 stale 状态残留
           setTimeout(() => { if (installTasks.get(key)?.running === false) installTasks.delete(key); }, 5000);
         });
