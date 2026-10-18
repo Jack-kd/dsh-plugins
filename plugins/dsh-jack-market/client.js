@@ -285,17 +285,49 @@ window.__ModuleLoader__.load({
 
       const rootStyle = { padding: '16px 4px', fontFamily: 'system-ui, sans-serif' };
 
+      // 导出审计日志：拉取 /log 文本并下载为文件（供诊断「安装卡住」等隐蔽问题）
+      const [exportState, setExportState] = useState({ busy: false, msg: '' });
+      const exportLog = useCallback(async () => {
+        setExportState({ busy: true, msg: '' });
+        try {
+          const res = await fetch(api('/dsh-jack-market/log'), { cache: 'no-store' });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const text = await res.text();
+          // 浏览器下载：Blob + 临时 a[download]
+          const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+          const urlObj = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          const now = new Date();
+          const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}-${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
+          a.href = urlObj;
+          a.download = `dsh-jack-market-${stamp}.log`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(urlObj);
+          setExportState({ busy: false, msg: `已导出（${text.split('\n').length} 行）` });
+        } catch (e) {
+          setExportState({ busy: false, msg: `导出失败: ${String((e && e.message) || e)}` });
+        }
+      }, []);
+
       return h('div', { style: rootStyle },
         h('h3', {
           style: { color: 'var(--dsw-alias-label-primary,#111)', margin: '0 0 4px 0', fontSize: '17px' },
         }, 'Jack-kd 插件市场'),
         h('p', { style: { ...metaStyle, fontSize: 12, marginBottom: 14 } },
           `来自 GitHub 仓库 Jack-kd/dsh-plugins · ${plugins.length} 个插件`),
-        h('div', { style: { marginBottom: 12, display: 'flex', gap: 8 } },
+        h('div', { style: { marginBottom: 12, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' } },
           h('button', {
             style: { ...btnBase, background: 'var(--dsw-alias-bg-layer-2,#eee)', color: 'var(--dsw-alias-label-primary,#111)' },
             onClick: () => load(),
-          }, '刷新')),
+          }, '刷新'),
+          h('button', {
+            style: { ...btnBase, background: exportState.busy ? 'var(--dsw-alias-state-idle-primary,#ccc)' : 'var(--dsw-alias-bg-layer-2,#eee)', color: 'var(--dsw-alias-label-primary,#111)' },
+            disabled: exportState.busy,
+            onClick: () => exportLog(),
+          }, exportState.busy ? '导出中…' : '📋 导出日志'),
+          exportState.msg && h('span', { style: { ...metaStyle, fontSize: 11 } }, exportState.msg)),
         error && h('div', {
           style: { color: 'var(--dsw-alias-state-error-primary,#c00)', fontSize: '13px', margin: '8px 0', padding: '8px', background: 'var(--dsw-alias-bg-layer-1,#fff)', borderRadius: 6 },
         }, String(error)),

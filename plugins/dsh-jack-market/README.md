@@ -13,12 +13,18 @@ Jack-kd 的 DSH 插件市场：直接从本仓库浏览可安装的插件，并�
 ## 安装
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.5.1/dsh-jack-market-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.6.0/dsh-jack-market-plugin.tgz
 ```
 
 ## 使用
 
 装完重启一次 App（让设置页入口出现），然后打开 **设置 → Jack 插件市场**。列出插件点「安装」即可一键安装；已安装的插件显示「已安装」，若仓库有新版本则显示蓝色「更新」按钮，点击即升级。
+
+> **v0.6.0 新增：审计日志导出（诊断「安装卡住」）**
+> - 页面新增 **「📋 导出日志」按钮**：点击导出完整审计日志为 `.log` 文件；
+> - host 端**持续记录**安装全过程（时间戳 + 相对毫秒）：请求到达、快照、下载开始/完成/失败（含耗时与字节）、pnpm spawn、每段 stdout/stderr、阶段变化、close 退出码、最终结果；
+> - 用法：① 点安装 → ② 卡住 1 分钟 → ③ 点「📋 导出日志」→ 得到 `dsh-jack-market-YYYYMMDD-HHMM.log` → 发给我分析；
+> - 日志含每个事件的精确时间线（`+1234ms`），能还原「卡在哪一步」。
 
 > **v0.5.1 最终修复：改回「下载到稳定路径 → file: 引用」（实测验证）**
 > - **v0.5.0 的教训**：URL 直加 `pnpm add <url>` 在**网络慢/CI 环境**下，pnpm 10.34.5 **不写 integrity** → `ERR_PNPM_MISSING_TARBALL_INTEGRITY` 反复失败（实测复现：删干净 lockfile 后 URL 直加仍失败、不写 integrity）；

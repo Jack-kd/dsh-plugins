@@ -229,6 +229,26 @@ async function handleInstalled(request, response, profileDir) {
 // key: 插件市场 key；只保留最近一个任务（同一插件重复安装覆盖旧状态）。
 const installTasks = new Map(); // key -> { stage, message, at, running }
 
+// ── 审计日志（诊断「安装卡住」等隐蔽问题）──────────────────────────────
+// 无论用户是否点「记录」都持续写入（环形 2000 条）；客户端「导出日志」
+// 时取回全部。每条带单调时间戳与相对起始时间的毫秒数，用于还原时间线。
+const auditLog = [];
+const AUDIT_MAX = 2000;
+let auditStart = Date.now();
+function audit(category, detail) {
+  const now = Date.now();
+  auditLog.push({
+    t: new Date(now).toISOString().slice(11, 23),   // HH:MM:SS.mmm
+    ms: now - auditStart,                            // 距首次记录 ms
+    c: category,
+    d: typeof detail === 'string' ? detail.slice(0, 500) : JSON.stringify(detail),
+  });
+  if (auditLog.length > AUDIT_MAX) auditLog.splice(0, auditLog.length - AUDIT_MAX);
+}
+function auditLogText() {
+  return auditLog.map((e) => `[${e.t} +${e.ms}ms] ${e.c}: ${e.d}`).join('\n');
+}
+
 /**
  * 下载 GitHub release 资产到本地稳定路径（跟随重定向，Node 原生实现）。
  * 返回 { dest, bytes }；失败抛错。onProgress 用于阶段/字节反馈。
@@ -416,6 +436,22 @@ export function apply(ctx, config) {
       path: '/dsh-jack-market/task',
       handler: handleTask,
     }));
+    // 审计日志导出：返回全部记录（text/plain，便于保存为文件诊断）
+    disposers.push(host.webServer.register({
+      kind: 'exact',
+      path: '/dsh-jack-market/log',
+      handler: (request, response) => {
+        if (request.method !== 'GET') { response.writeHead(405, { allow: 'GET' }); response.end(); return; }
+        try {
+          const text = auditLogText();
+          response.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
+          response.end(`# dsh-jack-market 审计日志\n# 共 ${auditLog.length} 条记录\n\n${text}\n`);
+        } catch (e) {
+          response.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
+          response.end(`导出失败: ${String((e && e.message) || e)}`);
+        }
+      },
+    }));
 
     disposers.push(host.webServer.register({
       kind: 'exact',
@@ -447,12 +483,14 @@ export function apply(ctx, config) {
           return;
         }
         const key = typeof body?.key === 'string' && body.key ? body.key : 'unknown';
+        audit('install.request', `${key} url=${url}`);
 
         // ① 安装前快照 package.json + pnpm-lock.yaml（官方 dsh-plugin-manager 同款）
         // 失败后恢复快照，防止污染后续安装。
         const dir = profileDir || '/root/.dsh/profiles/web';
         let saved;
         try { saved = await snapshotProfileFiles(dir); } catch { saved = {}; }
+        audit('install.snapshot', `dir=${dir} saved=${Object.keys(saved).join(',')}`);
         updateTask(key, { stage: 'downloading', message: '下载中…', running: true });
         sendJson(response, 202, { status: 'started', target: url, key });
 
@@ -463,6 +501,8 @@ export function apply(ctx, config) {
         const pathMod = await import('node:path');
         const pkgsDir = pathMod.join(dir, '.dsh-market', 'pkgs');
         const localTgz = pathMod.join(pkgsDir, `${key}-plugin.tgz`);
+        const tDlStart = Date.now();
+        audit('download.start', `dest=${localTgz}`);
         try {
           await downloadTgz(url, {
             dest: localTgz,
@@ -473,7 +513,9 @@ export function apply(ctx, config) {
               }
             },
           });
+          audit('download.done', `${key} bytes=${(await import('node:fs')).statSync(localTgz).size} 耗时=${Date.now() - tDlStart}ms`);
         } catch (e) {
+          audit('download.fail', `${key} err=${(e && e.message) || e} 耗时=${Date.now() - tDlStart}ms`);
           updateTask(key, { stage: 'failed', message: `下载失败: ${(e && e.message) || e}`, running: false });
           console.error('[dsh-jack-market] 下载失败:', e && e.message);
           return;
@@ -481,6 +523,8 @@ export function apply(ctx, config) {
 
         // ③ `pnpm add file:<稳定路径>` —— 稳定写 integrity、成功
         updateTask(key, { stage: 'installing', message: '安装中…', running: true });
+        const tPnpmStart = Date.now();
+        audit('pnpm.spawn', `cmd=pnpm add file:${localTgz} cwd=${dir}`);
         const child = spawn('pnpm', ['add', `file:${localTgz}`], {
           cwd: dir,
           stdio: ['ignore', 'pipe', 'pipe'],
@@ -503,14 +547,18 @@ export function apply(ctx, config) {
               ? (String(stage.message || '').trim() || '安装失败')
               : (installTasks.get(key)?.message || '进行中…'),
           });
+          // 记录阶段变化（只记变化，不刷屏）
+          if (stage !== prevStage) audit('pnpm.stage', `${key} ${prevStage}→${stage}`);
         };
-        child.stdout && child.stdout.on('data', (d) => classifyNow(d, false));
-        child.stderr && child.stderr.on('data', (d) => classifyNow(d, true));
+        child.stdout && child.stdout.on('data', (d) => { audit('pnpm.out', String(d).slice(0, 300)); classifyNow(d, false); });
+        child.stderr && child.stderr.on('data', (d) => { audit('pnpm.err', String(d).slice(0, 300)); classifyNow(d, true); });
         child.on('error', (e) => {
           console.error('[dsh-jack-market] spawn:', e && e.message);
+          audit('pnpm.spawnFail', `${key} err=${(e && e.message) || 'unknown'}`);
           updateTask(key, { stage: 'failed', message: `启动失败: ${(e && e.message) || 'unknown'}`, running: false });
         });
         child.on('close', async (code) => {
+          audit('pnpm.close', `${key} code=${code} 耗时=${Date.now() - tPnpmStart}ms`);
           console.log(`[dsh-jack-market] install exited ${code} for ${url}`);
           const prev = installTasks.get(key) || {};
           const fullLog = `${out}\n${err}`;
@@ -532,6 +580,7 @@ export function apply(ctx, config) {
             }
           }
           updateTask(key, { stage: failedNow ? 'failed' : 'done', message, running: false });
+          audit('install.final', `${key} ${failedNow ? 'failed' : 'done'} msg=${message.slice(0, 200)}`);
           // 任务已结束：保留 30 秒（让客户端能轮询到最终 done/failed 状态），
           // 之后清除避免 stale 残留。
           setTimeout(() => { if (installTasks.get(key)?.running === false) installTasks.delete(key); }, 30_000);
