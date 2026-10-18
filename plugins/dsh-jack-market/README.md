@@ -13,12 +13,26 @@ Jack-kd 的 DSH 插件市场：直接从本仓库浏览可安装的插件，并�
 ## 安装
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.6.4/dsh-jack-market-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.6.5/dsh-jack-market-plugin.tgz
 ```
 
 ## 使用
 
 装完重启一次 App（让设置页入口出现），然后打开 **设置 → Jack 插件市场**。列出插件点「安装」即可一键安装；已安装的插件显示「已安装」，若仓库有新版本则显示蓝色「更新」按钮，点击即升级。
+
+> **v0.6.5 修复：`api()` 剥掉 query 参数——「进度卡在启动中」的最终根因**
+> - **现象**：点击安装后，进度条永远停在「启动中 10%」不动，切走页面再回来才发现已安装（host 日志其实显示 `install.final done` 成功）；
+> - **排查过程**（2026-10-18，四轮日志实证）：
+>   1. **日志 1**：`download.fail 下载超时 耗时=30266ms` → 直连 GitHub 下载超时 → v0.6.1 移植加速器多节点选路；
+>   2. **日志 2**：安装成功但 `pnpm.stage installing→[object Object]` → v0.6.2 修复 classifyStage 对象被当 stage 存 + Progress 误判 done；
+>   3. **日志 3**：`download.try` 只出现 direct（镜像被 bps=0 过滤）→ v0.6.3 修复候选不过滤；
+>   4. **日志 4**：9 镜像 `ENOTFOUND ghfast.tophttps`（URL 拼接错）→ v0.6.4 修复 rewriteViaMirror 尾斜杠；
+>   5. **但用户仍卡**：安装成功（日志 5 显示 done）而 UI 停在「启动中」——本机端到端模拟（模拟客户端 700ms 轮询）**通过**，说明 host 逻辑正常；
+>   6. **最终定位**：`api()` 用 `new URL(relative, document.baseURI).pathname` 解析请求路径——**pathname 会剥掉 query 参数**！`/dsh-jack-market/task?key=retry-count` 变成 `/dsh-jack-market/task`（key 丢失）→ host 的 handleTask 收到空 key → 返回 `{stage:'idle'}` → 客户端轮询永远拿不到 done/failed → 停在「启动中」直到超时走「已安装检测」；
+>   7. 对照：gh-accel 的胶囊轮询用 `fetch('/gh-accel/progress')` 绝对路径（无 query）所以正常；我们的 task 接口依赖 query 就暴露了这 bug；
+> - **修复**：`api()` 改为直接返回绝对路径（保留 query），与 gh-accel 一致；
+> - **验证**：`api('/dsh-jack-market/task?key=retry-count')` = `/dsh-jack-market/task?key=retry-count`（query 保留 ✅）；
+> - **历史教训**（为什么反复修不好）：前面 4 个版本修的**下载层**问题（超时/节点/拼接）都真实存在且已修复，但「进度卡住」是**客户端请求层**的独立 bug——两者叠加导致每次看似修好下载后 UI 仍卡。任何一层不通，用户感知都是「卡住」。
 
 > **v0.6.4 修复：镜像 URL 拼接错误（镜像全挂的根因）**
 > - **审计日志实证**（2026-10-18 1118 日志）：9 个镜像全部 `getaddrinfo ENOTFOUND ghfast.tophttps`——**域名拼错了**；

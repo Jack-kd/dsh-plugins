@@ -209,8 +209,12 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-vision-router-v3.0.
 </details>
 
 <details>
-<summary><b>▶ dsh-jack-market · 插件市场（本仓库一键装）</b>　<code>v0.6.4</code></summary>
+<summary><b>▶ dsh-jack-market · 插件市场（本仓库一键装）</b>　<code>v0.6.5</code></summary>
 
+> **v0.6.5**：修复「进度卡在启动中」的**最终根因**——客户端 `api()` 用 `new URL(...).pathname` 解析请求路径，**剥掉了 query 参数**：`/task?key=xxx` 变成 `/task`（key 丢失）→ host 返回 idle → 轮询永远拿不到 done。改为绝对路径直返（同 gh-accel）。
+>
+> **排查全景**（2026-10-18 四轮日志）：① 下载超时（直连不通）→ v0.6.1 移植加速器选路；② `[object Object]` 阶段 bug → v0.6.2 解构修复；③ 镜像被过滤只剩直连 → v0.6.3 候选不过滤；④ 镜像 URL 拼接错 `ghfast.tophttps` → v0.6.4 保留尾斜杠；⑤ 客户端 api() 剥 query → **v0.6.5 修复**。下载层与请求层两层 bug 叠加，任何一层不通都表现为「卡住」。
+>
 > **v0.6.4**：修复镜像 URL 拼接——审计日志显示 9 镜像全 `ENOTFOUND ghfast.tophttps`（域名被拼错）；`rewriteViaMirror` 误删 base 尾斜杠，改为保留 → `https://ghfast.top/https://github.com/...`，实测下载 9206B sha 正确。
 >
 > **v0.6.3**：修复下载节点被错误过滤——probe 把 bps=0 镜像过滤后只剩直连兜底，直连 redirect 到 release-assets CDN 后 socket hang up 整体失败；改为下载候选 = 直连 + **全部 9 镜像**逐个尝试（probe 只排序不过滤），实测 5 镜像全部 0.6~1.4s 下载成功。
@@ -246,13 +250,13 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-vision-router-v3.0.
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.6.4/dsh-jack-market-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.6.5/dsh-jack-market-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.6.4/dsh-jack-market-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.6.5/dsh-jack-market-plugin.tgz
 ```
 
 > 装完重启一次 App（让设置页入口出现）；之后打开 **设置 → Jack 插件市场** 即可浏览和安装本仓库的插件。

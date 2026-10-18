@@ -7,11 +7,14 @@ window.__ModuleLoader__.load({
 
     const NS = 'dsh-jack-market';
 
-    /** Resolve an absolute API path against the page's base URI. */
+    /** Resolve an API path to an absolute URL. DSH web 挂载在根路径（gh-accel
+     * 的 `/gh-accel/progress` 绝对路径轮询正常工作），直接返回绝对路径。
+     * 注意：**不能用 `new URL(...).pathname` 解析**——pathname 会剥掉 query
+     * 参数（v0.6.3 的坑：`/task?key=x` 变成 `/task`，host 拿不到 key 返回 idle，
+     * 客户端一直停在「启动中」）。 */
     function api(path) {
-      const relative = path.replace(/^\/+/, '');
-      if (typeof document === 'undefined') return `/${relative}`;
-      return new URL(relative, document.baseURI).pathname;
+      const p = String(path || '');
+      return p.startsWith('/') ? p : `/${p}`;
     }
 
     /** Fetch JSON from one of our routes. */
