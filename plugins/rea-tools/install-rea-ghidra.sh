@@ -141,17 +141,47 @@ DL_SPEED_LIMIT="${DL_SPEED_LIMIT:-51200}"   # 50 KB/s
 DL_SPEED_TIME="${DL_SPEED_TIME:-20}"        # 持续 20 秒低于阈值即放弃
 download_resume() {
   local url="$1" out="$2"
+  # v0.2.5 修复：不再 `2>/dev/null` 丢弃 curl 的 stderr。
+  # 旧写法把**错误信息**（404 / 超时 / TLS 失败）也一起丢了，失败时日志一片空白，
+  # 无从判断是「网络问题」还是「源没有这个文件」。
+  # 现在用 --no-progress-meter 关掉进度条噪音（进度改由 install-manager 轮询
+  # 输出文件大小计算，比解析 curl 的 \r 进度行可靠得多），但保留真正的错误输出。
   if has_cmd curl; then
     curl -fL -C - --retry 3 --connect-timeout 15 --retry-delay 2 \
       --speed-limit "${DL_SPEED_LIMIT}" --speed-time "${DL_SPEED_TIME}" \
-      -o "${out}" "${url}" 2>/dev/null
+      --no-progress-meter \
+      -o "${out}" "${url}"
   elif has_cmd wget; then
     # wget 无等价的持续低速判定；用 --timeout 兜住完全卡死的情况
-    wget -c -q --tries 3 --timeout 15 -O "${out}" "${url}" 2>/dev/null
+    wget -c -q --tries 3 --timeout 15 -O "${out}" "${url}"
   else
     return 1
   fi
 }
+
+# ---------- 0. 磁盘空间预检（v0.2.5）----------
+# 完整安装约需 800MB（Ghidra 543 + JDK 148 + JADX 41 + 解压余量）。
+# 旧版没有预检：空间不足时下到一半才失败，还留下坏缓存、下次续传又失败。
+# 这里在**任何下载开始前**检查目标目录可用空间，不足直接给出明确提示。
+check_disk_space() {
+  local need_mb="$1" target_dir="$2" label="$3"
+  local probe_dir="${target_dir}"
+  # 目标目录可能还不存在 → 向上找到第一个存在的父目录再量
+  while [[ ! -d "${probe_dir}" && "${probe_dir}" != "/" ]]; do probe_dir="$(dirname "${probe_dir}")"; done
+  local avail_mb
+  avail_mb="$(df -Pm "${probe_dir}" 2>/dev/null | awk 'NR==2 {print $4}')"
+  if [[ -z "${avail_mb}" ]]; then
+    warn "无法读取 ${label} 所在磁盘可用空间，跳过预检"
+    return 0
+  fi
+  if [[ "${avail_mb}" -lt "${need_mb}" ]]; then
+    die "${label} 空间不足：${probe_dir} 仅剩 ${avail_mb} MB，需要至少 ${need_mb} MB。请清理磁盘后重试。"
+  fi
+  log "空间预检通过：${label} 可用 ${avail_mb} MB（需要 ${need_mb} MB）"
+}
+# 下载缓存（/var/cache）与安装目录（/opt）通常同一分区，但分开检查更稳妥
+check_disk_space 900 "${ZIP_CACHE_DIR}" "Ghidra 下载缓存"
+check_disk_space 500 "${INSTALL_DIR}" "安装目录"
 
 # ---------- 1. 平台检测 ----------
 ARCH="$(uname -m)"

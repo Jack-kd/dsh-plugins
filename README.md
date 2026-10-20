@@ -108,9 +108,11 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.7.0/gh-acce
 </details>
 
 <details>
-<summary><b>▶ rea-tools · REA 逆向工具链（一键安装 + 原生/APK 逆向）</b>　<code>v0.2.4</code></summary>
+<summary><b>▶ rea-tools · REA 逆向工具链（一键安装 + 原生/APK 逆向）</b>　<code>v0.2.5</code></summary>
 
 > 一键安装 **REA + Ghidra + JADX**（arm64 反编译器免编译、断点续传、zip 缓存、幂等），并提供 7 个逆向工具：`rea_install`（安装）、`rea_doctor`（就绪检查）、`rea_analyze`（二进制概览）、`rea_function`（函数伪代码，Ghidra）、`rea_inspect_apk` / `rea_inspect_apk_class` / `rea_inspect_apk_method`（APK 静态逆向，不运行目标代码）。已在 arm64 实测：NewPipe APK 7096 类，Manifest/类成员/方法反编译全部正常。
+>
+> **v0.2.5**：一轮健壮性修复——① **修复进度卡住**：旧版靠解析 curl 进度行但脚本 `2>/dev/null` 把输出全丢了，改为**每 1.5s 轮询文件大小**算进度 + 保留 curl 错误输出；② **`rea_install` 改后台非阻塞**（旧版同步阻塞 1200s，543MB 正卡超时临界点）；③ **取消杀整棵进程树**（detached + `kill(-pid)`，旧版留孤儿进程）；④ **修复失败后无限续传**（加 `failCount` 上限 3）；⑤ 新增**磁盘空间预检**（/var/cache ≥900MB、/opt ≥500MB）；⑥ `rea_doctor` 不再吞信号崩溃；⑦ 自检文件移到插件目录。
 >
 > **v0.2.4**：胶囊改为**两行**布局——第一行「REA · 操作名…」；第二行显示正在分析的目标文件名（从 `apk`/`path` 参数提取，灰色小字）；无文件参数的工具只显示一行。
 >
@@ -127,13 +129,13 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.7.0/gh-acce
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/rea-tools-v0.2.4/rea-tools-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/rea-tools-v0.2.5/rea-tools-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/rea-tools-v0.2.4/rea-tools-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/rea-tools-v0.2.5/rea-tools-plugin.tgz
 ```
 
 > 首次打开自动弹窗选择版本后台安装；或在设置 → 通用 → REA 逆向环境 里安装；也可调 `rea_install` 工具。升级需先卸载再装新版本。

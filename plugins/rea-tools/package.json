@@ -1,9 +1,9 @@
 {
   "name": "@local/rea-tools",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "private": true,
   "type": "module",
-  "description": "REA 逆向工具链（REA + Ghidra + JADX）一键安装 + 原生二进制 / APK 逆向工具；v0.2.4 胶囊布局改为两行：第一行操作名，第二行为正在分析的目标文件名",
+  "description": "REA 逆向工具链（REA + Ghidra + JADX）一键安装 + 原生二进制 / APK 逆向工具；v0.2.5 修复进度卡住（文件大小轮询 + 保留 curl 错误输出）、rea_install 改后台非阻塞、取消杀进程树、失败续传上限、磁盘空间预检",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
@@ -31,6 +31,12 @@
       ]
     }
   },
-  "keywords": ["dsh", "dsh-plugin", "rea", "ghidra", "reverse-engineering"],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "rea",
+    "ghidra",
+    "reverse-engineering"
+  ],
   "license": "MIT"
 }

@@ -85,8 +85,11 @@ function reaTool(spec) {
       if (!(await reaAvailable())) throw new Error(NOT_INSTALLED)
       const args2 = spec.buildArgs(args)
       if (spec.tolerateExit) {
-        // doctor 在环境不全是 healthy 时退出码非 0，但输出仍然有用 —— 吞掉退出码
-        const out = await run('sh', ['-c', `rea ${args2.map((x) => JSON.stringify(x)).join(' ')}; true`], { timeoutMs: spec.timeoutMs || 600000 })
+        // doctor 在环境不全是 healthy 时退出码非 0，但输出仍然有用 —— 容忍该退出码。
+        // v0.2.5：不再用裸 `; true`（它会把 OOM killed、段错误、命令不存在等
+        // **真正的崩溃**也吞成「正常输出」）。这里显式记录退出码，崩溃时带上提示。
+        const cmd = `rea ${args2.map((x) => JSON.stringify(x)).join(' ')}; __rc=$?; if [ "$__rc" -ge 128 ]; then echo "[rea-tools] 命令异常终止（信号 $((__rc-128))），输出可能不完整" >&2; fi; exit 0`
+        const out = await run('sh', ['-c', cmd], { timeoutMs: spec.timeoutMs || 600000 })
         return stripProgress(out)
       }
       const out = await run('rea', args2, { timeoutMs: spec.timeoutMs || 600000 })
@@ -101,8 +104,9 @@ export function apply(ctx) {
     defineTool({
       name: 'rea_install',
       description: '安装 / 更新 REA + Ghidra + JADX 逆向工具链（幂等：已装好的部分自动跳过）。'
-        + '全新环境第一步先调这个。约 3–5 分钟（下载 Ghidra 543MB，断点续传）。'
-        + '装完会运行 rea doctor 验证。',
+        + '全新环境第一步先调这个。**后台安装、立即返回**（不阻塞工具调用）：'
+        + '543MB 的 Ghidra 约需 10–20 分钟，进度可在输入框上方胶囊、或再调 rea_status 查看。'
+        + '装完不会自动跑 rea doctor，需要时再调 rea_doctor 验证。',
       parameters: {
         skip_rea: { type: 'boolean', description: '只装 Ghidra，跳过 rea（默认 false）' },
         compile: { type: 'boolean', description: '强制从源码编译反编译器（默认 false，用预编译包）' },
@@ -113,12 +117,36 @@ export function apply(ctx) {
         render: (_args, value) => [{ type: 'text', text: String(value) }],
       },
       async execute(args) {
-        const a = ['bash', INSTALL_SCRIPT]
-        if (args.skip_rea) a.push('--skip-rea')
-        if (args.compile) a.push('--compile')
-        if (args.install_dir) a.push('--install-dir', args.install_dir)
-        const out = await run('sh', ['-c', `bash ${JSON.stringify(INSTALL_SCRIPT)} ${a.slice(2).map((x) => JSON.stringify(x)).join(' ')}`], { timeoutMs: 1200000 })
-        return out
+        // v0.2.5 关键修复：改为**后台非阻塞**。
+        // 旧实现 `await run(..., timeoutMs: 1200000)` 同步阻塞 20 分钟，
+        // 543MB 下载正好卡在超时临界点——超时即被 kill、下载中断，
+        // 与 install-manager.js 头注释「安装不占用工具调用」的设计自相矛盾。
+        // 现在统一走 startInstall（后台 + 进度投影），立即返回。
+        if (isInstalling()) {
+          const p = currentProgress()
+          return `已有安装正在进行中（${p && p.percent ? p.percent + '%' : '启动中'}）。`
+            + '可在输入框上方胶囊查看进度，或再调 rea_status。'
+        }
+        // --skip-rea / --compile / --install-dir 仍通过环境变量传给脚本（startInstall 只区分 tier）
+        if (args.skip_rea) process.env.REA_SKIP_REA = '1'
+        if (args.compile) process.env.REA_FORCE_COMPILE = '1'
+        if (args.install_dir) process.env.REA_INSTALL_DIR = args.install_dir
+
+        const tier = args.skip_rea ? 'ghidra-only' : 'full'
+        await writeState(__dirname, { installing: true, targetTier: tier, dismissed: true, lastError: null })
+        ui.dismissed = true
+        ui.showDialog = false
+        const r = startInstall(__dirname, args.skip_rea ? 'ghidra-only' : 'full', syncProgress, onInstallDone)
+        if (!r.ok) {
+          ui.installing = false
+          await writeState(__dirname, { installing: false })
+          return `启动后台安装失败：${r.error || '未知错误'}`
+        }
+        publish()
+        return '已开始**后台安装**（不阻塞本次调用）。\n'
+          + '· Ghidra 543MB 经加速镜像约需 10–20 分钟；JADX 41MB 约 1–2 分钟。\n'
+          + '· 进度看输入框上方胶囊，或再调 rea_status 查询。\n'
+          + '· 装完可调 rea_doctor 验证；中途可用设置页「取消安装」停止。'
       },
     }),
 
@@ -194,6 +222,7 @@ export function apply(ctx) {
   ]
 
   // 逐个注册，并把结果写成自检文件（"装上了" ≠ "真的注册成功"，留个可读证据）
+  // v0.2.5：改写到插件目录（随插件走），不再写 /tmp（重启会被清、多用户会冲突）。
   let ok = 0
   const failed = []
   for (const t of tools) {
@@ -205,7 +234,7 @@ export function apply(ctx) {
     }
   }
   try {
-    fs.writeFileSync('/tmp/rea-plugin-selfcheck.json', JSON.stringify({
+    fs.writeFileSync(join(__dirname, '.rea-plugin-selfcheck.json'), JSON.stringify({
       plugin: '@local/rea-tools',
       time: new Date().toISOString(),
       registered: ok,
@@ -272,10 +301,13 @@ export function apply(ctx) {
     if (ok) {
       ui.percent = 100
       ui.lastError = null
-      await writeState(__dirname, { installing: false, installedTier: tier, installedAt: Date.now(), lastError: null })
+      // 成功 → 清零失败计数，避免历史失败影响下次续传判断
+      await writeState(__dirname, { installing: false, installedTier: tier, installedAt: Date.now(), lastError: null, failCount: 0 })
     } else {
       ui.lastError = error || '安装失败'
-      await writeState(__dirname, { installing: false, lastError: ui.lastError })
+      // v0.2.5：累计失败次数（上限判断在 detectState.resumable，防止失败后无限自动续传）
+      const cur = await readState(__dirname)
+      await writeState(__dirname, { installing: false, lastError: ui.lastError, failCount: (cur.failCount || 0) + 1 })
     }
     refreshFromDisk()
     ui.showDialog = false   // 无论成败都不再弹窗（失败可在入口里重试）

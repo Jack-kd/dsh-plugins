@@ -26,13 +26,25 @@ export const PATHS = {
   decompiler: '/opt/ghidra_12.1.4_PUBLIC/Ghidra/Features/Decompiler/os/linux_arm_64/decompile',
 }
 
-// 体积常量（用于弹窗展示与进度换算，单位 MB）
+// ---------- 体积常量（用于弹窗展示与进度换算，单位 MB）----------
 export const SIZES = {
   jdk: 148,
   rea: 50,
   jadx: 41,
   ghidra: 543,
   decompiler: 2,
+}
+
+/**
+ * 每个阶段对应的「下载输出文件」——用于按文件大小轮询算进度。
+ * v0.2.5 修复：旧实现靠正则解析 curl 的 `\r` 进度行，而脚本把 curl 的
+ * stderr 丢掉了（`2>/dev/null`），进度行根本到不了这里 → stageMB 恒为 0 →
+ * 百分比卡在阶段起点不动，用户看到「进度不动」。
+ * 现在改成每 1.5 秒 stat 一次输出文件大小 ÷ 阶段总大小，最可靠。
+ */
+const STAGE_FILES = {
+  ghidra: PATHS.zipCache,
+  jadx: PATHS.jadxJar,
 }
 
 /** 状态文件：记录用户选择、目标环境、安装阶段。放在插件目录下，随插件走。 */
@@ -83,11 +95,19 @@ export function detectState(pluginDir) {
     components: c,
     installed: tier === 'basic' || tier === 'full',
     // 用户此前点过「后台安装」但还没装完 → 下次静默续传
-    resumable: saved.installing === true && tier !== 'full',
+    //
+    // v0.2.5 修复无限续传：旧判断只看 `saved.installing === true`，而进程崩溃/被 kill
+    // 时 `installing` 会残留 true，下次启动就自动续传 → 再失败 → 再续传，无限循环。
+    // 现在额外要求：没有 lastError（上次不是失败退出）+ 失败次数未超上限。
+    resumable: saved.installing === true
+      && tier !== 'full'
+      && !saved.lastError
+      && (saved.failCount || 0) < 3,
     dismissed: saved.dismissed === true,
     remembered: saved.remembered || null,
     cacheMB: Math.round(cacheBytes / 1048576),
     lastError: saved.lastError || null,
+    failCount: saved.failCount || 0,
   }
 }
 
@@ -111,11 +131,25 @@ function parseLine(line, state) {
   const markDone = (k) => { if (k && !stageDone.includes(k)) stageDone.push(k) }
 
   // 阶段识别：既认「开始下载/安装」也认「已存在/跳过/校验通过」
+  //
+  // v0.2.5 修复 stageMB 反复清零：旧代码 `if (s.stageMBKey !== key) { s.stageMB = 0 }`
+  // 在**同一阶段的多行日志**里都会走一遍 setStage（因为每行都可能命中阶段关键词），
+  // 于是 stageMB 被反复重置为 0，进度永远涨不上去。
+  // 现在只在**阶段真的变了**时才重置（且不依赖 stageMBKey 这种易被 Object.assign 覆盖的字段）。
   const setStage = (key, label, mb) => {
-    // 切到新阶段时，把「之前的阶段」标记完成（处理顺序推进）
-    if (s.stage && s.stage !== key) markDone(s.stage)
-    s.stage = key; s.stageLabel = label; s.stageTotalMB = mb
-    if (s.stageMBKey !== key) { s.stageMB = 0; s.stageMBKey = key }
+    const changed = s.stage !== key
+    if (changed) {
+      // 切换阶段：把之前的阶段标记完成
+      if (s.stage) markDone(s.stage)
+      s.stage = key
+      s.stageLabel = label
+      s.stageTotalMB = mb
+      s.stageMB = 0          // 只有换阶段才清零
+    } else if (!s.stageTotalMB) {
+      // 同阶段重复命中：只补全 label/total，不动 stageMB
+      s.stageLabel = label
+      s.stageTotalMB = mb
+    }
   }
 
   if (/下载 Ghidra|检测到已存在的 Ghidra/.test(line)) setStage('ghidra', 'Ghidra 12.1.4', SIZES.ghidra)
@@ -160,7 +194,9 @@ function parseLine(line, state) {
 function computePercent(state, targetTier) {
   const order = targetTier === 'full'
     ? ['jdk', 'rea', 'jadx', 'ghidra', 'decompiler']
-    : ['jdk', 'rea', 'jadx']
+    : targetTier === 'ghidra-only'
+      ? ['ghidra', 'decompiler']
+      : ['jdk', 'rea', 'jadx']
   const sizeOf = { jdk: SIZES.jdk, rea: SIZES.rea, jadx: SIZES.jadx, ghidra: SIZES.ghidra, decompiler: SIZES.decompiler }
 
   const total = order.reduce((a, k) => a + sizeOf[k], 0)
@@ -194,12 +230,22 @@ export function startInstall(pluginDir, tier, onProgress, onDone) {
 
   const script = path.join(pluginDir, 'install-rea-ghidra.sh')
   const args = []
+  // tier 语义：
+  //   basic       = 初级版本（JDK + rea + JADX，跳过 Ghidra）  → --skip-ghidra
+  //   full        = 升级版本（+ Ghidra + 反编译器）
+  //   ghidra-only = 只装 Ghidra（跳过 rea）                    → --skip-rea
   if (tier === 'basic') args.push('--skip-ghidra')
+  else if (tier === 'ghidra-only') args.push('--skip-rea')
+  if (process.env.REA_FORCE_COMPILE === '1') args.push('--compile')
+  if (process.env.REA_INSTALL_DIR) args.push('--install-dir', process.env.REA_INSTALL_DIR)
 
   const child = spawn('bash', [script, ...args], {
     cwd: pluginDir,
     env: { ...process.env, NO_COLOR: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
+    // v0.2.5：detached 让 bash 自成进程组，取消时可用 -pid 杀掉整棵进程树
+    // （curl / tar / apt-get / npm 都是它的子进程，只 kill bash 会留下孤儿占带宽）
+    detached: true,
   })
 
   const state = {
@@ -219,6 +265,28 @@ export function startInstall(pluginDir, tier, onProgress, onDone) {
 
   // 记录上一阶段的完成
   const markStageDone = (st) => { if (st && !state.stageDone.includes(st)) state.stageDone.push(st) }
+
+  // ── 文件大小轮询：可靠地推进 stageMB（P0 修复）────────────────────────
+  // 每 1.5 秒 stat 当前阶段对应的输出文件；`bytes / (MB*1048576)` 即为该阶段进度。
+  // 这比解析 curl 的 `\r` 进度行可靠（后者在脚本改 --no-progress-meter 后不再输出，
+  // 且旧代码把 stderr 丢了根本拿不到）。文件不存在时保持 0。
+  const sizeTicker = setInterval(() => {
+    const file = STAGE_FILES[state.stage]
+    if (!file || !state.stageTotalMB) return
+    try {
+      const bytes = fs.statSync(file).size
+      if (bytes > 0) {
+        const mb = state.stageTotalMB
+        state.stageMB = Math.round((bytes / 1048576))
+        const p = computePercent(state, tier)
+        state.percent = state.done ? 100 : p.percent
+        state.totalMB = p.total
+        state.doneMB = p.done
+        state.downloadedMB = Math.round(bytes / 1048576)
+        if (onProgress) onProgress({ ...state })
+      }
+    } catch { /* 文件还没创建 */ }
+  }, 1500)
 
   const handle = (chunk) => {
     const text = String(chunk)
@@ -257,6 +325,7 @@ export function startInstall(pluginDir, tier, onProgress, onDone) {
   child.stderr.on('data', handle)
 
   child.on('error', (e) => {
+    clearInterval(sizeTicker)
     state.error = e.message
     state.done = true
     current = null
@@ -265,6 +334,7 @@ export function startInstall(pluginDir, tier, onProgress, onDone) {
   })
 
   child.on('close', (code) => {
+    clearInterval(sizeTicker)
     state.done = true
     state.exitCode = code
     if (code !== 0 && !state.error) state.error = `安装脚本退出码 ${code}`
@@ -273,18 +343,30 @@ export function startInstall(pluginDir, tier, onProgress, onDone) {
     if (onDone) onDone({ ok: code === 0, error: state.error, tier })
   })
 
-  current = { child, progress: state, tier }
+  current = { child, progress: state, tier, sizeTicker }
   return { ok: true, tier }
 }
 
 /** 取消安装。cleanCache=true 时删除已下载的缓存（用户选择"不保留"）。 */
 export async function cancelInstall(pluginDir, cleanCache) {
   if (!current) return { ok: false, error: 'NOT_RUNNING' }
-  const { child } = current
-  try { child.kill('SIGTERM') } catch { /* 已退出 */ }
+  const { child, sizeTicker } = current
+  if (sizeTicker) clearInterval(sizeTicker)
+
+  // v0.2.5：杀**整棵进程树**。detached 模式下 bash 是进程组组长（pgid === pid），
+  // 用 `-pid` 发信号可一次性带走 curl / tar / apt-get / npm 等子进程；
+  // 只 `child.kill()` 会留下孤儿继续占带宽、写文件。
+  const pgid = child.pid
+  const killGroup = (sig) => {
+    if (!pgid) return
+    try { process.kill(-pgid, sig) } catch { /* 组已不存在 */ }
+    try { child.kill(sig) } catch { /* 已退出 */ }
+  }
+
+  killGroup('SIGTERM')
   // 给 2 秒优雅退出，否则强杀
   await new Promise((r) => setTimeout(r, 2000))
-  try { child.kill('SIGKILL') } catch { /* 已退出 */ }
+  killGroup('SIGKILL')
 
   if (cleanCache) {
     try { await fsp.rm(PATHS.zipCache, { force: true }) } catch { /* 无缓存 */ }
