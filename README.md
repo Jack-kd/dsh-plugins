@@ -209,8 +209,9 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-vision-router-v3.0.
 </details>
 
 <details>
-<summary><b>▶ dsh-jack-market · 插件市场（本仓库一键装）</b>　<code>v0.6.5</code></summary>
+<summary><b>▶ dsh-jack-market · 插件市场（本仓库一键装）</b>　<code>v0.6.6</code></summary>
 
+> **v0.6.6**：修复**插件越多、老插件越先「失踪」**的隐患——市场原先只拉 `releases?per_page=100` 一页，本仓库是 monorepo、每插件每次发版都建 Release，**总数破 100 后最早那批插件会被挤出列表**（目录还在、市场却显示「未发布包」、点不了安装）。改为**分页拉取**（每页 100 条、最多 5 页 = 500 条，首页不满即停），当前 58 条第一页取完，行为与之前一致但不再有上限悬崖。
 > **v0.6.5**：修复「进度卡在启动中」的**最终根因**——客户端 `api()` 用 `new URL(...).pathname` 解析请求路径，**剥掉了 query 参数**：`/task?key=xxx` 变成 `/task`（key 丢失）→ host 返回 idle → 轮询永远拿不到 done。改为绝对路径直返（同 gh-accel）。
 >
 > **排查全景**（2026-10-18 四轮日志）：① 下载超时（直连不通）→ v0.6.1 移植加速器选路；② `[object Object]` 阶段 bug → v0.6.2 解构修复；③ 镜像被过滤只剩直连 → v0.6.3 候选不过滤；④ 镜像 URL 拼接错 `ghfast.tophttps` → v0.6.4 保留尾斜杠；⑤ 客户端 api() 剥 query → **v0.6.5 修复**。下载层与请求层两层 bug 叠加，任何一层不通都表现为「卡住」。
@@ -250,13 +251,13 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-vision-router-v3.0.
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.6.5/dsh-jack-market-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.6.6/dsh-jack-market-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.6.5/dsh-jack-market-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.6.6/dsh-jack-market-plugin.tgz
 ```
 
 > 装完重启一次 App（让设置页入口出现）；之后打开 **设置 → Jack 插件市场** 即可浏览和安装本仓库的插件。

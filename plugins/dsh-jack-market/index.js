@@ -18,7 +18,20 @@ import { spawn } from 'node:child_process';
 const OWNER = 'Jack-kd';
 const REPO = 'dsh-plugins';
 const REPO_URL = `https://github.com/${OWNER}/${REPO}`;
-const API_RELEASES = `https://api.github.com/repos/${OWNER}/${REPO}/releases?per_page=100`;
+const API_RELEASES = `https://api.github.com/repos/${OWNER}/${REPO}/releases`;
+/**
+ * Releases are fetched page by page. A single `?per_page=100` request used to
+ * be enough, but this repo is a monorepo whose plugins each cut a release per
+ * version: once the total passes 100 entries, the oldest plugins silently
+ * disappear from the market (they still have a `plugins/<key>/` directory, so
+ * they show up as "未发布包" / not installable). Paginating removes that cliff.
+ *
+ * Pages are capped so a runaway repo can't turn one market load into dozens of
+ * anonymous API calls (the 60 req/hour limit is shared with the dir listing).
+ * 5 pages = 500 releases; well beyond the current ~60.
+ */
+const RELEASES_PER_PAGE = 100;
+const RELEASES_MAX_PAGES = 5;
 const API_PLUGINS_DIR = `https://api.github.com/repos/${OWNER}/${REPO}/contents/plugins`;
 
 /**
@@ -110,6 +123,23 @@ async function ghJson(url, controller) {
   return response.json();
 }
 
+/** Fetch every release, page by page, until a short page is returned or the
+ * cap is hit. Returns a flat array. Mirrors GitHub's Link-free contract: a page
+ * with fewer than RELEASES_PER_PAGE entries means we've reached the end. */
+async function fetchAllReleases(controller) {
+  const all = [];
+  for (let page = 1; page <= RELEASES_MAX_PAGES; page++) {
+    const batch = await cachedGhJson(
+      `${API_RELEASES}?per_page=${RELEASES_PER_PAGE}&page=${page}`,
+      controller,
+    );
+    const list = Array.isArray(batch) ? batch : [];
+    all.push(...list);
+    if (list.length < RELEASES_PER_PAGE) break;
+  }
+  return all;
+}
+
 async function fetchPlugins() {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 25_000);
@@ -121,7 +151,7 @@ async function fetchPlugins() {
     // not yet released) are shown but marked not-installable.
     const [dirEntries, releases] = await Promise.all([
       cachedGhJson(API_PLUGINS_DIR, controller),
-      cachedGhJson(API_RELEASES, controller),
+      fetchAllReleases(controller),
     ]);
     const dirKeys = new Set(
       (Array.isArray(dirEntries) ? dirEntries : [])
