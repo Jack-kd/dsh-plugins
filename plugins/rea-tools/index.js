@@ -14,20 +14,22 @@ import { dirname, join } from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import {
   detectState, readState, writeState, startInstall, cancelInstall,
-  isInstalling, currentProgress, PATHS, SIZES,
+  isInstalling, currentProgress, PATHS, SIZES, VERSIONS,
 } from './install-manager.js'
 
 export const name = 'rea'
 export const inject = ['tools']
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const INSTALL_SCRIPT = join(__dirname, 'install-rea-ghidra.sh')
+// v0.2.6：INSTALL_SCRIPT 常量已删除——rea_install 改走 startInstall（install-manager
+// 内部自己拼脚本路径），这里不再需要，留着是死代码。
 
-// 与 install-rea-ghidra.sh 的默认安装位置保持一致
+// v0.2.6：环境变量默认值改为从 install-manager 的 PATHS 派生，不再重复硬编码版本号
+// （旧版这里写死 12.1.4 / 0.7.1，与 PATHS 重复，升级时容易漏改一处导致探测/运行路径不一致）
 const ENV_DEFAULTS = {
-  GHIDRA_INSTALL_DIR: '/opt/ghidra_12.1.4_PUBLIC',
-  JAVA_HOME: '/usr/lib/jvm/java-21-openjdk-arm64',
-  REA_JADX_MCP_JAR: '/opt/rea-install-kit/jadx-headless-mcp-0.7.1-all.jar',
+  GHIDRA_INSTALL_DIR: PATHS.ghidraDir,
+  JAVA_HOME: PATHS.javaHome,
+  REA_JADX_MCP_JAR: PATHS.jadxJar,
 }
 
 function reaEnv() {
@@ -298,6 +300,9 @@ export function apply(ctx) {
 
   const onInstallDone = async ({ ok, error, tier }) => {
     ui.installing = false
+    // v0.2.6：安装结束给一次性提示（旧版胶囊直接消失，用户不知道成没成）
+    ui.justFinished = ok ? 'success' : 'error'
+    ui.finishText = ok ? 'REA 逆向环境已就绪' : ('安装失败：' + (error || '未知错误'))
     if (ok) {
       ui.percent = 100
       ui.lastError = null
@@ -312,6 +317,8 @@ export function apply(ctx) {
     refreshFromDisk()
     ui.showDialog = false   // 无论成败都不再弹窗（失败可在入口里重试）
     publish()
+    // 15 秒后清除完成提示（避免长期挂在胶囊上）
+    setTimeout(() => { ui.justFinished = null; ui.finishText = null; publish() }, 15_000)
   }
 
   // ---- 投影：客户端用 useProjection('rea') 读取 ----
@@ -394,10 +401,14 @@ export function apply(ctx) {
           cacheMB: ui.cacheMB || 0,
           targetTier: ui.targetTier || null,
           doneStages: ui.doneStages || [],
+          // v0.2.6：安装结束的一次性提示（客户端据此显示「✓ 已就绪」或「✗ 失败」）
+          justFinished: ui.justFinished || null,
+          finishText: ui.finishText || null,
           active,
           activeLabel,
           activeTarget,
           sizes: SIZES,
+          versions: VERSIONS,
         }
       },
     },
@@ -425,11 +436,15 @@ export function apply(ctx) {
 
   // ---- 会话命令：客户端 UI 通过 ctx.remote.commands.execute() 调用 ----
   // 文档指定的 UI→宿主 调用方式（references/user-actions.md）。
-  const doInstall = async (tier) => {
+  const doInstall = async (tier, remember = true) => {
     if (isInstalling()) return { kind: 'error', text: '已有安装在进行中' }
-    const t = tier === 'full' ? 'full' : 'basic'
-    await writeState(__dirname, { installing: true, targetTier: t, dismissed: true, lastError: null })
-    ui.dismissed = true
+    const t = tier === 'full' ? 'full' : (tier === 'ghidra-only' ? 'ghidra-only' : 'basic')
+    // v0.2.6：respect「记住我的选择」——勾选才写 dismissed=true（以后不再弹窗）；
+    // 未勾选则保持 dismissed 原值，下次启动仍会询问。
+    const patch = { installing: true, targetTier: t, lastError: null }
+    if (remember) patch.dismissed = true
+    await writeState(__dirname, patch)
+    if (remember) ui.dismissed = true
     ui.showDialog = false
     ui.lastError = null
     const r = startInstall(__dirname, t, syncProgress, onInstallDone)
@@ -439,7 +454,8 @@ export function apply(ctx) {
       return { kind: 'error', text: '启动失败：' + (r.error || '未知错误') }
     }
     publish()
-    const label = t === 'basic' ? '初级版本（APK 逆向）' : '升级版本（+ 原生二进制）'
+    const label = t === 'basic' ? '初级版本（APK 逆向）'
+      : t === 'ghidra-only' ? '仅 Ghidra（原生二进制）' : '升级版本（+ 原生二进制）'
     return { kind: 'success', text: `已开始后台安装 ${label}，可在输入框上方查看进度。` }
   }
 
@@ -475,8 +491,10 @@ export function apply(ctx) {
           console.warn(`[rea-tools] 注册命令 ${name} 失败:`, e && e.message ? e.message : e)
         }
       }
-      reg('rea-install-basic', '后台安装 REA 初级版本（APK 逆向）', async () => doInstall('basic'))
-      reg('rea-install-full', '后台安装 REA 升级版本（含 Ghidra）', async () => doInstall('full'))
+      // v0.2.6：handler 接收调用参数串，「--no-remember」表示不记忆选择
+      const rememberOf = (argsRaw) => !(typeof argsRaw === 'string' && /--no-remember/.test(argsRaw))
+      reg('rea-install-basic', '后台安装 REA 初级版本（APK 逆向）', async (argsRaw) => doInstall('basic', rememberOf(argsRaw)))
+      reg('rea-install-full', '后台安装 REA 升级版本（含 Ghidra）', async (argsRaw) => doInstall('full', rememberOf(argsRaw)))
       reg('rea-dismiss', '忽略 REA 环境安装提示', async () => doDismiss())
       reg('rea-cancel', '取消正在进行的 REA 安装（保留已下载缓存）', async () => doCancel(true))
       reg('rea-cancel-clean', '取消 REA 安装并清理已下载缓存', async () => doCancel(false))

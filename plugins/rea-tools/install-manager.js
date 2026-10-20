@@ -16,14 +16,25 @@ import fsp from 'node:fs/promises'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 
-// ---------- 路径常量（与 install-rea-ghidra.sh 保持一致）----------
+// ---------- 版本常量（v0.2.6：集中一处，升级 Ghidra/JADX 只改这里）----------
+// 旧版把 12.1.4 / 0.7.1 / 20260921 散落在 PATHS、index.js 的 ENV_DEFAULTS、client.js
+// 的 ITEMS 里，升级时要改 4+ 个文件，极易漏改导致探测/安装路径对不上。
+export const VERSIONS = {
+  ghidra: '12.1.4',
+  ghidraBuild: '20260921',   // Ghidra release zip 的构建日期后缀
+  jadx: '0.7.1',
+  rea: '6.5.0',
+}
+
+// ---------- 路径常量（与 install-rea-ghidra.sh 保持一致，由 VERSIONS 生成）----------
+const GHIDRA_DIR = `/opt/ghidra_${VERSIONS.ghidra}_PUBLIC`
 export const PATHS = {
-  ghidraDir: '/opt/ghidra_12.1.4_PUBLIC',
-  ghidraMarker: '/opt/ghidra_12.1.4_PUBLIC/Ghidra/application.properties',
+  ghidraDir: GHIDRA_DIR,
+  ghidraMarker: `${GHIDRA_DIR}/Ghidra/application.properties`,
   javaHome: '/usr/lib/jvm/java-21-openjdk-arm64',
-  jadxJar: '/opt/rea-install-kit/jadx-headless-mcp-0.7.1-all.jar',
-  zipCache: '/var/cache/rea-install/ghidra_12.1.4_PUBLIC_20260921.zip',
-  decompiler: '/opt/ghidra_12.1.4_PUBLIC/Ghidra/Features/Decompiler/os/linux_arm_64/decompile',
+  jadxJar: `/opt/rea-install-kit/jadx-headless-mcp-${VERSIONS.jadx}-all.jar`,
+  zipCache: `/var/cache/rea-install/ghidra_${VERSIONS.ghidra}_PUBLIC_${VERSIONS.ghidraBuild}.zip`,
+  decompiler: `${GHIDRA_DIR}/Ghidra/Features/Decompiler/os/linux_arm_64/decompile`,
 }
 
 // ---------- 体积常量（用于弹窗展示与进度换算，单位 MB）----------
@@ -192,10 +203,12 @@ function parseLine(line, state) {
  * 用「已完成阶段体积 + 当前阶段已下载体积」/ 目标总量。
  */
 function computePercent(state, targetTier) {
+  // v0.2.6：ghidra-only 也会装 JDK（脚本 `--skip-rea` 只跳过 rea-agents，JDK 仍要装），
+  // 旧版只算 [ghidra, decompiler] → 进度分母偏小、百分比虚高。
   const order = targetTier === 'full'
     ? ['jdk', 'rea', 'jadx', 'ghidra', 'decompiler']
     : targetTier === 'ghidra-only'
-      ? ['ghidra', 'decompiler']
+      ? ['jdk', 'ghidra', 'decompiler']
       : ['jdk', 'rea', 'jadx']
   const sizeOf = { jdk: SIZES.jdk, rea: SIZES.rea, jadx: SIZES.jadx, ghidra: SIZES.ghidra, decompiler: SIZES.decompiler }
 

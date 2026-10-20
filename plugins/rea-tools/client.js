@@ -110,17 +110,25 @@
         }
 
         // ---------------- 组件清单定义（数据驱动，便于联动） ----------------
-        const ITEMS = [
-          { key: 'jdk', name: 'JDK 21 (headless)', mb: 148, desc: 'Java 运行环境，JADX 与 rea 的运行前置' },
-          { key: 'rea', name: 'rea-agents 6.5.0', mb: 50, desc: '提供 rea 命令与 7 个分析工具' },
-          { key: 'jadx', name: 'JADX 桥接 0.7.1', mb: 41, desc: 'APK 反编译引擎（DEX → Java）' },
-          { key: 'ghidra', name: 'Ghidra 12.1.4', mb: 543, desc: '可选增强：伪代码反编译 / 汇编分析 / 调用关系；含 arm64 反编译器 1.8 MB（配套件，自动带上）' },
+        // v0.2.6：体积改成从投影的 `sizes`（host 侧 SIZES）读取，不再前端写死——
+        // 旧版这里硬编码 148/50/41/543，与 install-manager.js 的 SIZES 重复，升级时易不一致。
+        // 名称里的版本号同理从投影 `versions` 取（host 侧 VERSIONS）。
+        const DEFAULT_SIZES = { jdk: 148, rea: 50, jadx: 41, ghidra: 543 }
+        const itemDefs = (sizes, versions) => [
+          { key: 'jdk', name: `JDK 21 (headless)`, mb: sizes.jdk, desc: 'Java 运行环境，JADX 与 rea 的运行前置' },
+          { key: 'rea', name: `rea-agents ${versions.rea}`, mb: sizes.rea, desc: '提供 rea 命令与 7 个分析工具' },
+          { key: 'jadx', name: `JADX 桥接 ${versions.jadx}`, mb: sizes.jadx, desc: 'APK 反编译引擎（DEX → Java）' },
+          { key: 'ghidra', name: `Ghidra ${versions.ghidra}`, mb: sizes.ghidra, desc: '可选增强：伪代码反编译 / 汇编分析 / 调用关系；含 arm64 反编译器 1.8 MB（配套件，自动带上）' },
         ]
         const BASIC_KEYS = ['jdk', 'rea', 'jadx']
         const fmt = (mb) => (mb >= 1024 ? (mb / 1024).toFixed(2) + ' GB' : mb + ' MB')
 
         // ================= 安装弹窗 =================
         function InstallDialog({ state, onInstall, onDismiss }) {
+          // v0.2.6：体积/版本从投影取（host 侧单一来源），缺失时用兜底值
+          const sizes = (state && state.sizes) || DEFAULT_SIZES
+          const versions = (state && state.versions) || { rea: '6.5.0', jadx: '0.7.1', ghidra: '12.1.4' }
+          const ITEMS = React.useMemo(() => itemDefs(sizes, versions), [sizes, versions])
           // 视图状态：初级/升级；真实数据源是 4 个 checkbox
           const [picked, setPicked] = React.useState(() => ({ jdk: true, rea: true, jadx: true, ghidra: false }))
           const [remember, setRemember] = React.useState(true)
@@ -129,6 +137,11 @@
           const anyBasic = BASIC_KEYS.some((k) => picked[k])
           // 升级版本 = 初级三项 + Ghidra 全选
           const isFull = basicAll && picked.ghidra
+          // v0.2.6 修复：初级三项**只能全选或全不选**。
+          // 旧版允许「只勾 jdk」这种中间态，按钮仍显示 tier=basic，而 host 走
+          // `--skip-ghidra` 会**装齐三项**——用户的选择是假的。
+          // 现在中间态直接禁用安装并给出说明，不欺骗用户。
+          const midState = anyBasic && !basicAll
 
           const toggleChild = (k) => setPicked((p) => ({ ...p, [k]: !p[k] }))
           const pickBasic = () => setPicked({ jdk: true, rea: true, jadx: true, ghidra: false })
@@ -136,7 +149,7 @@
 
           const chosen = ITEMS.filter((i) => picked[i.key])
           const totalMB = chosen.reduce((a, i) => a + i.mb, 0)
-          const tier = isFull ? 'full' : (anyBasic ? 'basic' : null)
+          const tier = midState ? null : (isFull ? 'full' : (anyBasic ? 'basic' : null))
 
           const group = (opts) => {
             const on = opts.on
@@ -174,7 +187,7 @@
                   onPick: pickBasic,
                   name: '初级版本',
                   desc: '支持：APK 逆向分析（包名 / 权限 / 类 / 方法）',
-                  sizeLabel: '~' + fmt(239),
+                  sizeLabel: '~' + fmt(BASIC_KEYS.reduce((a, k) => a + sizes[k], 0)),
                   children: BASIC_KEYS.map((k) => childRow(ITEMS.find((i) => i.key === k))),
                 }),
 
@@ -184,13 +197,18 @@
                   onPick: pickFull,
                   name: '升级版本',
                   desc: '在初级版本之上，增加原生二进制逆向能力',
-                  sizeLabel: '+' + fmt(543) + '（共 ' + fmt(784) + '）',
+                  sizeLabel: '+' + fmt(sizes.ghidra) + '（共 ' + fmt(BASIC_KEYS.reduce((a, k) => a + sizes[k], 0) + sizes.ghidra) + '）',
                   children: [childRow(ITEMS.find((i) => i.key === 'ghidra'))],
                 }),
 
                 h('div', { className: S.remember, onClick: () => setRemember((v) => !v) },
                   h('div', { className: S.check + (remember ? ' ' + S.checkOn : '') }, remember ? '✓' : ''),
-                  h('span', null, '记住我的选择，以后不再询问'))),
+                  h('span', null, '记住我的选择，以后不再询问')),
+
+                // v0.2.6：中间态明确说明（初级三项是固定组合，不能只选一部分）
+                midState ? h('div', {
+                  style: { fontSize: '12px', lineHeight: '18px', marginTop: '6px', color: 'var(--dsw-alias-state-warning-primary,#d98a00)' },
+                }, '初级版本的三项（JDK / rea-agents / JADX）是固定组合，不能只选其中一部分；请整组勾选，或点上面「初级版本」自动补齐。') : null),
 
               h('div', { className: S.foot },
                 h('button', {
@@ -205,12 +223,21 @@
         function ProgressPanel({ state, onCancelKeep, onCancelClean, onClose }) {
           const [askCancel, setAskCancel] = React.useState(false)
           const pct = Math.max(0, Math.min(100, state.percent || 0))
+          // v0.2.6：兼容 ghidra-only（只装 Ghidra）——旧版只判断 'full'，
+          // 导致 ghidra-only 安装时面板里根本不显示 Ghidra 阶段，进度列表是空的。
+          const withGhidra = state.targetTier === 'full' || state.targetTier === 'ghidra-only'
+          const onlyGhidra = state.targetTier === 'ghidra-only'
           const stages = [
-            { key: 'jdk', name: 'JDK 21' }, { key: 'rea', name: 'rea-agents' },
-            { key: 'jadx', name: 'JADX 桥接' },
-            ...(state.targetTier === 'full' ? [{ key: 'ghidra', name: 'Ghidra 12.1.4' }, { key: 'decompiler', name: 'arm64 反编译器' }] : []),
+            ...(onlyGhidra ? [] : [
+              { key: 'jdk', name: 'JDK 21' }, { key: 'rea', name: 'rea-agents' },
+              { key: 'jadx', name: 'JADX 桥接' },
+            ]),
+            ...(withGhidra ? [{ key: 'ghidra', name: 'Ghidra 12.1.4' }, { key: 'decompiler', name: 'arm64 反编译器' }] : []),
           ]
           const done = state.doneStages || []
+          // v0.2.6：取消动作后**立即关闭确认框**（旧版点了保留/删除后 askCancel 仍为 true，
+          // 按钮卡在确认态，用户以为没生效）
+          const doCancel = (fn) => () => { setAskCancel(false); fn() }
           return h('div', { className: S.overlay, role: 'dialog', 'aria-modal': 'true' },
             h('div', { className: S.dialog },
               h('div', { className: S.head },
@@ -245,8 +272,8 @@
                   h('div', { style: { color: 'var(--dsw-alias-label-secondary)', marginBottom: '10px' } },
                     '已下载的部分怎么处理？'),
                   h('div', { style: { display: 'flex', gap: '8px' } },
-                    h('button', { className: S.btn + ' ' + S.btnGhost, onClick: onCancelKeep }, '保留（下次可续传）'),
-                    h('button', { className: S.btn + ' ' + S.btnGhost, onClick: onCancelClean }, '删除已下载'))) : null),
+                    h('button', { className: S.btn + ' ' + S.btnGhost, onClick: doCancel(onCancelKeep) }, '保留（下次可续传）'),
+                    h('button', { className: S.btn + ' ' + S.btnGhost, onClick: doCancel(onCancelClean) }, '删除已下载'))) : null),
               h('div', { className: S.foot },
                 state.installing && !askCancel
                   ? h('button', { className: S.btn + ' ' + S.btnGhost, onClick: () => setAskCancel(true) }, '取消安装')
@@ -259,6 +286,33 @@
           if (!state) return null
           const installing = !!state.installing
           const active = !!state.active
+          const justFinished = state.justFinished || null
+          // v0.2.6：安装刚结束 → 显示一次性结果提示（旧版胶囊直接消失，用户不知道成没成）
+          if (!installing && justFinished) {
+            return h('div', { className: S.pill },
+              h('div', {
+                className: S.pillCard,
+                role: 'status',
+                'aria-live': 'polite',
+                title: state.finishText || '',
+                onClick: onOpen,
+                style: {
+                  borderColor: justFinished === 'success'
+                    ? 'var(--dsw-alias-state-success-primary,#2ea043)'
+                    : 'var(--dsw-alias-state-error-primary,#c00)',
+                },
+              },
+                h('span', {
+                  className: S.dot,
+                  style: {
+                    background: justFinished === 'success'
+                      ? 'var(--dsw-alias-state-success-primary,#2ea043)'
+                      : 'var(--dsw-alias-state-error-primary,#c00)',
+                    animation: 'none',
+                  },
+                }),
+                h('span', null, (justFinished === 'success' ? '✓ ' : '✗ ') + (state.finishText || '安装已结束'))))
+          }
           // 仅在：安装中 / 有 rea 工具正在执行 时显示
           if (!installing && !active) return null
           if (active) {
@@ -284,6 +338,10 @@
         // ================= 设置页入口 =================
         function SettingsRow({ state, onOpen, onInstallFull, onInstallBasic }) {
           const tier = state ? state.tier : 'none'
+          // v0.2.6：体积从投影取（host 单一来源），不再在本组件里写死 239/784/543
+          const sizes = (state && state.sizes) || DEFAULT_SIZES
+          const basicMB = (sizes.jdk || 0) + (sizes.rea || 0) + (sizes.jadx || 0)
+          const fullMB = basicMB + (sizes.ghidra || 0)
           const installing = state && state.installing
           const [showDialog, setShowDialog] = React.useState(false)
           let status, desc, action = null
@@ -296,7 +354,7 @@
             desc = '当前版本：APK 逆向 + 原生二进制逆向'
           } else if (tier === 'basic') {
             status = '初级版本'
-            desc = '仅 APK 逆向。如需原生二进制逆向，可升级安装 Ghidra（+543 MB）'
+            desc = '仅 APK 逆向。如需原生二进制逆向，可升级安装 Ghidra（+' + (sizes.ghidra || 543) + ' MB）'
             action = h('button', { className: S.btn + ' ' + S.btnPrimary, onClick: onInstallFull }, '升级到升级版本')
           } else if (tier === 'partial') {
             status = '未完成'
@@ -304,7 +362,7 @@
             action = h('button', { className: S.btn + ' ' + S.btnPrimary, onClick: onInstallBasic }, '继续安装')
           } else {
             status = '未安装'
-            desc = '初级版本约 239 MB（APK 逆向）；升级版本约 784 MB（增加原生二进制逆向）'
+            desc = '初级版本约 ' + basicMB + ' MB（APK 逆向）；升级版本约 ' + fullMB + ' MB（增加原生二进制逆向）'
             // 未安装时点击整行弹出选择弹窗（初级/升级可选）
             action = h('button', { className: S.btn + ' ' + S.btnPrimary, onClick: (e) => { e.stopPropagation(); setShowDialog(true) } }, '安装环境')
           }
@@ -395,11 +453,30 @@
           }, 'rea-tools: styles')
 
           // 每个 session 一份 UI 开关状态
+          //
+          // v0.2.6：settings.general.item 是 root scope（没有 sessionId），而详情面板
+          // 挂在 conversation.input.overlay（按 session 分）。若两者用不同 store，
+          // 设置页点「查看进度」写的 dialog 标志到不了面板所在的 store → 点了没反应。
+          // 修复：维护一个**全局「请求打开详情」标志**，任意 store 都能消费：
+          // 设置页置位 → 当前可见会话的胶囊/面板读到后打开并清除。
+          let globalOpenRequest = false
           const stores = new Map()
           const storeOf = (sessionId) => {
             const key = sessionId || '__root__'
             if (!stores.has(key)) stores.set(key, makeStore())
             return stores.get(key)
+          }
+          const requestOpenDetail = () => {
+            globalOpenRequest = true
+            // 让所有 store 重渲染，消费方（胶囊/面板）会读到并打开
+            for (const s of stores.values()) s.set({})
+            // 若还没建过任何 session store，兜底建一个 root 的
+            if (stores.size === 0) storeOf('__root__').set({})
+          }
+          const consumeOpenRequest = () => {
+            if (!globalOpenRequest) return false
+            globalOpenRequest = false
+            return true
           }
 
           // 找一个可用 session（settings 插槽是 root scope、拿不到 sessionId 时用）
@@ -436,9 +513,12 @@
               return {
                 reaStore: store,
                 reaActions: {
-                  install: (tier) => {
+                  // v0.2.6：接收 remember（旧版只收 tier，「记住我的选择」勾了也没用）
+                  install: (tier, remember) => {
                     store.set({ dialog: false })
-                    return runCommand(sessionId, tier === 'full' ? '/rea-install-full' : '/rea-install-basic')
+                    // remember=true 时 host 侧已默认写 dismissed=true；false 时清除
+                    return runCommand(sessionId, (tier === 'full' ? '/rea-install-full' : '/rea-install-basic')
+                      + (remember === false ? ' --no-remember' : ''))
                   },
                   dismiss: () => {
                     store.set({ dialog: false, dismissed: true })
@@ -469,8 +549,15 @@
           }, (props) => {
             const proj = props.useProjection ? props.useProjection('rea') : null
             const local = useStore(props.reaStore)
-            // 显示条件：安装中 / 有 rea 工具正在执行 / 用户手动打开了详情
-            if (!proj || (!proj.installing && !proj.active && !local.dialog)) return null
+            // v0.2.6：消费设置页的「查看进度」全局请求
+            const [, force] = React.useState(0)
+            React.useEffect(() => {
+              if (consumeOpenRequest()) {
+                props.reaStore.set({ dialog: true })
+                force((n) => n + 1)
+              }
+            })
+            if (!proj || (!proj.installing && !proj.active && !proj.justFinished && !local.dialog)) return null
             return h(ProgressPill, {
               state: proj,
               onOpen: () => props.reaStore.set({ dialog: true }),
@@ -493,6 +580,14 @@
           }, (props) => {
             const proj = props.useProjection ? props.useProjection('rea') : null
             const local = useStore(props.reaStore)
+            // v0.2.6：消费设置页的「查看进度」全局请求（面板自带消费，不依赖胶囊先渲染）
+            const [, force] = React.useState(0)
+            React.useEffect(() => {
+              if (consumeOpenRequest()) {
+                props.reaStore.set({ dialog: true })
+                force((n) => n + 1)
+              }
+            })
             if (!local.dialog) return null
             return h(ProgressPanel, {
               state: proj || {},
@@ -511,11 +606,14 @@
             order: 30,
             inject: () => {
               // inject 在 root scope 下调用，sessionId 为空 → 用 anySessionId() 兜底
+              const store = storeOf('__root__')
               return {
-                reaStore: storeOf('__root__'),
+                reaStore: store,
                 reaActions: {
                   installBasic: () => runCommand(undefined, '/rea-install-basic'),
                   installFull: () => runCommand(undefined, '/rea-install-full'),
+                  // v0.2.6：打开进度详情面板（跨插槽：置全局请求 → 面板/胶囊消费）
+                  openDetail: () => requestOpenDetail(),
                 },
               }
             },
@@ -524,7 +622,9 @@
             const proj = props && props.useProjection ? props.useProjection('rea') : useReaProjection()
             return h(SettingsRow, {
               state: proj,
-              onOpen: () => {},
+              // v0.2.6：旧版是 `onOpen: () => {}` 空函数——「查看进度」按钮点了完全没反应。
+              // 现在写入共享 store 的 dialog 标志，input.dock 胶囊随之渲染，点胶囊开详情面板。
+              onOpen: () => { try { props.reaActions.openDetail() } catch { /* store 不可用 */ } },
               onInstallBasic: () => props.reaActions.installBasic(),
               onInstallFull: () => props.reaActions.installFull(),
             })

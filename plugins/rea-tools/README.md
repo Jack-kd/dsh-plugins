@@ -2,6 +2,21 @@
 
 把 **REA + Ghidra + JADX** 的逆向能力变成 DSH 原生工具：一键安装 + 原生二进制/APK 逆向。
 
+**v0.2.6**：**深度审查修复（UI + 后端）**，共 9 项：
+
+**UI 层**
+- **安装弹窗复选框「假选择」**：旧版允许只勾 JDK/rea/JADX 其中一项，按钮仍按 `tier=basic` 提交，而 host 走 `--skip-ghidra` 会**装齐三项**——用户的选择等于没生效。现在中间态直接禁用安装并给出说明（三项是固定组合）。
+- **设置页「查看进度」点了没反应**：`onOpen` 是空函数 `() => {}`。现在置全局「打开详情」请求，胶囊/面板跨插槽消费（`settings.general.item` 是 root scope，与会话级 store 不互通，旧版即使写了标志也到不了面板）。
+- **「记住我的选择」无效**：`onInstall(tier, remember)` 传了但 `reaActions.install(tier)` 只收一个参数。现在透传 `--no-remember`，host 侧按需写 `dismissed`。
+- **ghidra-only 时进度面板阶段为空**：旧版只判断 `targetTier === 'full'`，漏了 `ghidra-only`，面板里不显示 Ghidra 阶段。已补齐。
+- **安装完成毫无提示**：胶囊直接消失，用户不知道成没成。现在结束后显示 15 秒「✓ REA 逆向环境已就绪」/「✗ 安装失败：原因」。
+- **取消确认框点了不关**：点「保留/删除」后 `askCancel` 仍为 true，按钮卡在确认态。已修复。
+
+**后端层**
+- **ghidra-only 进度分母错**：脚本 `--skip-rea` 仍会装 JDK，但 `computePercent` 只算 `[ghidra, decompiler]`，导致百分比虚高。已改为 `[jdk, ghidra, decompiler]`。
+- **版本号/体积硬编码散落 4 处**：`12.1.4`/`0.7.1`/`20260921` 分别在 `PATHS`、index.js `ENV_DEFAULTS`、client.js `ITEMS` 里重复写死，升级时极易漏改。现在集中到 `VERSIONS` 常量，`PATHS` 由它生成，client 从投影 `versions`/`sizes` 读取。
+- **死代码清理**：`INSTALL_SCRIPT` 在 `rea_install` 改后台后已无人使用，删除。
+
 **v0.2.5**：一轮健壮性修复，解决「装了很久看不到进度 / 卡住 / 取消不干净」：
 
 - **进度卡住（最重要）**：旧实现靠正则解析 curl 的进度行，但脚本用 `2>/dev/null` 把 curl 输出（含错误信息）全丢了 → 进度永远 0。现改为**每 1.5 秒轮询输出文件大小**算进度（已下载 MB / 阶段总量），并让脚本用 `--no-progress-meter` 保留真正的错误输出（404/超时/证书失败不再被吞）。
