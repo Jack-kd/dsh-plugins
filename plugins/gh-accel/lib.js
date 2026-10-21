@@ -61,12 +61,14 @@ const CONNECT_TIMEOUT = 12_000;
 // 'mirror'：镜像优先 —— 只要任一镜像测速达标就用镜像，直连仅作兜底（门槛很高）。
 //           国内访问 GitHub 慢、镜像普遍可达时最合适；对镜像按历史速度排序后
 //           逐个测、命中即用（early-exit），不再 10 个镜像全量并行测速。
-// 'smart'：智能平衡（默认）—— 镜像门槛提高到「明显快」才选（150 KB/s），
-//           直连门槛降低（120 KB/s）；大文件用 5s 测准，避免「直连忽快忽慢被误选」。
+// 'smart'：公平比较（默认，v2.8.0 调阈值）—— 直连与镜像用**同一把尺子**
+//           （≥40KB/s 即参与比较），**谁快选谁**。旧版直连门槛 120KB/s、镜像
+//           门槛 150KB/s 不对称：对直连放水、对镜像严苛，导致「镜像其实更快但
+//           没到 150 门槛」的边界情况被直连抢走。现统一为只挡死路（<40KB/s）。
 // 'direct'：直连优先（老行为）—— 直连 200 KB/s 门槛，镜像仅 40 KB/s 兜底。
 const PREFER_PRESETS = {
   mirror: { mirrorMin: MIN_MIRROR_OK, directMin: 800 * 1024, probeMs: 5000, maxProbes: 4, earlyExit: true },
-  smart:  { mirrorMin: 150 * 1024,    directMin: 120 * 1024, probeMs: 5000, maxProbes: 6, earlyExit: false },
+  smart:  { mirrorMin: MIN_MIRROR_OK, directMin: MIN_MIRROR_OK, probeMs: 5000, maxProbes: 6, earlyExit: false },
   direct: { mirrorMin: MIN_MIRROR_OK, directMin: MIN_DIRECT_OK, probeMs: 3500, maxProbes: 10, earlyExit: false },
 };
 

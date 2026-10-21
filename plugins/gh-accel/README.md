@@ -2,6 +2,17 @@
 
 **gh-accel 与 dl-accel 合二为一**：一个插件同时负责 GitHub 与任意站点的下载/上传加速。
 
+## v2.8.0 · 公平比较（谁快选谁）
+
+**默认档 `smart` 的阈值改为公平**：直连与镜像用**同一把尺子**（≥40 KB/s 即参与比较），**谁快选谁**。
+
+- **旧版问题**：直连门槛 120 KB/s、镜像门槛 150 KB/s **不对称**——对直连放水、对镜像严苛。国内网络下「镜像其实更快但没到 150 门槛」的边界情况，会被直连抢走，导致走了慢路还没胶囊。
+- **v2.8.0**：直连和镜像统一 **≥40 KB/s 就参与比较**（只挡死路），**测速快的直接胜出**：
+  - 直连 150 / 镜像 160 → 选镜像（旧版错选直连）✅
+  - 直连 200 / 镜像 180 → 选直连 ✅
+  - 直连 30（死路）/ 镜像 200 → 选镜像 ✅
+- `mirror`（镜像优先）/ `direct`（直连优先）显式档保持原样，需要强制时可指定。
+
 ## v2.7.0 · 下载优先策略（prefer 三档）
 
 新增**下载优先策略**配置，下载选路更聪明，国内网络提速明显：
@@ -24,7 +35,7 @@
 
 > 安装：
 > ```bash
-> dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.7.0/gh-accel-plugin.tgz
+> dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.8.0/gh-accel-plugin.tgz
 > ```
 
 ## v2.6.1 · 胶囊刷新更顺滑
@@ -38,7 +49,7 @@
 
 > 安装：
 > ```bash
-> dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.7.0/gh-accel-plugin.tgz
+> dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.8.0/gh-accel-plugin.tgz
 > ```
 
 ## v2.6.0 · 胶囊实时速度 / 进度显示（方案 A）
@@ -54,7 +65,7 @@
 
 > 安装：
 > ```bash
-> dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.7.0/gh-accel-plugin.tgz
+> dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.8.0/gh-accel-plugin.tgz
 > ```
 
 ## v2.5.2 · 修复系统提示从未注入 + 补全 HF/npm 全局镜像
@@ -194,7 +205,7 @@ https://registry.npmmirror.comhttps://registry.npmjs.org/typescript/...
 ## 安装
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.7.0/gh-accel-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.8.0/gh-accel-plugin.tgz
 ```
 
 或「插件管理 → 添加插件」粘贴同一地址。
