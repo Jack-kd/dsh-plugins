@@ -13,12 +13,19 @@ Jack-kd 的 DSH 插件市场：直接从本仓库浏览可安装的插件，并�
 ## 安装
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.6.5/dsh-jack-market-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.0/dsh-jack-market-plugin.tgz
 ```
 
 ## 使用
 
 装完重启一次 App（让设置页入口出现），然后打开 **设置 → Jack 插件市场**。列出插件点「安装」即可一键安装；已安装的插件显示「已安装」，若仓库有新版本则显示蓝色「更新」按钮，点击即升级。
+
+> **v0.7.0 简介来源改为根 README**
+> - **问题**：以前卡片上的「简介」取的是 Release 的版本更新说明（如「修复 xxx」），用户根本看不出这插件是干嘛的；
+> - **修复**：改为**从仓库根 README 拉取每个插件段落的简介**（`<details>` 块里 summary 的一句话 + 正文第一段介绍）；
+> - 卡片现在显示：插件名 + **一句话简介（summary）** + 完整介绍（intro）——如「视觉路由（给 Agent 看图）」+「给纯文本 Agent 一双眼睛…」；
+> - 版本更新细节不再作为简介展示；README 无收录时回退到 release.body；
+> - 同步给 README 里缺简介的插件（加速器 / 本插件）补了简介段，全仓库 9 个插件简介齐全。
 
 > **v0.6.5 修复：`api()` 剥掉 query 参数——「进度卡在启动中」的最终根因**
 > - **现象**：点击安装后，进度条永远停在「启动中 10%」不动，切走页面再回来才发现已安装（host 日志其实显示 `install.final done` 成功）；

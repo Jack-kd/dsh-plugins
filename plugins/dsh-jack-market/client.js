@@ -154,6 +154,8 @@ window.__ModuleLoader__.load({
           h('div', { style: { minWidth: 0 } },
             h('p', { style: titleStyle }, plugin.key,
               version ? h('span', { style: { fontWeight: 400, color: 'var(--dsw-alias-label-secondary,#666)', marginLeft: 6, fontSize: 12 } }, `v${version}`) : null),
+            // v0.7.0：一句话简介（README summary）——用户一眼知道这插件干嘛的
+            plugin.summary ? h('p', { style: { ...metaStyle, fontWeight: 500, marginTop: 2 } }, plugin.summary) : null,
             installedVersion
               ? h('p', { style: metaStyle }, `当前版本：v${installedVersion}`)
               : null,

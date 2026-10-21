@@ -33,6 +33,61 @@ const API_RELEASES = `https://api.github.com/repos/${OWNER}/${REPO}/releases`;
 const RELEASES_PER_PAGE = 100;
 const RELEASES_MAX_PAGES = 5;
 const API_PLUGINS_DIR = `https://api.github.com/repos/${OWNER}/${REPO}/contents/plugins`;
+// 根 README：插件简介的唯一来源（v0.7.0）
+// 每个插件是 <details> 块：summary 里「插件名 · 一句话简介」，正文第一段 `>`
+// 引用块是完整介绍。市场 note 显示这个简介，而不是 release.body（版本更新细节）。
+const API_README = `https://api.github.com/repos/${OWNER}/${REPO}/contents/README.md`;
+
+/**
+ * README 显示名 → 市场目录 key 的映射（v0.7.0）。
+ * README 的 summary 用展示名（如「加速器」），而市场 key 是 plugins/ 下的目录名
+ * （如 gh-accel）。只有不匹配的才需要列；其余 README 名 == 目录名。
+ */
+const README_KEY_ALIAS = {
+  '加速器': 'gh-accel',
+};
+
+/**
+ * 拉取根 README 并解析每个插件段落的简介。
+ * 返回 Map<插件目录名, { summary, intro }>：
+ *   summary = summary 行里「· 」之后的短语（一句话简介）
+ *   intro   = 正文第一段 `>` 引用块（完整介绍，去掉版本更新行）
+ * 解析失败返回空 Map（不影响市场主流程，note 回退到 release.body）。
+ */
+async function fetchReadmeIntros(controller) {
+  const out = new Map();
+  try {
+    const resp = await cachedGhJson(API_README, controller);
+    if (!resp || typeof resp.content !== 'string') return out;
+    const text = Buffer.from(resp.content, 'base64').toString('utf8');
+    // 按 <details> 块切分
+    const blocks = text.match(/<details>[\s\S]*?<\/details>/g) || [];
+    for (const block of blocks) {
+      // summary 行：<summary><b>▶ 插件名 · 简介</b>　<code>vX</code></summary>
+      const sm = block.match(/<summary><b>▶\s*([^·<]+?)\s*·\s*([^<]*?)<\/b>/);
+      if (!sm) continue;
+      const displayName = sm[1].trim();
+      // 显示名 → 目录 key（别名表；无别名时显示名即 key）
+      const key = README_KEY_ALIAS[displayName] || displayName;
+      const summary = sm[2].trim();
+      // 正文第一段 > 引用块（插件介绍；跳过以 **v 开头的版本更新行）
+      let intro = '';
+      const lines = block.split('\n');
+      for (const line of lines) {
+        const t = line.trim();
+        if (t.startsWith('> **v') || t.startsWith('> **V')) continue; // 版本更新行
+        if (t.startsWith('>') && t.length > 2) {
+          const content = t.replace(/^>\s*/, '').trim();
+          if (content) { intro = content; break; }
+        }
+      }
+      if (key) out.set(key, { summary, intro });
+    }
+  } catch (e) {
+    console.warn('[dsh-jack-market] 拉取 README 简介失败:', e && e.message ? e.message : e);
+  }
+  return out;
+}
 
 /**
  * Plugins that have been folded into another plugin and need no separate
@@ -149,9 +204,11 @@ async function fetchPlugins() {
     // list). Directories whose name also matches a published `<key>-plugin.tgz`
     // release asset yield an installable card; directory-only plugins (patch
     // not yet released) are shown but marked not-installable.
-    const [dirEntries, releases] = await Promise.all([
+    // 拉取根 README 的插件简介（v0.7.0：note 显示插件介绍，而非版本更新细节）
+    const [dirEntries, releases, readmeIntros] = await Promise.all([
       cachedGhJson(API_PLUGINS_DIR, controller),
       fetchAllReleases(controller),
+      fetchReadmeIntros(controller),
     ]);
     const dirKeys = new Set(
       (Array.isArray(dirEntries) ? dirEntries : [])
@@ -170,13 +227,20 @@ async function fetchPlugins() {
         const existing = byKey.get(key);
         if (existing && existing.publishedAt && release.published_at &&
             existing.publishedAt >= release.published_at) continue;
+        // v0.7.0：note 优先用根 README 的插件简介（intro）；README 没收录时
+        // 回退到 release.body（版本更新说明）。README 简介才是「这插件干嘛的」。
+        const readmeIntro = readmeIntros.get(key);
+        const note = (readmeIntro && readmeIntro.intro)
+          ? readmeIntro.intro
+          : (typeof release.body === 'string' ? release.body : '');
         byKey.set(key, {
           key,
           name: asset.name,
           version: versionFromTag(release.tag_name),
           tag: release.tag_name,
           url: asset.browser_download_url,
-          note: typeof release.body === 'string' ? release.body : '',
+          note,
+          summary: readmeIntro ? readmeIntro.summary : '',
           publishedAt: release.published_at,
           supersededBy: SUPERSEDED_BY[key] || null,
         });
@@ -187,13 +251,17 @@ async function fetchPlugins() {
     // visible so the user knows they exist, but cannot be installed here yet.
     for (const key of dirKeys) {
       if (byKey.has(key)) continue;
+      const readmeIntro = readmeIntros.get(key);
       byKey.set(key, {
         key,
         name: '',
         version: '',
         tag: '',
         url: '',
-        note: '此插件已在仓库中，但尚未发布可安装的 release 包；请在仓库查看安装说明。',
+        note: readmeIntro && readmeIntro.intro
+          ? readmeIntro.intro
+          : '此插件已在仓库中，但尚未发布可安装的 release 包；请在仓库查看安装说明。',
+        summary: readmeIntro ? readmeIntro.summary : '',
         publishedAt: '',
         supersededBy: SUPERSEDED_BY[key] || null,
         installable: false,

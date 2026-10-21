@@ -74,6 +74,8 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/chat-keeper-mobile-v1.2
 <details>
 <summary><b>▶ 加速器 · 下载加速（GitHub + 通用，合并版）</b>　<code>v2.8.0</code></summary>
 
+> GitHub 与任意站点的下载/上传加速：自动测速直连与多个加速镜像、**谁快选谁**，大文件多线程分段下载；`github_accel_download` / `github_accel_clone` / `github_accel_push` / `url_accel_download` / `url_accel_probe` 五件套。下载时输入框上方显示实时速度与进度胶囊。
+>
 > **v2.8.0**：**默认档 `smart` 改为公平比较（谁快选谁）**——直连与镜像用同一把尺子（≥40KB/s 即参与比较），不再对直连放水（旧 120KB/s）或对镜像严苛（旧 150KB/s）；「镜像其实更快但没到门槛」的边界情况修正为选镜像。`mirror`/`direct` 显式档不变。
 >
 > **v2.7.0**：新增**下载优先策略 `prefer`**（三档：`mirror` 镜像优先/国内推荐 / `smart` 智能平衡/默认 / `direct` 直连优先/老行为）。`smart` 档镜像门槛 40→**150 KB/s**、直连门槛 200→**120 KB/s**、大文件测速 3.5s→5s；`mirror` 档按镜像历史速度排序后**命中即用**（最多测 4 个，不再 10 个全量并行）；新增镜像历史测速缓存（5 分钟）、小文件 2.5s 快速决策、失败自动切第二快镜像降级重试；`url_accel_probe` 新增 `prefer`+`suggestion` 策略建议输出。工具参数可临时指定 `prefer` 覆盖配置。
@@ -217,8 +219,12 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-vision-router-v3.0.
 </details>
 
 <details>
-<summary><b>▶ dsh-jack-market · 插件市场（本仓库一键装）</b>　<code>v0.6.6</code></summary>
+<summary><b>▶ dsh-jack-market · 插件市场（本仓库一键装）</b>　<code>v0.7.0</code></summary>
 
+> 直接在 DSH 里浏览并一键安装本仓库的所有插件（类似内置的「插件市场」）。自动识别已安装状态与可更新版本，点「安装/更新」即后台下载安装并显示实时进度；每个插件卡片带简介、版本与更新时间，失败会显示具体原因。
+>
+> **v0.7.0**：简介来源改为**根 README 插件段落**——卡片显示「一句话简介 + 完整介绍」（如「视觉路由（给 Agent 看图）」），不再显示版本更新说明；README 缺简介的插件段已补齐，全仓库 9 个插件简介齐全。
+>
 > **v0.6.6**：修复**插件越多、老插件越先「失踪」**的隐患——市场原先只拉 `releases?per_page=100` 一页，本仓库是 monorepo、每插件每次发版都建 Release，**总数破 100 后最早那批插件会被挤出列表**（目录还在、市场却显示「未发布包」、点不了安装）。改为**分页拉取**（每页 100 条、最多 5 页 = 500 条，首页不满即停），当前 58 条第一页取完，行为与之前一致但不再有上限悬崖。
 > **v0.6.5**：修复「进度卡在启动中」的**最终根因**——客户端 `api()` 用 `new URL(...).pathname` 解析请求路径，**剥掉了 query 参数**：`/task?key=xxx` 变成 `/task`（key 丢失）→ host 返回 idle → 轮询永远拿不到 done。改为绝对路径直返（同 gh-accel）。
 >
@@ -259,13 +265,13 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-vision-router-v3.0.
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.6.6/dsh-jack-market-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.0/dsh-jack-market-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.6.6/dsh-jack-market-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.0/dsh-jack-market-plugin.tgz
 ```
 
 > 装完重启一次 App（让设置页入口出现）；之后打开 **设置 → Jack 插件市场** 即可浏览和安装本仓库的插件。
