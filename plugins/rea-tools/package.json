@@ -1,9 +1,9 @@
 {
   "name": "@local/rea-tools",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "private": true,
   "type": "module",
-  "description": "REA 逆向工具链（REA + Ghidra + JADX）一键安装 + 原生二进制 / APK 逆向工具；v0.2.6 深度审查修复：UI 复选框中间态禁用、设置页查看进度生效、ghidra-only 进度与阶段、记住选择生效、完成提示、取消确认框关闭、版本/体积常量集中",
+  "description": "REA 逆向工具链（REA + Ghidra + JADX）一键安装 + 原生二进制 / APK 逆向工具；v0.2.7 新增「逆向分析优选规则」系统提示，AI 遇 APK/二进制自动确定调用 rea 工具",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",

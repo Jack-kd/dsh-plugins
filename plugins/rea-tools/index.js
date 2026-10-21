@@ -530,6 +530,40 @@ export function apply(ctx) {
     console.warn('[rea-tools] rea_status 注册失败:', e && e.message ? e.message : e)
   }
 
+  // ---- 系统提示：逆向分析优选规则（v0.2.7）----
+  // 目的：让 AI 遇到 APK / 原生二进制 / 需要反编译的诉求时，**确定地**调 rea_* 工具，
+  // 而不是犹豫或误用别的工具。做法与 gh-accel 的「文件下载优选规则」同一套
+  // systemPrompt.section 注入。
+  //
+  // 历史坑（gh-accel v2.5.2 踩过，此处原样规避）：
+  //   1) section() 必须挂在 inject 回调给的内层作用域 sc.systemPrompt 上，
+  //      写成 sc.section 会抛 "sc.section is not a function"；
+  //   2) section() 强制要求 order 为有限数字，缺省会抛错。
+  // 两处错误曾被 catch 静默吞掉 → 提示词从未进入模型上下文，表面一切正常。
+  try {
+    ctx.inject(['systemPrompt'], (sc) => {
+      const sp = sc && sc.systemPrompt ? sc.systemPrompt : (ctx.get('systemPrompt') || null)
+      if (!sp || typeof sp.section !== 'function') {
+        console.warn('[rea-tools] systemPrompt 服务不可用，跳过「逆向分析优选规则」提示注入')
+        return
+      }
+      ctx.effect(() => sp.section({
+        name: 'rea-tools',
+        order: typeof sp.getSectionOrder === 'function'
+          ? sp.getSectionOrder('MCP_SERVERS') + 1
+          : 3102,
+        text:
+          '逆向分析优选规则（rea-tools 已生效）：当用户要求分析 / 逆向 / 反编译一个文件时，' +
+          '先判断文件类型——APK（.apk）用 rea_inspect_apk 系列（包名/权限/类/方法，静态不运行）；' +
+          '原生二进制（.so / ELF / 可执行文件）用 rea_analyze（整体概览）或 rea_function（指定函数反编译）。' +
+          '调用前先确认文件确实存在且路径正确（用户上传的文件通常在可访问的磁盘路径）；' +
+          '若 rea 环境未装，提示用户先调 rea_install 或用设置页安装。不要用通用文本工具当逆向工具用。',
+      }))
+    })
+  } catch (e) {
+    console.warn('[rea-tools] 注入「逆向分析优选规则」系统提示失败:', e && e.message ? e.message : e)
+  }
+
   // ---- 启动时：若上次点了后台安装但没装完 → 静默续传（不弹窗）----
   ctx.effect(() => {
     const t = setTimeout(async () => {
