@@ -72,7 +72,7 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/chat-keeper-mobile-v1.2
 </details>
 
 <details>
-<summary><b>▶ 加速器 · 下载加速（GitHub + 通用，合并版）</b>　<code>v2.8.0</code></summary>
+<summary><b>▶ 加速器 · 下载加速（GitHub + 通用，合并版）</b>　<code>v2.9.1</code></summary>
 
 > GitHub 与任意站点的下载/上传加速：自动测速直连与多个加速镜像、**谁快选谁**，大文件多线程分段下载；`github_accel_download` / `github_accel_clone` / `github_accel_push` / `url_accel_download` / `url_accel_probe` 五件套。下载时输入框上方显示实时速度与进度胶囊。
 >
@@ -97,13 +97,13 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/chat-keeper-mobile-v1.2
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.9.0/gh-accel-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.9.1/gh-accel-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.9.0/gh-accel-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.9.1/gh-accel-plugin.tgz
 ```
 
 > 镜像（ghfast.top 等）是公共第三方服务、有失效风险；可在配置里用 `mirrors`/`rules` 自行增删站点规则。下载大文件建议指定绝对 `out` 路径。

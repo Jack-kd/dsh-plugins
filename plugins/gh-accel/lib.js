@@ -310,20 +310,19 @@ async function pick(url, { rule, directOnly = false, signal, prefer = 'smart', f
       .map((m) => ({ u: rewriteFor(url, m, rule.style), via: m, follow: 1, min: presets.mirrorMin }));
   }
 
-  // mirror 档：逐个测、命中即用（early-exit），不并行
+  // mirror 档：镜像优先（不含直连参与竞速），TTFB 竞速先到先得——在延迟主导网络里，
+  // 并行闪发所有镜像候选、谁先返回有效响应头谁中选，正是「命中即用」的快速路径。
+  // （旧实现逐个串行 probe：冷缓存时若头部都是死镜像，需逐个踩满超时才轮到好的，
+  //   实测被拖到 ~50s；竞速并行后 ~6s 即可。）
   if (prefer === 'mirror' && mirrorCands.length) {
-    for (const c of mirrorCands) {
-      const r = await probe(c.u, { followRedirects: c.follow, signal, budgetMs });
-      if (r.bps >= c.min) {
-        rememberMirrorSpeed(c.via, r.bps);
-        return { u: c.u, via: c.via, speed: r.bps, size: r.size, rangeOk: r.rangeOk };
-      }
-      rememberMirrorSpeed(c.via, r.bps); // 低于门槛也记，供下次排序参考
+    const win = await raceProbeFastest(mirrorCands, { signal, budgetMs });
+    if (win && win.via !== 'direct(fallback)' && win.speed > 0) {
+      return { u: win.u, via: win.via, speed: win.speed, size: win.size, rangeOk: win.rangeOk };
     }
-    // 所有镜像都低于门槛：直连门槛较高（800KB/s），此处直接回退直连探测
+    // 镜像都不可用/不达标：直连门槛较高（800KB/s），仍回退直连探测
     const dr = await probe(direct.u, { followRedirects: 0, signal, budgetMs });
     if (dr.bps >= direct.min) return { u: direct.u, via: 'direct', speed: dr.bps, size: dr.size, rangeOk: dr.rangeOk };
-    // 直连也不达标：仍选镜像中最快的（好过没有），并保留直连作为最终兜底
+    // 直连也不达标：仍选首个镜像（好过没有），并保留直连作为最终兜底
     return { u: mirrorCands[0].u, via: mirrorCands[0].via, speed: 0, size: null, rangeOk: false };
   }
 
@@ -367,11 +366,14 @@ export async function raceProbeFastest(cands, { signal, budgetMs }) {
   // 立即释放它们占用的 HTTP agent socket ——否则死镜像的 TLS 握手会一直占着 socket，
   // 导致后续真正的下载（downloadRange）只能新开冷连接、再吃 ~6s TTFB。
   const ctrls = cands.map(() => new AbortController());
-  const attempts = cands.map((c, i) =>
-    probeTTFB(c.u, { followRedirects: c.follow, signal: ctrls[i].signal, timeoutMs: budgetMs })
+  const attempts = cands.map((c, i) => {
+    // 每个候选的信号合并外部 signal：外部 abort（用户中途取消）也要能立即中断
+    // 在飞探测，而不必等探测自然超时收场。signal 为空时仅用候选自己的 ctrl。
+    const sig = signal ? AbortSignal.any([ctrls[i].signal, signal]) : ctrls[i].signal;
+    return probeTTFB(c.u, { followRedirects: c.follow, signal: sig, timeoutMs: budgetMs })
       .then((r) => ({ c, r }))
-      .catch(() => ({ c, r: { ok: false } })),
-  );
+      .catch(() => ({ c, r: { ok: false } }));
+  });
 
   return new Promise((resolve) => {
     const finish = (v) => {
@@ -383,21 +385,32 @@ export async function raceProbeFastest(cands, { signal, budgetMs }) {
     };
     if (signal && signal.aborted) { finish({ u: cands[0].u, via: cands[0].via, speed: 0, size: null, rangeOk: false }); return; }
     let pend = attempts.length;
+    let anyFailed = false;
+    // 死路/资源 404 场景的兜底秒表：若长时间无一条候选 ok 成立（不是"等全部 settle"
+    // —— 那样会被最后那几条慢死镜像拖到预算 15s+），到 deadline 就按失败收场，
+    // 让上层尽快走 fallback，而不是干等最慢候选自然超时。
+    const deadline = Math.min(budgetMs || 15000, 9000);
+    const timer = setTimeout(() => {
+      if (!settled && !anyFailed) { /* 尚无失败也无 ok，再等等 */ return; }
+      finish({ u: cands[0].u, via: 'direct(fallback)', speed: 0, size: null, rangeOk: false });
+    }, deadline);
     for (const att of attempts) {
       att.then(({ c, r }) => {
-        if (settled) return;
+        if (settled) { clearTimeout(timer); return; }
         if (r && r.ok) {
+          clearTimeout(timer);
           if (c.via !== 'direct') rememberMirrorSpeed(c.via, r.bps);
           finish({ u: c.u, via: c.via, speed: r.bps, size: r.size, rangeOk: r.rangeOk });
           return;
         }
         pend -= 1;
-        if (pend <= 0) {
-          finish({ u: cands[0].u, via: 'direct(fallback)', speed: 0, size: null, rangeOk: false });
-        }
+        anyFailed = true;
+        if (pend <= 0) { clearTimeout(timer); finish({ u: cands[0].u, via: 'direct(fallback)', speed: 0, size: null, rangeOk: false }); }
       }).catch(() => {
+        if (settled) { clearTimeout(timer); return; }
         pend -= 1;
-        if (pend <= 0) finish({ u: cands[0].u, via: 'direct(fallback)', speed: 0, size: null, rangeOk: false });
+        anyFailed = true;
+        if (pend <= 0) { clearTimeout(timer); finish({ u: cands[0].u, via: 'direct(fallback)', speed: 0, size: null, rangeOk: false }); }
       });
     }
   });
@@ -434,6 +447,8 @@ async function downloadRange(url, start, end, dest, { retries = 2, signal, onByt
       await pipeline(stream, countingStream(onBytes), fs.createWriteStream(dest));
       return true;
     } catch {
+      // 外部 signal 已中断：立即放弃（不重试、不等待），让上层尽快感知取消。
+      if (signal && signal.aborted) return false;
       if (i === retries) return false;
       await delay(1000 * (i + 1));
     }
@@ -506,15 +521,24 @@ export async function runDownload(url, {
   const candidates = (() => {
     if (mirror) return [rewriteFor(url, mirror, rule.style)];
     if (!rule) return [picked.u];
+    // 竞速已判定无任何镜像/直连可用（via 标记为 direct(fallback)）：探测阶段就已全败，
+    // 下载再逐候选重试 12 个纯属浪费时间（每个都要连上+超时）。
+    // 此时只保留一个快速兜底直连，让它尽快失败并抛出可读错误，而不是干等几十秒。
+    if (picked.via === 'direct(fallback)') return [url];
     const mirrorUrls = sortMirrorsByHistory(rule.mirrors).map((m) => rewriteFor(url, m, rule.style));
-    const directFirst = pref === 'direct' ? [url] : [];
-    // 已选中路线放最前（首试），其余镜像按历史速度降序，直连兜底放最后
-    return [...directFirst, picked.u, ...mirrorUrls.filter((x) => x !== picked.u), ...(pref !== 'direct' ? [url] : [])];
+    const directFirst = pref === 'direct' && picked.u === url ? [url] : [];
+    // 已选中路线放最前（首试），其余镜像按历史速度降序，直连兜底放最后。
+    // 注意：只有竞速**确实选中直连**（picked.u===url）时直连才放最前；否则即便 direct 档，
+    // 竞速已证明镜像可用（直连不可达只会在竞速里出局），下载若再把直连放最前会让
+    // 「已知不可达的直连」先阻塞等待超时（本环境直连 github 15s+ 才失败），白白拖慢。
+    return [...directFirst, picked.u, ...mirrorUrls.filter((x) => x !== picked.u), ...(picked.u !== url ? [url] : [])];
   })();
 
   if (!size || size <= SEGMENT_MIN || !picked.rangeOk) {
     let lastErr = null;
     for (const t of candidates) {
+      // 外部 signal 已中断：立即中止，不再逐个候选重试
+      if (signal && signal.aborted) { stopReporter(); throw new Error('下载已取消'); }
       try {
         // downloadRange 失败返回 false（不抛错），必须显式检查——否则会"假成功"
         const okDl = await downloadRange(t, 0, size ? size - 1 : null, out, { retries: 1, signal, onBytes: sumBytes });
@@ -647,11 +671,19 @@ export async function runProbe(url, { rules = DEFAULT_RULES, signal, prefer = 's
     ? sortMirrorsByHistory(rule.mirrors).map((m) => ({ u: rewriteFor(url, m, rule.style), via: m, follow: 1 }))
     : [];
   const cands = [{ u: url, via: 'direct', follow: 0 }, ...mirrorCands];
-  const results = await Promise.allSettled(cands.map((c) => probe(c.u, { followRedirects: c.follow, signal, budgetMs: 3500 })));
+  // v2.9.1：统一用 TTFB 竞速探针（probeTTFB）并行测所有候选，替代旧的带宽 probe()。
+  // 本环境延迟主导：旧 probe 每个都下满 1MB 测带宽（全返回 0KB/s，带宽测不出），
+  // 且等所有候选收齐才回，慢到 20s+；现在 Range=0-0 拿首字节+状态，并发一次到位。
+  const presets = PREFER_PRESETS[pref] || PREFER_PRESETS.smart;
+  const results = await Promise.allSettled(cands.map((c) =>
+    probeTTFB(c.u, { followRedirects: c.follow, signal, timeoutMs: presets.probeMs })
+      .then((r) => ({ ok: !!r.ok, via: c.via, ttfbMs: r.ttfbMs, bps: r.bps, rangeOk: r.rangeOk }))));
   const routes = cands.map((c, i) => {
-    const r = results[i].status === 'fulfilled' ? results[i].value : { bps: 0, size: null, rangeOk: false };
-    if (c.via !== 'direct') rememberMirrorSpeed(c.via, r.bps);
-    return { via: c.via, kbPerSec: Math.round(r.bps / 1024), rangeOk: r.rangeOk };
+    const r = results[i].status === 'fulfilled' ? results[i].value : { ok: false, via: c.via, ttfbMs: 0, bps: 0, rangeOk: false };
+    if (r.ok && r.via !== 'direct') rememberMirrorSpeed(r.via, r.bps);
+    // 首字节越快等效速度越高（仅用于排序/建议，非真实带宽）；不可达=0。
+    const kbPerSec = r.ok && r.ttfbMs > 0 ? Math.round(1024 / (r.ttfbMs / 1000)) : 0;
+    return { via: c.via, kbPerSec, rangeOk: r.rangeOk, ttfbMs: r.ok ? r.ttfbMs : null };
   });
   // 策略建议：根据实测数据给出当前 prefer 档下的最优选择
   const best = [...routes].sort((a, b) => b.kbPerSec - a.kbPerSec)[0] || { via: 'direct', kbPerSec: 0 };
