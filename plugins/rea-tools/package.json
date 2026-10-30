@@ -1,9 +1,9 @@
 {
   "name": "@local/rea-tools",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "private": true,
   "type": "module",
-  "description": "REA 逆向工具链（REA + Ghidra + JADX）一键安装 + 原生二进制 / APK 逆向工具；v0.2.7 新增「逆向分析优选规则」系统提示，AI 遇 APK/二进制自动确定调用 rea 工具",
+  "description": "REA 逆向工具链（REA + Ghidra + JADX）一键安装 + 原生二进制 / APK 逆向工具；v0.2.8 修复「首启不自动弹窗」与「设置页安装按钮点了没反应」",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",

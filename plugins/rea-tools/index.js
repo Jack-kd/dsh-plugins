@@ -18,6 +18,9 @@ import {
 } from './install-manager.js'
 
 export const name = 'rea'
+// v0.2.8：webServer 走 apply 内的可选 ctx.inject（不写进顶层 inject）——
+// 顶层 inject 是硬依赖，缺了服务插件整体不加载；而 HTTP 端点只是 UI 的一条通道，
+// 没有 webServer 时工具本身照样可用（设置页/浮层按钮会显示「无法连接宿主」）。
 export const inject = ['tools']
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -491,16 +494,160 @@ export function apply(ctx) {
           console.warn(`[rea-tools] 注册命令 ${name} 失败:`, e && e.message ? e.message : e)
         }
       }
-      // v0.2.6：handler 接收调用参数串，「--no-remember」表示不记忆选择
-      const rememberOf = (argsRaw) => !(typeof argsRaw === 'string' && /--no-remember/.test(argsRaw))
-      reg('rea-install-basic', '后台安装 REA 初级版本（APK 逆向）', async (argsRaw) => doInstall('basic', rememberOf(argsRaw)))
-      reg('rea-install-full', '后台安装 REA 升级版本（含 Ghidra）', async (argsRaw) => doInstall('full', rememberOf(argsRaw)))
+      // v0.2.8 修复：handler 收到的是 **invocation 对象**
+      // （`{ commandId, agent, rawInput, attachments, signal }`，见 dsh-commands 的
+      //  `definition.handler(invocation)`），不是参数字符串。旧版按字符串做
+      // `/--no-remember/.test(argsRaw)` 永远为 false（对象不会等于字符串），
+      // 于是「记住我的选择」被取消勾选也照样被记忆 —— 选项是假的。
+      // 现在统一从 invocation.rawInput 取，并兼容直接传字符串的老调用。
+      const rawInputOf = (invocation) => {
+        if (typeof invocation === 'string') return invocation
+        if (invocation && typeof invocation === 'object' && typeof invocation.rawInput === 'string') {
+          return invocation.rawInput
+        }
+        return ''
+      }
+      const rememberOf = (invocation) => !/--no-remember/.test(rawInputOf(invocation))
+      reg('rea-install-basic', '后台安装 REA 初级版本（APK 逆向）', async (inv) => doInstall('basic', rememberOf(inv)))
+      reg('rea-install-full', '后台安装 REA 升级版本（含 Ghidra）', async (inv) => doInstall('full', rememberOf(inv)))
       reg('rea-dismiss', '忽略 REA 环境安装提示', async () => doDismiss())
       reg('rea-cancel', '取消正在进行的 REA 安装（保留已下载缓存）', async () => doCancel(true))
       reg('rea-cancel-clean', '取消 REA 安装并清理已下载缓存', async () => doCancel(false))
     })
   } catch (e) {
     console.warn('[rea-tools] 命令注册不可用:', e && e.message ? e.message : e)
+  }
+
+  // ---- v0.2.8：给浏览器 UI 的两个 HTTP 端点 ----
+  //
+  // 为什么不用会话命令：设置页（settings.general.item）和全屏浮层（shell.overlay）
+  // 都是 **root 作用域**，拿不到 sessionId；`remote.commands.execute()` 必须带一个
+  // 真实会话 id，一旦没有可用会话就只能静默失败 —— 这正是旧版「点按钮没反应」的成因。
+  // HTTP 端点与会话完全解耦，任何页面状态下都能用。
+  //
+  // 安全：只接受同源请求（比对 origin 与 host），并只允许下列固定 action 白名单。
+  const sendJson = (response, code, payload) => {
+    try {
+      response.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+      response.end(JSON.stringify(payload))
+    } catch { /* 响应已结束 */ }
+  }
+  const sameOrigin = (request) => {
+    const origin = request.headers.origin
+    if (origin === undefined) return true   // 同源 GET/导航不带 origin；不是跨站伪造场景
+    const hostHeader = (request.headers.host || '').replace(/[^A-Za-z0-9.:[\]]/g, '')
+    try {
+      return new URL(origin).host === hostHeader
+    } catch {
+      return false
+    }
+  }
+  const readJsonBody = (request) => new Promise((resolve, reject) => {
+    const chunks = []
+    let size = 0
+    request.on('data', (c) => {
+      size += c.length
+      if (size > 16 * 1024) { request.destroy(new Error('body too large')); return }
+      chunks.push(c)
+    })
+    request.on('end', () => {
+      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')) } catch (e) { reject(e) }
+    })
+    request.on('error', reject)
+  })
+
+  /** 组装给客户端的完整状态（单一来源，客户端不再自算 tier/体积/版本）。 */
+  const snapshot = () => {
+    const st = detectState(__dirname)
+    const p = currentProgress()
+    return {
+      tier: st.tier,
+      components: st.components,
+      installed: st.installed,
+      dismissed: st.dismissed,
+      resumable: st.resumable,
+      cacheMB: st.cacheMB,
+      lastError: st.lastError || ui.lastError || null,
+      failCount: st.failCount,
+      // 弹窗决策交给宿主：仅「未装 / 未忽略 / 未在装」才弹。
+      // 这是 v0.2.8 的关键——旧版把这个判断写在 index.js 的 refreshFromDisk()，
+      // 结果只在**插件加载那一刻**算一次，之后用户点「稍后再说」或装完，
+      // showDialog 全靠内存 patch，重启后才重算；现在每次请求实时算。
+      showDialog: st.tier === 'none' && !st.dismissed && !st.installing && !isInstalling(),
+      installing: !!isInstalling() || st.installing === true,
+      percent: (p && p.percent) || ui.percent || 0,
+      stageLabel: (p && (p.stageLabel || p.stage)) || ui.stageLabel || null,
+      source: (p && p.source) || ui.source || null,
+      doneMB: (p && p.doneMB) || ui.doneMB || 0,
+      totalMB: (p && p.totalMB) || ui.totalMB || 0,
+      targetTier: ui.targetTier || null,
+      doneStages: ui.doneStages || [],
+      logTail: (p && p.logTail) || ui.logTail || [],
+      justFinished: ui.justFinished || null,
+      finishText: ui.finishText || null,
+      sizes: SIZES,
+      versions: VERSIONS,
+    }
+  }
+
+  try {
+    ctx.inject(['webServer'], (ws) => {
+      if (!ws || typeof ws.webServer !== 'object') return
+      const stopState = ws.webServer.register({
+        kind: 'exact',
+        path: '/rea-tools/state',
+        handler: (request, response) => {
+          if (request.method !== 'GET') { sendJson(response, 405, { error: '只支持 GET' }); return }
+          if (!sameOrigin(request)) { sendJson(response, 403, { error: '跨源请求已拒绝' }); return }
+          try {
+            // 每次请求顺带刷新内存快照（磁盘上的 installed/dismissed 可能被别处改过）
+            refreshFromDisk()
+            sendJson(response, 200, snapshot())
+          } catch (e) {
+            sendJson(response, 500, { error: String((e && e.message) || e) })
+          }
+        },
+      })
+      const stopAction = ws.webServer.register({
+        kind: 'exact',
+        path: '/rea-tools/action',
+        handler: async (request, response) => {
+          if (request.method !== 'POST') { sendJson(response, 405, { error: '只支持 POST' }); return }
+          if (!sameOrigin(request)) { sendJson(response, 403, { error: '跨源请求已拒绝' }); return }
+          let body
+          try { body = await readJsonBody(request) } catch { sendJson(response, 400, { error: '请求体不是合法 JSON' }); return }
+          const action = typeof body?.action === 'string' ? body.action : ''
+          try {
+            let r
+            switch (action) {
+              case 'install':
+                r = await doInstall(body.tier === 'full' ? 'full' : 'basic', body.remember !== false)
+                break
+              case 'dismiss':
+                r = await doDismiss()
+                break
+              case 'cancel':
+                r = await doCancel(true)
+                break
+              case 'cancel-clean':
+                r = await doCancel(false)
+                break
+              default:
+                sendJson(response, 400, { ok: false, error: '未知动作：' + (action || '(空)') })
+                return
+            }
+            // 命令那套 { kind, text } 直接复用；HTML 侧只认 ok/text，少一层心智负担
+            sendJson(response, 200, { ok: r.kind === 'success', text: r.text || '', state: snapshot() })
+          } catch (e) {
+            sendJson(response, 200, { ok: false, text: '执行失败：' + String((e && e.message) || e), state: snapshot() })
+          }
+        },
+      })
+      ctx.effect(() => () => { try { stopState() } catch { /* 已卸载 */ }; try { stopAction() } catch { /* 已卸载 */ } },
+        'rea-tools: http endpoints')
+    })
+  } catch (e) {
+    console.warn('[rea-tools] HTTP 端点注册不可用（设置页按钮将不可点）:', e && e.message ? e.message : e)
   }
 
   // ---- 工具：让 AI 也能查询/启动安装（与 UI 走同一套逻辑）----

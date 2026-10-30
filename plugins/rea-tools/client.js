@@ -1,12 +1,29 @@
 // rea-tools 客户端半部 —— 环境安装弹窗 + 进度胶囊 + 详情面板 + 设置入口。
 //
-// 渲染面（slot）选择：
-//   conversation.composer        弹窗/详情（官方 approval / user-questions 用同一插槽做"接管输入区"的卡片）
-//   conversation.input.dock      进度胶囊（官方 goal、gh-accel 用同一插槽的窄条）
-//   settings.general.item        设置页入口（初级版本装完后想升级，从这里找）
+// ── v0.2.8 关键修复（三个 bug 叠加，症状「弹窗不弹 / 按钮点了没反应」）─────
+//  ① 旧版把安装弹窗注册在 `conversation.composer`。该插槽在 ui-conversation 里
+//     声明为 **chain**（kind: 'chain'），而 SlotCore.register 对 chain 强制要求
+//     `options.select`，缺了直接抛 `chain slot "conversation.composer" requires
+//     options.select`。抛错发生在 `slots.inject` 的回调里，只进 console ——
+//     注册整体不生效，所以「首次安装后重启不自动弹窗」。
+//     现在改挂 `shell.overlay`（ui-layout 声明的 **list / root** 插槽），是官方
+//     全屏浮层席位（plugin-manager 的 refresh toast、chat 的配额提示都用它），
+//     既合法、又不会像 composer 那样抢走输入区。
+//  ② 旧版每个按钮都走 `ctx.remote.commands.execute(sessionId, '/rea-install-*')`，
+//     两个致命前提：**必须有一个可用会话**、且命令必须已注册。设置页是 root
+//     作用域、拿不到 sessionId，`anySessionId()` 一旦返回 undefined 就直接
+//     `{ ok:false }`；而所有失败都被 `try/catch` 吞成返回值，UI 完全没提示 ——
+//     表现就是「点后台安装 / 稍后再说，一点反应都没有」。
+//     现在状态与动作统一走宿主 HTTP 端点（`/rea-tools/state` 只读、
+//     `/rea-tools/action` 写），**与会话完全解耦**，设置页和浮层共用一套。
+//  ③ 设置页自己维护一份 `showDialog` 局部 state，与宿主的 showDialog 各自为政；
+//     两套来源不同步，是「手动入口和自动弹窗行为不一致」的结构原因。
+//     现在只有一个状态源（宿主 ui.showDialog），浮层直接按它渲染。
 //
-// 状态来源：宿主投影 'rea'（useProjection('rea')），不轮询。
-// 动作来源：宿主会话命令，经 ctx.remote.commands.execute(sessionId, '/<cmd>') 调用。
+// 渲染面（slot）选择：
+//   shell.overlay                安装弹窗 + 进度详情（全屏浮层，root 作用域）
+//   conversation.input.dock      进度胶囊 / 工具工作状态（会话窄条）
+//   settings.general.item        设置页入口
 //
 // 样式：只用 --dsw-alias-* 主题 token，深浅主题自适应；不 require 任何 Harness 客户端包。
 
@@ -54,6 +71,9 @@
 .reaWarn{color:var(--dsw-alias-state-warning-primary,#d98a00)}
 .reaRemember{display:flex;align-items:center;gap:8px;margin:14px 0 2px;font-size:13px;cursor:pointer;
   color:var(--dsw-alias-label-secondary)}
+.reaErr{margin:10px 0 0;padding:8px 11px;border-radius:var(--dsw-radius-md,8px);font-size:12px;line-height:18px;
+  color:var(--dsw-alias-state-error-primary,#c00);
+  background:color-mix(in srgb,var(--dsw-alias-state-error-primary,#c00) 10%,transparent)}
 .reaFoot{display:flex;justify-content:flex-end;gap:10px;padding:14px 22px 20px}
 .reaBtn{font:inherit;font-size:13px;font-weight:500;line-height:20px;padding:8px 16px;border-radius:var(--dsw-radius-md,8px);
   cursor:pointer;border:1px solid transparent;transition:background-color .12s,opacity .12s}
@@ -100,7 +120,7 @@
           radio: 'reaRadio', radioOn: 'reaRadioOn', groupText: 'reaGroupText', groupName: 'reaGroupName',
           groupDesc: 'reaGroupDesc', size: 'reaSize', children: 'reaChildren', child: 'reaChild',
           check: 'reaCheck', checkOn: 'reaCheckOn', childText: 'reaChildText', childName: 'reaChildName',
-          childDesc: 'reaChildDesc', warn: 'reaWarn', remember: 'reaRemember', foot: 'reaFoot',
+          childDesc: 'reaChildDesc', warn: 'reaWarn', remember: 'reaRemember', err: 'reaErr', foot: 'reaFoot',
           btn: 'reaBtn', btnPrimary: 'reaBtnPrimary', btnGhost: 'reaBtnGhost', pill: 'reaPill',
           pillCard: 'reaPillCard', dot: 'reaDot', bar: 'reaBar', barIn: 'reaBarIn', stages: 'reaStages',
           pillBody: 'reaPillBody', pillMainRow: 'reaPillMainRow', pillTarget: 'reaPillTarget',
@@ -110,12 +130,12 @@
         }
 
         // ---------------- 组件清单定义（数据驱动，便于联动） ----------------
-        // v0.2.6：体积改成从投影的 `sizes`（host 侧 SIZES）读取，不再前端写死——
-        // 旧版这里硬编码 148/50/41/543，与 install-manager.js 的 SIZES 重复，升级时易不一致。
-        // 名称里的版本号同理从投影 `versions` 取（host 侧 VERSIONS）。
+        // 体积/版本从宿主 `/rea-tools/state` 的 sizes/versions 读取（单一来源），
+        // 缺失时用下面的兜底值，避免前端与 install-manager.js 的 SIZES/VERSIONS 各写一套。
         const DEFAULT_SIZES = { jdk: 148, rea: 50, jadx: 41, ghidra: 543 }
+        const DEFAULT_VERSIONS = { rea: '6.5.0', jadx: '0.7.1', ghidra: '12.1.4' }
         const itemDefs = (sizes, versions) => [
-          { key: 'jdk', name: `JDK 21 (headless)`, mb: sizes.jdk, desc: 'Java 运行环境，JADX 与 rea 的运行前置' },
+          { key: 'jdk', name: 'JDK 21 (headless)', mb: sizes.jdk, desc: 'Java 运行环境，JADX 与 rea 的运行前置' },
           { key: 'rea', name: `rea-agents ${versions.rea}`, mb: sizes.rea, desc: '提供 rea 命令与 7 个分析工具' },
           { key: 'jadx', name: `JADX 桥接 ${versions.jadx}`, mb: sizes.jadx, desc: 'APK 反编译引擎（DEX → Java）' },
           { key: 'ghidra', name: `Ghidra ${versions.ghidra}`, mb: sizes.ghidra, desc: '可选增强：伪代码反编译 / 汇编分析 / 调用关系；含 arm64 反编译器 1.8 MB（配套件，自动带上）' },
@@ -123,11 +143,98 @@
         const BASIC_KEYS = ['jdk', 'rea', 'jadx']
         const fmt = (mb) => (mb >= 1024 ? (mb / 1024).toFixed(2) + ' GB' : mb + ' MB')
 
+        // ================= 宿主状态源（HTTP，不依赖会话） =================
+        // 为什么不用 sessionProjections：设置页是 root 作用域、没有 sessionId，
+        // 浮层（shell.overlay）同样是 root 作用域，拿不到 useProjection。
+        // 旧版为此写了 `makeProjectionHook`，靠 `ctx.get('sessions')` 猜一个会话 +
+        // 1.5s 轮询兜底，既脆弱又慢；现在改成宿主直接暴露只读状态端点。
+        function createStateSource() {
+          let snap = null
+          let lastText = ''
+          let timer = null
+          let disposed = false
+          const subs = new Set()
+          const emit = () => { for (const f of [...subs]) { try { f() } catch { /* 忽略单个订阅者 */ } } }
+
+          const fetchOnce = async () => {
+            try {
+              const res = await fetch('/rea-tools/state', {
+                cache: 'no-store',
+                headers: { accept: 'application/json' },
+              })
+              if (!res.ok) return snap
+              const text = await res.text()
+              // 只在内容真的变化时才 emit，避免「每 1s 无意义重渲染」
+              if (text !== lastText) {
+                lastText = text
+                snap = JSON.parse(text)
+                emit()
+              }
+            } catch { /* 网络异常：保留上一份快照，不打断 UI */ }
+            return snap
+          }
+
+          const loop = async () => {
+            if (disposed) return
+            const cur = await fetchOnce()
+            if (disposed) return
+            // 安装中 / 待弹窗 → 1s 跟随进度；其余空闲状态 5s 一次轻量 GET 即可。
+            const fast = cur && (cur.installing || cur.showDialog)
+            timer = setTimeout(loop, fast ? 1000 : 5000)
+          }
+
+          return {
+            get: () => snap,
+            subscribe(fn) {
+              subs.add(fn)
+              if (subs.size === 1 && !timer && !disposed) loop()
+              return () => {
+                subs.delete(fn)
+                if (subs.size === 0 && timer) { clearTimeout(timer); timer = null }
+              }
+            },
+            /** 动作后立刻刷新一次（不等定时器） */
+            refresh: fetchOnce,
+            dispose() {
+              disposed = true
+              subs.clear()
+              if (timer) { clearTimeout(timer); timer = null }
+            },
+          }
+        }
+
+        /** 发一个动作给宿主；返回 { ok, text }，失败一定有可读文案。 */
+        async function postAction(payload) {
+          try {
+            const res = await fetch('/rea-tools/action', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json', accept: 'application/json' },
+              body: JSON.stringify(payload || {}),
+            })
+            let data = null
+            try { data = await res.json() } catch { data = null }
+            if (!res.ok) {
+              return { ok: false, text: (data && (data.error || data.text)) || `HTTP ${res.status}` }
+            }
+            if (!data) return { ok: false, text: '宿主返回空响应' }
+            if (data.ok === false) return { ok: false, text: data.text || data.error || '操作失败' }
+            return { ok: true, text: data.text || '' }
+          } catch (e) {
+            return { ok: false, text: '无法连接宿主：' + (e && e.message ? e.message : String(e)) }
+          }
+        }
+
+        // ================= 订阅小工具（不用 useSyncExternalStore，保持与仓库其它插件一致） =================
+        function useSource(source) {
+          const [, force] = React.useState(0)
+          React.useEffect(() => source.subscribe(() => force((n) => n + 1)), [source])
+          return source.get()
+        }
+
         // ================= 安装弹窗 =================
-        function InstallDialog({ state, onInstall, onDismiss }) {
-          // v0.2.6：体积/版本从投影取（host 侧单一来源），缺失时用兜底值
+        function InstallDialog({ state, busy, error, onInstall, onDismiss }) {
           const sizes = (state && state.sizes) || DEFAULT_SIZES
-          const versions = (state && state.versions) || { rea: '6.5.0', jadx: '0.7.1', ghidra: '12.1.4' }
+          const versions = (state && state.versions) || DEFAULT_VERSIONS
           const ITEMS = React.useMemo(() => itemDefs(sizes, versions), [sizes, versions])
           // 视图状态：初级/升级；真实数据源是 4 个 checkbox
           const [picked, setPicked] = React.useState(() => ({ jdk: true, rea: true, jadx: true, ghidra: false }))
@@ -137,9 +244,8 @@
           const anyBasic = BASIC_KEYS.some((k) => picked[k])
           // 升级版本 = 初级三项 + Ghidra 全选
           const isFull = basicAll && picked.ghidra
-          // v0.2.6 修复：初级三项**只能全选或全不选**。
-          // 旧版允许「只勾 jdk」这种中间态，按钮仍显示 tier=basic，而 host 走
-          // `--skip-ghidra` 会**装齐三项**——用户的选择是假的。
+          // 初级三项**只能全选或全不选**：旧版允许「只勾 jdk」这种中间态，按钮仍显示
+          // tier=basic，而宿主走 --skip-ghidra 会装齐三项 —— 用户的选择是假的。
           // 现在中间态直接禁用安装并给出说明，不欺骗用户。
           const midState = anyBasic && !basicAll
 
@@ -164,6 +270,7 @@
           }
 
           const childRow = (item) => {
+            if (!item) return null
             const on = !!picked[item.key]
             return h('div', { key: item.key, className: S.child, onClick: (e) => { e.stopPropagation(); toggleChild(item.key) } },
               h('div', { className: S.check + (on ? ' ' + S.checkOn : '') }, on ? '✓' : ''),
@@ -187,7 +294,7 @@
                   onPick: pickBasic,
                   name: '初级版本',
                   desc: '支持：APK 逆向分析（包名 / 权限 / 类 / 方法）',
-                  sizeLabel: '~' + fmt(BASIC_KEYS.reduce((a, k) => a + sizes[k], 0)),
+                  sizeLabel: '~' + fmt(BASIC_KEYS.reduce((a, k) => a + (sizes[k] || 0), 0)),
                   children: BASIC_KEYS.map((k) => childRow(ITEMS.find((i) => i.key === k))),
                 }),
 
@@ -197,7 +304,7 @@
                   onPick: pickFull,
                   name: '升级版本',
                   desc: '在初级版本之上，增加原生二进制逆向能力',
-                  sizeLabel: '+' + fmt(sizes.ghidra) + '（共 ' + fmt(BASIC_KEYS.reduce((a, k) => a + sizes[k], 0) + sizes.ghidra) + '）',
+                  sizeLabel: '+' + fmt(sizes.ghidra) + '（共 ' + fmt(BASIC_KEYS.reduce((a, k) => a + (sizes[k] || 0), 0) + (sizes.ghidra || 0)) + '）',
                   children: [childRow(ITEMS.find((i) => i.key === 'ghidra'))],
                 }),
 
@@ -205,25 +312,32 @@
                   h('div', { className: S.check + (remember ? ' ' + S.checkOn : '') }, remember ? '✓' : ''),
                   h('span', null, '记住我的选择，以后不再询问')),
 
-                // v0.2.6：中间态明确说明（初级三项是固定组合，不能只选一部分）
+                // 中间态明确说明（初级三项是固定组合，不能只选一部分）
                 midState ? h('div', {
                   style: { fontSize: '12px', lineHeight: '18px', marginTop: '6px', color: 'var(--dsw-alias-state-warning-primary,#d98a00)' },
-                }, '初级版本的三项（JDK / rea-agents / JADX）是固定组合，不能只选其中一部分；请整组勾选，或点上面「初级版本」自动补齐。') : null),
+                }, '初级版本的三项（JDK / rea-agents / JADX）是固定组合，不能只选其中一部分；请整组勾选，或点上面「初级版本」自动补齐。') : null,
+
+                // v0.2.8：动作失败必须让用户看见（旧版失败被 catch 吞掉，等于没反应）
+                error ? h('div', { className: S.err }, error) : null),
 
               h('div', { className: S.foot },
                 h('button', {
                   className: S.btn + ' ' + S.btnPrimary,
-                  disabled: !tier,
+                  disabled: !tier || busy,
                   onClick: () => onInstall(tier, remember),
-                }, tier ? '后台安装（' + fmt(totalMB) + '）' : '后台安装'),
-                h('button', { className: S.btn + ' ' + S.btnGhost, onClick: onDismiss }, '稍后再说'))))
+                }, busy ? '正在启动…' : (tier ? '后台安装（' + fmt(totalMB) + '）' : '后台安装')),
+                h('button', {
+                  className: S.btn + ' ' + S.btnGhost,
+                  disabled: busy,
+                  onClick: onDismiss,
+                }, '稍后再说'))))
         }
 
         // ================= 进度详情面板 =================
         function ProgressPanel({ state, onCancelKeep, onCancelClean, onClose }) {
           const [askCancel, setAskCancel] = React.useState(false)
-          const pct = Math.max(0, Math.min(100, state.percent || 0))
-          // v0.2.6：兼容 ghidra-only（只装 Ghidra）——旧版只判断 'full'，
+          const pct = Math.max(0, Math.min(100, (state && state.percent) || 0))
+          // 兼容 ghidra-only（只装 Ghidra）——旧版只判断 'full'，
           // 导致 ghidra-only 安装时面板里根本不显示 Ghidra 阶段，进度列表是空的。
           const withGhidra = state.targetTier === 'full' || state.targetTier === 'ghidra-only'
           const onlyGhidra = state.targetTier === 'ghidra-only'
@@ -232,10 +346,10 @@
               { key: 'jdk', name: 'JDK 21' }, { key: 'rea', name: 'rea-agents' },
               { key: 'jadx', name: 'JADX 桥接' },
             ]),
-            ...(withGhidra ? [{ key: 'ghidra', name: 'Ghidra 12.1.4' }, { key: 'decompiler', name: 'arm64 反编译器' }] : []),
+            ...(withGhidra ? [{ key: 'ghidra', name: 'Ghidra ' + ((state.versions && state.versions.ghidra) || DEFAULT_VERSIONS.ghidra) }, { key: 'decompiler', name: 'arm64 反编译器' }] : []),
           ]
           const done = state.doneStages || []
-          // v0.2.6：取消动作后**立即关闭确认框**（旧版点了保留/删除后 askCancel 仍为 true，
+          // 取消动作后**立即关闭确认框**（旧版点了保留/删除后 askCancel 仍为 true，
           // 按钮卡在确认态，用户以为没生效）
           const doCancel = (fn) => () => { setAskCancel(false); fn() }
           return h('div', { className: S.overlay, role: 'dialog', 'aria-modal': 'true' },
@@ -262,6 +376,7 @@
                 state.logTail && state.logTail.length
                   ? h('div', { className: S.log }, state.logTail.slice(-12).join('\n'))
                   : null,
+                state.lastError ? h('div', { className: S.err }, state.lastError) : null,
                 askCancel ? h('div', {
                   style: {
                     marginTop: '12px', padding: '12px', borderRadius: 'var(--dsw-radius-md,8px)',
@@ -282,12 +397,11 @@
         }
 
         // ================= 进度胶囊 =================
-        function ProgressPill({ state, onOpen, mode }) {
-          if (!state) return null
-          const installing = !!state.installing
-          const active = !!state.active
-          const justFinished = state.justFinished || null
-          // v0.2.6：安装刚结束 → 显示一次性结果提示（旧版胶囊直接消失，用户不知道成没成）
+        function ProgressPill({ state, activity, onOpen }) {
+          const installing = !!(state && state.installing)
+          const active = !!(activity && activity.active)
+          const justFinished = (state && state.justFinished) || null
+          // 安装刚结束 → 显示一次性结果提示（旧版胶囊直接消失，用户不知道成没成）
           if (!installing && justFinished) {
             return h('div', { className: S.pill },
               h('div', {
@@ -317,8 +431,8 @@
           if (!installing && !active) return null
           if (active) {
             // 工具执行中的胶囊：第一行操作名 + 光点，第二行目标文件名
-            const label = state.activeLabel || '逆向分析'
-            const target = state.activeTarget || null
+            const label = activity.activeLabel || '逆向分析'
+            const target = activity.activeTarget || null
             return h('div', { className: S.pill },
               h('div', { className: S.pillCard, role: 'status', 'aria-live': 'polite', title: 'REA 逆向工具正在工作: ' + (label || '') + (target ? ' · ' + target : '') },
                 h('span', { className: S.dot }),
@@ -326,7 +440,7 @@
                   h('div', { className: S.pillMainRow }, 'REA · ' + label + '…'),
                   (target ? h('div', { className: S.pillTarget }, target) : null))))
           }
-          const pct = Math.max(0, Math.min(100, state.percent || 0))
+          const pct = Math.max(0, Math.min(100, (state && state.percent) || 0))
           return h('div', { className: S.pill },
             h('div', { className: S.pillCard, onClick: onOpen, role: 'status', 'aria-live': 'polite', title: '点击查看详情' },
               h('span', { className: S.dot }),
@@ -336,19 +450,17 @@
         }
 
         // ================= 设置页入口 =================
-        function SettingsRow({ state, onOpen, onInstallFull, onInstallBasic }) {
-          const tier = state ? state.tier : 'none'
-          // v0.2.6：体积从投影取（host 单一来源），不再在本组件里写死 239/784/543
+        function SettingsRow({ state, onOpenDialog, onOpenDetail, onInstallFull, onInstallBasic }) {
+          const tier = (state && state.tier) || 'none'
           const sizes = (state && state.sizes) || DEFAULT_SIZES
           const basicMB = (sizes.jdk || 0) + (sizes.rea || 0) + (sizes.jadx || 0)
           const fullMB = basicMB + (sizes.ghidra || 0)
-          const installing = state && state.installing
-          const [showDialog, setShowDialog] = React.useState(false)
+          const installing = !!(state && state.installing)
           let status, desc, action = null
           if (installing) {
-            status = '安装中 ' + (state.percent || 0) + '%'
-            desc = state.stageLabel ? '正在下载 ' + state.stageLabel : '正在准备…'
-            action = h('button', { className: S.btn + ' ' + S.btnGhost, onClick: onOpen }, '查看进度')
+            status = '安装中 ' + ((state && state.percent) || 0) + '%'
+            desc = (state && state.stageLabel) ? '正在下载 ' + state.stageLabel : '正在准备…'
+            action = h('button', { className: S.btn + ' ' + S.btnGhost, onClick: onOpenDetail }, '查看进度')
           } else if (tier === 'full') {
             status = '已就绪'
             desc = '当前版本：APK 逆向 + 原生二进制逆向'
@@ -363,10 +475,9 @@
           } else {
             status = '未安装'
             desc = '初级版本约 ' + basicMB + ' MB（APK 逆向）；升级版本约 ' + fullMB + ' MB（增加原生二进制逆向）'
-            // 未安装时点击整行弹出选择弹窗（初级/升级可选）
-            action = h('button', { className: S.btn + ' ' + S.btnPrimary, onClick: (e) => { e.stopPropagation(); setShowDialog(true) } }, '安装环境')
+            action = h('button', { className: S.btn + ' ' + S.btnPrimary, onClick: onOpenDialog }, '安装环境')
           }
-          return h('div', { className: S.settingRow, onClick: !installing && tier === 'none' ? () => setShowDialog(true) : undefined },
+          return h('div', { className: S.settingRow },
             h('div', { className: S.settingText },
               h('div', { className: S.settingName }, 'REA 逆向环境'),
               h('div', { className: S.settingDesc }, desc),
@@ -374,71 +485,7 @@
                 className: tier === 'full' && !installing ? S.ok : S.settingDesc,
                 style: { marginTop: '2px' },
               }, '当前状态：' + status)),
-            action,
-            showDialog ? h(InstallDialogWrap, { state, onInstallFull, onInstallBasic, onClose: () => setShowDialog(false) }) : null)
-        }
-
-        // 设置页内弹出的安装选择弹窗（复用 InstallDialog，走设置行的动作）
-        function InstallDialogWrap({ state, onInstallFull, onInstallBasic, onClose }) {
-          return h(InstallDialog, {
-            state,
-            onInstall: (tier) => { onClose(); return tier === 'full' ? onInstallFull() : onInstallBasic() },
-            onDismiss: () => { onClose(); return Promise.resolve() },
-          })
-        }
-
-        // ================= 跨插槽共享的 UI 开关 =================
-        // 胶囊（input.dock）、弹窗（composer）、详情（input.overlay）分属不同插槽，
-        // 需要一个共享的小 store 让「点胶囊 → 开详情」生效，并触发重渲染。
-        function makeStore() {
-          let value = { dialog: false }
-          const subs = new Set()
-          return {
-            get: () => value,
-            set: (patch) => { value = { ...value, ...patch }; for (const f of subs) { try { f() } catch { /* 忽略 */ } } },
-            subscribe: (f) => { subs.add(f); return () => subs.delete(f) },
-          }
-        }
-        function useStore(store) {
-          const [, force] = React.useState(0)
-          React.useEffect(() => store.subscribe(() => force((n) => n + 1)), [store])
-          return store.get()
-        }
-
-        // 无 props 插槽（settings.general.item）专用的投影读取 hook：
-        // 经 sessions 服务拿到任意会话的 projection face，再订阅它。
-        function makeProjectionHook(ctx) {
-          return function useReaProjection() {
-            const read = () => {
-              try {
-                const sessions = ctx.get('sessions')
-                if (!sessions) return null
-                const byId = sessions.list.getSnapshot().byId || {}
-                const ids = Object.keys(byId)
-                if (!ids.length) return null
-                const main = ids.find((id) => (byId[id].retainedBy?.mainView ?? 0) > 0) || ids[0]
-                const binding = sessions.binding(main)
-                const face = binding?.session?.projections?.faceOf('rea')
-                return face ? face.getSnapshot() : null
-              } catch { return null }
-            }
-            const [snap, setSnap] = React.useState(read)
-            React.useEffect(() => {
-              let stop = null
-              try {
-                const sessions = ctx.get('sessions')
-                const byId = sessions?.list?.getSnapshot()?.byId || {}
-                const ids = Object.keys(byId)
-                const main = ids.find((id) => (byId[id].retainedBy?.mainView ?? 0) > 0) || ids[0]
-                const binding = main ? sessions.binding(main) : null
-                const face = binding?.session?.projections?.faceOf('rea')
-                if (face && typeof face.subscribe === 'function') stop = face.subscribe(() => setSnap(face.getSnapshot()))
-              } catch { /* 无投影可用 */ }
-              const t = setInterval(() => setSnap(read()), 1500)  // 兜底轻量刷新
-              return () => { if (stop) stop(); clearInterval(t) }
-            }, [])
-            return snap
-          }
+            action)
         }
 
         // ================= 插件主体 =================
@@ -452,181 +499,115 @@
             return () => { try { el.remove() } catch { /* 已移除 */ } }
           }, 'rea-tools: styles')
 
-          // 每个 session 一份 UI 开关状态
-          //
-          // v0.2.6：settings.general.item 是 root scope（没有 sessionId），而详情面板
-          // 挂在 conversation.input.overlay（按 session 分）。若两者用不同 store，
-          // 设置页点「查看进度」写的 dialog 标志到不了面板所在的 store → 点了没反应。
-          // 修复：维护一个**全局「请求打开详情」标志**，任意 store 都能消费：
-          // 设置页置位 → 当前可见会话的胶囊/面板读到后打开并清除。
-          let globalOpenRequest = false
-          const stores = new Map()
-          const storeOf = (sessionId) => {
-            const key = sessionId || '__root__'
-            if (!stores.has(key)) stores.set(key, makeStore())
-            return stores.get(key)
+          // 唯一的宿主状态源（全插件共用一份轮询，避免设置页/浮层各拉一条）
+          const source = createStateSource()
+          ctx.effect(() => () => source.dispose(), 'rea-tools: state source')
+
+          // 跨插槽 UI 开关：浮层（shell.overlay）与设置页共享「详情面板是否展开」。
+          // 这个 store 是 root 级（不按 session 分），因为两个入口都是 root 作用域。
+          let uiState = { detail: false, dialog: false, error: null, busy: false }
+          const uiSubs = new Set()
+          const push = (patch) => {
+            uiState = { ...uiState, ...patch }
+            for (const fn of [...uiSubs]) { try { fn() } catch { /* 忽略 */ } }
           }
-          const requestOpenDetail = () => {
-            globalOpenRequest = true
-            // 让所有 store 重渲染，消费方（胶囊/面板）会读到并打开
-            for (const s of stores.values()) s.set({})
-            // 若还没建过任何 session store，兜底建一个 root 的
-            if (stores.size === 0) storeOf('__root__').set({})
-          }
-          const consumeOpenRequest = () => {
-            if (!globalOpenRequest) return false
-            globalOpenRequest = false
-            return true
+          const useUiState = () => {
+            const [, force] = React.useState(0)
+            React.useEffect(() => {
+              const fn = () => force((n) => n + 1)
+              uiSubs.add(fn)
+              return () => uiSubs.delete(fn)
+            }, [])
+            return uiState
           }
 
-          // 找一个可用 session（settings 插槽是 root scope、拿不到 sessionId 时用）
-          const anySessionId = () => {
-            try {
-              const sessions = ctx.get('sessions')
-              if (!sessions) return undefined
-              const byId = sessions.list.getSnapshot().byId || {}
-              const ids = Object.keys(byId)
-              if (ids.length === 0) return undefined
-              // 优先挑有主视图占用的（通常是用户正开着的那个）
-              const main = ids.find((id) => (byId[id].retainedBy?.mainView ?? 0) > 0)
-              return main || ids[0]
-            } catch { return undefined }
-          }
-
-          const runCommand = async (sessionId, line) => {
-            const sid = sessionId || anySessionId()
-            if (!sid) return { ok: false, error: { message: '当前没有可用会话' } }
-            try {
-              return await ctx.remote.commands.execute(sid, line, [])
-            } catch (e) {
-              return { ok: false, error: { message: e && e.message ? e.message : String(e) } }
+          // 统一的动作执行：失败一定写进 uiState.error（不再静默）
+          const runAction = async (payload, okPatch) => {
+            push({ busy: true, error: null })
+            const r = await postAction(payload)
+            if (r.ok) {
+              push({ busy: false, ...(okPatch || {}) })
+            } else {
+              push({ busy: false, error: r.text || '操作失败' })
             }
+            await source.refresh()
+            return r
           }
 
-          // ---------- 1) 安装弹窗（接管输入区）----------
-          ctx.slots.inject('conversation.composer', () => ctx.slots.register({
-            name: 'conversation.composer',
-            id: 'rea-install-dialog',
+          const install = (tier, remember) => runAction(
+            { action: 'install', tier: tier === 'full' ? 'full' : 'basic', remember: remember !== false },
+            { dialog: false },
+          )
+          const dismiss = () => runAction({ action: 'dismiss' }, { dialog: false, detail: false })
+          const cancelKeep = () => runAction({ action: 'cancel' })
+          const cancelClean = () => runAction({ action: 'cancel-clean' })
+
+          // ---------- 1) 安装弹窗 + 进度详情（全屏浮层，root 作用域）----------
+          // 注册在 shell.overlay 而不是 conversation.composer：后者是 chain 插槽，
+          // 必须提供 select()（否则 register 抛错，弹窗永远不出现），且会抢输入区。
+          ctx.slots.inject('shell.overlay', () => ctx.slots.register({
+            name: 'shell.overlay',
+            id: 'rea-install-overlay',
             order: 40,
-            inject: (sessionId) => {
-              const store = storeOf(sessionId)
-              return {
-                reaStore: store,
-                reaActions: {
-                  // v0.2.6：接收 remember（旧版只收 tier，「记住我的选择」勾了也没用）
-                  install: (tier, remember) => {
-                    store.set({ dialog: false })
-                    // remember=true 时 host 侧已默认写 dismissed=true；false 时清除
-                    return runCommand(sessionId, (tier === 'full' ? '/rea-install-full' : '/rea-install-basic')
-                      + (remember === false ? ' --no-remember' : ''))
-                  },
-                  dismiss: () => {
-                    store.set({ dialog: false, dismissed: true })
-                    return runCommand(sessionId, '/rea-dismiss')
-                  },
-                },
-              }
-            },
-          }, (props) => {
-            const proj = props.useProjection ? props.useProjection('rea') : null
-            const local = useStore(props.reaStore)
-            if (!proj || !proj.showDialog || local.dismissed) return null
+          }, function ReaOverlay() {
+            const state = useSource(source)
+            const ui = useUiState()
+            if (!state) return null
+            // 详情面板优先（用户主动点的），否则按宿主 showDialog 自动弹窗
+            if (ui.detail) {
+              return h(ProgressPanel, {
+                state,
+                onClose: () => push({ detail: false }),
+                onCancelKeep: cancelKeep,
+                onCancelClean: cancelClean,
+              })
+            }
+            const wantDialog = ui.dialog || !!state.showDialog
+            if (!wantDialog) return null
             return h(InstallDialog, {
-              state: proj,
-              onInstall: (tier) => props.reaActions.install(tier),
-              onDismiss: () => props.reaActions.dismiss(),
+              state,
+              busy: ui.busy,
+              error: ui.error,
+              onInstall: (tier, remember) => install(tier, remember),
+              onDismiss: dismiss,
             })
           }))
 
-          // ---------- 2) 进度胶囊 ----------
+          // ---------- 2) 进度胶囊 / 工具工作状态 ----------
           ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
             name: 'conversation.input.dock',
             id: 'rea-progress',
             order: 36,
-            inject: (sessionId) => ({
-              reaStore: storeOf(sessionId),
-            }),
-          }, (props) => {
-            const proj = props.useProjection ? props.useProjection('rea') : null
-            const local = useStore(props.reaStore)
-            // v0.2.6：消费设置页的「查看进度」全局请求
-            const [, force] = React.useState(0)
-            React.useEffect(() => {
-              if (consumeOpenRequest()) {
-                props.reaStore.set({ dialog: true })
-                force((n) => n + 1)
-              }
-            })
-            if (!proj || (!proj.installing && !proj.active && !proj.justFinished && !local.dialog)) return null
+          }, function ReaPill(props) {
+            const state = useSource(source)
+            // 工具执行中的活动态来自会话投影（这部分与会话相关，保持投影驱动）
+            const activity = props && typeof props.useProjection === 'function'
+              ? props.useProjection('rea')
+              : null
+            if (!state && !activity) return null
             return h(ProgressPill, {
-              state: proj,
-              onOpen: () => props.reaStore.set({ dialog: true }),
+              state: state || {},
+              activity: activity || {},
+              onOpen: () => push({ detail: true }),
             })
           }))
 
-          // ---------- 3) 详情面板 ----------
-          ctx.slots.inject('conversation.input.overlay', () => ctx.slots.register({
-            name: 'conversation.input.overlay',
-            id: 'rea-progress-detail',
-            order: 40,
-            inject: (sessionId) => ({
-              reaStore: storeOf(sessionId),
-              reaActions: {
-                close: () => storeOf(sessionId).set({ dialog: false }),
-                cancelKeep: () => runCommand(sessionId, '/rea-cancel'),
-                cancelClean: () => runCommand(sessionId, '/rea-cancel-clean'),
-              },
-            }),
-          }, (props) => {
-            const proj = props.useProjection ? props.useProjection('rea') : null
-            const local = useStore(props.reaStore)
-            // v0.2.6：消费设置页的「查看进度」全局请求（面板自带消费，不依赖胶囊先渲染）
-            const [, force] = React.useState(0)
-            React.useEffect(() => {
-              if (consumeOpenRequest()) {
-                props.reaStore.set({ dialog: true })
-                force((n) => n + 1)
-              }
-            })
-            if (!local.dialog) return null
-            return h(ProgressPanel, {
-              state: proj || {},
-              onClose: () => props.reaActions.close(),
-              onCancelKeep: () => props.reaActions.cancelKeep(),
-              onCancelClean: () => props.reaActions.cancelClean(),
-            })
-          }))
-
-          // ---------- 4) 设置页入口（初级 → 升级 的入口）----------
-          // 注意：settings.general.item 是 root scope、**不传任何 props**，
-          // 所以这里的数据与动作全部走自己的 inject face（见上方 host 文档说明）。
+          // ---------- 3) 设置页入口 ----------
+          // settings.general.item 是 root 作用域、不传 props，因此这里只用 HTTP 状态源 +
+          // 共享 store，不再依赖「猜一个可用会话」的 makeProjectionHook。
           ctx.slots.inject('settings.general.item', () => ctx.slots.register({
             name: 'settings.general.item',
             id: 'rea-environment',
             order: 30,
-            inject: () => {
-              // inject 在 root scope 下调用，sessionId 为空 → 用 anySessionId() 兜底
-              const store = storeOf('__root__')
-              return {
-                reaStore: store,
-                reaActions: {
-                  installBasic: () => runCommand(undefined, '/rea-install-basic'),
-                  installFull: () => runCommand(undefined, '/rea-install-full'),
-                  // v0.2.6：打开进度详情面板（跨插槽：置全局请求 → 面板/胶囊消费）
-                  openDetail: () => requestOpenDetail(),
-                },
-              }
-            },
-          }, (props) => {
-            const useReaProjection = React.useMemo(() => makeProjectionHook(ctx), [])
-            const proj = props && props.useProjection ? props.useProjection('rea') : useReaProjection()
+          }, function ReaSettingsItem() {
+            const state = useSource(source)
             return h(SettingsRow, {
-              state: proj,
-              // v0.2.6：旧版是 `onOpen: () => {}` 空函数——「查看进度」按钮点了完全没反应。
-              // 现在写入共享 store 的 dialog 标志，input.dock 胶囊随之渲染，点胶囊开详情面板。
-              onOpen: () => { try { props.reaActions.openDetail() } catch { /* store 不可用 */ } },
-              onInstallBasic: () => props.reaActions.installBasic(),
-              onInstallFull: () => props.reaActions.installFull(),
+              state: state || {},
+              onOpenDialog: () => push({ dialog: true, error: null }),
+              onOpenDetail: () => push({ detail: true }),
+              // 初级 → 升级：直接装 full（保留 remember=true，与设置页语义一致）
+              onInstallFull: () => install('full', true),
+              onInstallBasic: () => install('basic', true),
             })
           }))
         }

@@ -2,6 +2,16 @@
 
 把 **REA + Ghidra + JADX** 的逆向能力变成 DSH 原生工具：一键安装 + 原生二进制/APK 逆向。
 
+**v0.2.8**：修复**「首启不自动弹窗」+「设置页安装按钮点了没反应」**（三个 bug 叠加）：
+
+1. **弹窗永远不出现（根因）**：旧版把安装弹窗注册在 `conversation.composer`。该插槽在 `ui-conversation` 里声明为 **chain**（`kind: 'chain'`），而 `SlotCore.register` 对 chain **强制要求 `options.select`**，缺了直接抛 `chain slot "conversation.composer" requires options.select`。抛错发生在 `slots.inject` 的回调里，**只进 console** —— 注册整体不生效，所以「装完重启该自动弹窗却没弹」。
+   现在改挂 `shell.overlay`（`ui-layout` 声明的 **list / root** 插槽，官方全屏浮层席位，插件的 refresh toast、chat 的配额提示都用它），既合法、也不会像 composer 那样抢走输入区。
+2. **按钮点了没反应（根因）**：所有按钮都走 `ctx.remote.commands.execute(sessionId, '/rea-install-*')`，有两个硬前提——**必须有一个可用会话**、且命令已注册。设置页是 root 作用域、拿不到 sessionId，`anySessionId()` 一旦返回 `undefined` 就直接 `{ ok:false }`；而**所有失败都被 `try/catch` 吞成返回值，UI 完全没提示**。
+   现在状态与动作统一走宿主新增的两个 HTTP 端点（`GET /rea-tools/state`、`POST /rea-tools/action`，同源校验 + 固定 action 白名单），**与会话完全解耦**，设置页和浮层共用一套；动作失败一定在弹窗里显示红字原因，不再静默。
+3. **「记住我的选择」永远是假的**：命令 handler 收到的是 **invocation 对象**（`{ commandId, agent, rawInput, attachments, signal }`），旧版却当字符串做 `/--no-remember/.test(argsRaw)` → 恒为 `false`，取消勾选也照样写 `dismissed=true`。现在从 `invocation.rawInput` 取，实测「勾选 → 写入 dismissed」「取消勾选 → 不写入」两条都正确。
+
+> 顺带修掉的结构性问题：设置页曾自维护一份 `showDialog` 局部 state，与宿主状态各自为政；现在**只有一个状态源**（宿主实时计算的 `showDialog`），自动弹窗与手动入口行为一致。
+
 **v0.2.7**：新增**「逆向分析优选规则」系统提示**——与加速器的「文件下载优选规则」同一套注入机制。现在 AI 遇到用户要求「分析/逆向/反编译」时会**确定地**调 rea 工具：
 - APK（.apk）→ `rea_inspect_apk` 系列（包名/权限/类/方法，静态）
 - 原生二进制（.so / ELF / 可执行）→ `rea_analyze`（概览）或 `rea_function`（指定函数反编译）

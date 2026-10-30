@@ -119,6 +119,10 @@ export function detectState(pluginDir) {
     cacheMB: Math.round(cacheBytes / 1048576),
     lastError: saved.lastError || null,
     failCount: saved.failCount || 0,
+    // v0.2.8：把「状态文件里标记正在装」也暴露出来。进程内 current 为 null 但
+    // 磁盘标记仍在（刚重启 / 上次崩溃）时，客户端仍需显示「安装中/可续传」，
+    // 否则会误判成「未安装」又一次弹窗。
+    installing: saved.installing === true,
   }
 }
 

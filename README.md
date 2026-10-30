@@ -112,9 +112,11 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.8.0/gh-acce
 </details>
 
 <details>
-<summary><b>▶ rea-tools · REA 逆向工具链（一键安装 + 原生/APK 逆向）</b>　<code>v0.2.7</code></summary>
+<summary><b>▶ rea-tools · REA 逆向工具链（一键安装 + 原生/APK 逆向）</b>　<code>v0.2.8</code></summary>
 
 > 一键安装 **REA + Ghidra + JADX**（arm64 反编译器免编译、断点续传、zip 缓存、幂等），并提供 7 个逆向工具：`rea_install`（安装）、`rea_doctor`（就绪检查）、`rea_analyze`（二进制概览）、`rea_function`（函数伪代码，Ghidra）、`rea_inspect_apk` / `rea_inspect_apk_class` / `rea_inspect_apk_method`（APK 静态逆向，不运行目标代码）。已在 arm64 实测：NewPipe APK 7096 类，Manifest/类成员/方法反编译全部正常。
+>
+> **v0.2.8**：修复**「装完重启该自动弹窗却没弹」+「设置页点安装环境/后台安装/稍后再说，一点反应都没有」**（三个 bug 叠加）：① **弹窗挂错插槽**——旧版注册在 `conversation.composer`，该插槽是 **chain** 类型，DSH 强制要求注册时提供 `select()`，缺了直接抛错；抛错只进 console，注册整体失效（这就是不弹窗的根因）。现改挂 `shell.overlay`（官方全屏浮层 list 插槽）。② **按钮走会话命令**——`ctx.remote.commands.execute()` 必须有可用会话，而设置页是 root 作用域拿不到 sessionId，失败又被 `try/catch` 吞掉、UI 零提示（这就是「点了没反应」的根因）。现改走宿主 HTTP 端点 `GET /rea-tools/state` + `POST /rea-tools/action`，与会话解耦，失败一定显示红字原因。③ **「记住我的选择」永远是假的**——命令 handler 收的是 invocation 对象（`rawInput` 字段），旧版当字符串正则匹配，恒为 false；已修。
 >
 > **v0.2.7**：新增**「逆向分析优选规则」系统提示**（同加速器注入机制）——AI 遇 APK/原生二进制时确定调 rea 工具（APK→`rea_inspect_apk` 系列，ELF/.so→`rea_analyze`/`rea_function`），环境未装提示先 `rea_install`。
 >
@@ -137,13 +139,13 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.8.0/gh-acce
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/rea-tools-v0.2.7/rea-tools-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/rea-tools-v0.2.8/rea-tools-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/rea-tools-v0.2.7/rea-tools-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/rea-tools-v0.2.8/rea-tools-plugin.tgz
 ```
 
 > 首次打开自动弹窗选择版本后台安装；或在设置 → 通用 → REA 逆向环境 里安装；也可调 `rea_install` 工具。升级需先卸载再装新版本。
