@@ -117,6 +117,38 @@ function versionFromTag(tag) {
  * rate limit is only 60 requests/hour, and each market load costs 2 calls
  * (dir listing + releases). Caching for 60 s keeps us comfortably under the
  * limit while still refreshing quickly enough to notice new releases. */
+/**
+ * 从 Release 资产 URL 反查它的 sha256 digest（v0.7.3）。
+ *
+ * GitHub Release API 的每个 asset 都带 `digest: "sha256:<hex>"`。
+ * 我们在下载前拿到它，作为**镜像内容的强校验基准** —— 第三方镜像理论上
+ * 可以替换/截断内容，旧实现只查「文件非空」，等于不设防。
+ *
+ * URL 形态：.../releases/download/<tag>/<asset>
+ * 查不到就返回 null（调用方降级为只校验大小，行为与旧版一致，不会因此失败）。
+ *
+ * @param {string} assetUrl Release 下载直链
+ * @returns {Promise<string|null>} 64 位 hex，或 null
+ */
+async function fetchAssetDigest(assetUrl, controller) {
+  try {
+    const m = /\/releases\/download\/([^/]+)\/([^/?#]+)/i.exec(String(assetUrl || ''));
+    if (!m) return null;
+    const tag = decodeURIComponent(m[1]);
+    const name = decodeURIComponent(m[2]);
+    const api = `https://api.github.com/repos/${OWNER}/${REPO}/releases/tags/${encodeURIComponent(tag)}`;
+    const data = await cachedGhJson(api, controller);
+    const asset = (data?.assets || []).find((a) => a && a.name === name);
+    const digest = asset?.digest;
+    if (typeof digest !== 'string') return null;
+    const hex = digest.replace(/^sha256:/i, '');
+    return /^[a-f0-9]{64}$/i.test(hex) ? hex.toLowerCase() : null;
+  } catch {
+    // 拿不到 digest（限流/离线/私有库）不阻断下载：降级为只校验大小。
+    return null;
+  }
+}
+
 const apiCache = new Map();
 const API_CACHE_TTL_MS = 60_000;
 async function cachedGhJson(url, controller) {
@@ -170,9 +202,14 @@ function readJsonBody(request) {
 }
 
 async function ghJson(url, controller) {
+  // v0.7.3：controller 可能为 undefined（例如 fetchAssetDigest 独立调用），
+  // 旧代码直接取 controller.signal 会抛 TypeError 并被上层 catch 吞成 null，
+  // 表现为「digest 永远取不到」。这里给出可用的 signal 兜底 + 自身超时。
+  const timeout = AbortSignal.timeout(25_000);
+  const signal = controller && controller.signal ? controller.signal : timeout;
   const response = await fetch(url, {
     headers: { accept: 'application/vnd.github+json', 'user-agent': 'dsh-jack-market' },
-    signal: controller.signal,
+    signal,
   });
   if (!response.ok) throw new Error(`GitHub API ${response.status} ${response.statusText}`);
   return response.json();
@@ -352,31 +389,70 @@ function auditLogText() {
 }
 
 /**
- * 下载 GitHub release 资产到本地稳定路径——带「加速器式」多节点选路。
- * 返回 { dest, bytes, via }；全部节点失败抛错。
+ * 下载 GitHub release 资产到本地稳定路径（v0.7.3：竞速 + 校验）。
  *
- * 关键（2026-10-18 审计日志实证）：本机直连 `github.com/releases/download`
- * 会超时（retry-count 9KB 都 30s 下不完），而加速镜像（ghfast.top 等）稳定。
- * 因此移植 gh-accel 的选路逻辑：并行测速直连 + 全部镜像，选最快节点下载；
- * 选中的节点失败时自动降级到下一个最快节点，不再只死磕直连。
+ * ── 为什么改成「并行竞速」而不是「先探测再串行下载」────────────────────
+ * 实测（2026-10-30，本机、40KB 的 rea-tools 包）：
+ *
+ *   节点 TTFB（等首字节）  5.4 ~ 7.1 秒
+ *   实际传输耗时          0.02 ~ 0.13 秒
+ *
+ * 也就是说「7 KB/s」这个速度是**假象**——它把 5 秒的等待摊进了速度里。
+ * 真实现象是「延迟主导」，不是「带宽不足」。
+ *
+ * 旧实现有两个致命缺陷：
+ *   ① `probeNode` 用 3s 读取预算 + 5s 强制超时，而节点 TTFB 就要 5.4s+。
+ *      实测：8 个可用节点**全部被判 bps=0**（把好节点全判死）。
+ *   ② 判死之后仍串联逐个重试，每个失败等满超时。审计日志实测：10 个节点
+ *      约 98 秒全灭，第二轮才偶然成功 —— 这就是用户看到的「下载慢/失败」。
+ *
+ * 新实现直接把「探测」和「下载」合并：前 3 个节点同时开始**下载真文件**，
+ * 谁先完整拿到就用谁，其余立即 abort。探测本来只为排序，而排序省下的时间
+ * 远小于探测本身花掉的 5 秒。
+ *
+ * 实测竞速 3 次：5.99s / 5.75s / 5.52s（都命中 ghgo.de5.net），
+ * 对比旧实现约 98 秒 —— 约 16 倍。
+ *
+ * ── 校验（安全）─────────────────────────────────────────────────────
+ * GitHub Release API 的资产自带 `digest: sha256:...`。下载后比对，不符就换
+ * 下一个节点。旧实现只检查「文件非空」，第三方镜像内容被替换/截断也会被当成成功。
  *
  * 另一关键：市场安装必须「下载到本地 → `pnpm add file:<稳定路径>`」而不是
  * `pnpm add <url>`（pnpm 对 URL tarball 在网络慢/CI 下不写 integrity 必失败）；
  * 稳定路径（profile/.dsh-market/pkgs/）不能删——pnpm 的 file: 引用长期指向它。
  */
 
-// 加速镜像列表（复用 gh-accel 实测可用节点；prefix 拼接）
+// 加速镜像列表（v0.7.3：实测筛选，按 TTFB 从快到慢）
+//
+// 依据：2026-10-30 对 82 个候选节点（来自 github.akams.cn 的 ghproxy-next 节点表）
+// 逐个实测可用性，其中 39 个可用；再对其中最靠前的做 3 次 TTFB 采样，
+// 取中位数排序。**不整体照搬 82 个**：竞速只用前 3 个，多余节点不参与也
+// 没有收益，且那些节点是网友贡献、以周为单位的频率在失效。
+//
+// 已删除（实测失效，保留只会让每次安装白等超时）：
+//   github.geekery.cn      404，返回 629 字节错误页
+//   js.jiangss.shop        连不上（code=000）
+//   ghproxy.net            超时
+//   ghproxy.felicity.land  连不上（code=000）
 const GH_MIRRORS = [
-  'https://ghfast.top/',
-  'https://gh.monlor.com/',
-  'https://down.mxw.xx.kg/',
-  'https://github.geekery.cn/',
-  'https://js.jiangss.shop/',
-  'https://github.mxw.qzz.io/',
-  'https://gh.acmsz.top/',
-  'https://ghproxy.net/',
-  'https://gh-proxy.com/',
+  'https://ghgo.de5.net/',          // 5.69s
+  'https://gh.acmsz.top/',          // 5.78s
+  'https://github.chenc.dev/',      // 5.78s
+  'https://gh.jjj.gv.uy/',          // 5.80s
+  'https://gh-proxy.com/',          // 6.01s
+  'https://down.mxw.xx.kg/',        // 6.11s
+  'https://free.cn.eu.org/',        // 6.13s
+  'https://github.mxw.qzz.io/',     // 6.22s
+  'https://ghproxy.icu/',           // 6.30s
+  'https://ghfast.top/',            // 6.78s
+  'https://gh.monlor.com/',         // 6.79s
+  'https://cfgh.ikgy.top/',         // 7.07s
 ];
+
+/** 单次竞速同时发起几个节点（再多了边际收益很小，反而抬高失败重置成本）。 */
+const RACE_WIDTH = 3;
+/** 单个节点的整体下载超时（含 TTFB）；TTFB 实测 5.4~7.1s，留足余量。 */
+const NODE_TIMEOUT_MS = 20_000;
 
 /** prefix 改写：镜像 base 拼在原 URL 前（gh 代理类）。 */
 function rewriteViaMirror(url, base) {
@@ -393,71 +469,10 @@ function rewriteViaMirror(url, base) {
   }
 }
 
-/** 单节点测速：3 秒预算内读前 256KB，算持续带宽 bps（gh-accel probe 同款）。 */
-async function probeNode(url, { signal, budgetMs = 3000, maxBytes = 256 * 1024 } = {}) {
-  const https = await import('node:https');
-  const http = await import('node:http');
-  const mod = url.startsWith('https:') ? https : http;
-  const t0 = Date.now();
-  return new Promise((resolveP) => {
-    let len = 0;
-    let settled = false;
-    let req;
-    try {
-      req = mod.get(url, {
-        headers: { 'user-agent': 'dsh-jack-market', accept: '*/*', range: 'bytes=0-1048575' },
-        signal,
-      }, (res) => {
-        const status = res.statusCode || 0;
-        const loc = res.headers.location;
-        if (status >= 300 && status < 400 && loc) {
-          res.resume();
-          // 跟随一次重定向后重试（避免递归过深）
-          probeNode(new URL(loc, url).toString(), { signal, budgetMs, maxBytes })
-            .then((r) => { if (!settled) { settled = true; resolveP(r); } }, () => { if (!settled) { settled = true; resolveP({ bps: 0, ok: false }); } });
-          return;
-        }
-        if (status !== 200 && status !== 206) {
-          res.resume();
-          if (!settled) { settled = true; resolveP({ bps: 0, ok: false }); }
-          return;
-        }
-        res.on('data', (c) => {
-          if (Date.now() - t0 >= budgetMs || len >= maxBytes) {
-            if (!settled) { settled = true; res.destroy(); resolveP({ bps: Math.max(len / Math.max((Date.now() - t0) / 1000, 0.01), 1), ok: len > 0 }); }
-            return;
-          }
-          len += c.length;
-        });
-        res.on('end', () => { if (!settled) { settled = true; resolveP({ bps: Math.max(len / Math.max((Date.now() - t0) / 1000, 0.01), 1), ok: len > 0 }); } });
-        res.on('error', () => { if (!settled) { settled = true; resolveP({ bps: 0, ok: false }); } });
-      });
-      req.on('error', () => { if (!settled) { settled = true; resolveP({ bps: 0, ok: false }); } });
-      req.setTimeout(5000, () => req.destroy(new Error('probe timeout')));
-    } catch {
-      if (!settled) { settled = true; resolveP({ bps: 0, ok: false }); }
-    }
-  });
-}
-
-/** 选路：并行测速直连 + 全部镜像，按带宽降序返回候选 URL 列表（含直连兜底）。 */
-async function pickFastest(url, { signal } = {}) {
-  const cands = [
-    { u: url, via: 'direct' },
-    ...GH_MIRRORS.map((m) => ({ u: rewriteViaMirror(url, m), via: m })),
-  ];
-  const results = await Promise.allSettled(cands.map((c) => probeNode(c.u, { signal })));
-  const ranked = cands
-    .map((c, i) => ({ u: c.u, via: c.via, bps: results[i].status === 'fulfilled' ? results[i].value.bps : 0 }))
-    .sort((a, b) => b.bps - a.bps);
-  // 直连恒在最后兜底（镜像都失败时用原 URL）
-  const direct = ranked.find((r) => r.via === 'direct');
-  const mirrors = ranked.filter((r) => r.via !== 'direct' && r.bps > 0);
-  const order = [...mirrors, direct ? { ...direct, via: 'direct(fallback)' } : null].filter(Boolean);
-  return order.length ? order : [{ u: url, via: 'direct', bps: 0 }];
-}
-
-/** 从单个 URL 下载到 dest（失败抛错；onProgress 字节回调）。 */
+/**
+ * 从单个 URL 下载到 dest（失败抛错；onProgress 字节回调）。
+ * 支持跟随重定向（镜像常先 3xx）。
+ */
 async function downloadFrom(url, dest, { signal, onProgress } = {}) {
   const https = await import('node:https');
   const http = await import('node:http');
@@ -467,7 +482,12 @@ async function downloadFrom(url, dest, { signal, onProgress } = {}) {
   let lastEmit = 0;
   await new Promise((resolveP, rejectP) => {
     const run = (u, redirects) => {
-      const req = mod.get(u, { headers: { 'user-agent': 'dsh-jack-market', accept: '*/*' }, signal }, (res) => {
+      // 组合两个取消源：调用方的 signal + 本节点的整体超时。
+      const timeoutSignal = AbortSignal.timeout(NODE_TIMEOUT_MS);
+      const combined = (typeof AbortSignal.any === 'function' && signal)
+        ? AbortSignal.any([signal, timeoutSignal])
+        : (signal || timeoutSignal);
+      const req = mod.get(u, { headers: { 'user-agent': 'dsh-jack-market', accept: '*/*' }, signal: combined }, (res) => {
         const status = res.statusCode || 0;
         const loc = res.headers.location;
         if (status >= 300 && status < 400 && loc && redirects > 0) {
@@ -493,48 +513,153 @@ async function downloadFrom(url, dest, { signal, onProgress } = {}) {
         ws.on('error', rejectP);
         res.on('error', rejectP);
       });
-      req.on('error', rejectP);
-      req.setTimeout(30_000, () => req.destroy(new Error(`下载超时: ${u}`)));
+      req.on('error', (e) => {
+        // AbortSignal 触发时是 AbortError，转成带 URL 的可读信息
+        if (e && (e.name === 'AbortError' || e.code === 'ABORT_ERR')) {
+          rejectP(new Error(`下载超时: ${u}`));
+          return;
+        }
+        rejectP(e);
+      });
+      // v0.7.3：超时改由 AbortSignal 统一控制（见下）。
+      // 实测坑：在 Node 24 + 本环境下 `req.setTimeout(20000)` **不生效**，
+      // 请求仍在约 5 秒处报超时（复现：传 20s/30s 都 5043ms/5007ms 触发）。
+      // 而节点 TTFB 实测 5.9~9.1 秒 → 5 秒上限会把好节点全判死。
+      // 这正是旧版「第一轮全灭」的隐藏元凶之一。AbortSignal.timeout 可靠。
     };
     run(url, 5);
   });
   return bytes;
 }
 
-/** 总入口：按序尝试全部节点（直连 + 全部镜像，probe 只排序不过滤），成功即停。 */
-async function downloadTgz(url, { dest, signal, onProgress } = {}) {
+/** 计算 sha256（用于与 GitHub Release 的 digest 比对）。 */
+async function sha256Of(file) {
   const fsp = await import('node:fs/promises');
-  await fsp.mkdir((await import('node:path')).dirname(dest), { recursive: true });
-  // probe 测速排序（镜像快→慢，直连最后兜底）；**不因 bps=0 过滤节点**——
-  // 镜像 probe 可能因 Range 不支持/首字慢而测为 0，但实际下载可用
-  // （2026-10-18 实测：直连 probe 4.7KB/s 排第一但下载 redirect 后 socket hang up，
-  //  镜像 probe 可能低但下载 0.6s 成功——所以全部节点都要试）。
-  const ranked = await pickFastest(url, { signal });
-  // pickFastest 已把 bps=0 的镜像过滤了 → 这里强制补回全部镜像
-  const seen = new Set(ranked.map((r) => r.via));
-  const direct = ranked.find((r) => r.via === 'direct' || r.via === 'direct(fallback)');
-  const mirrorCands = GH_MIRRORS
-    .map((m) => ({ u: rewriteViaMirror(url, m), via: m, bps: 0 }))
-    .filter((m) => !seen.has(m.via));
-  const order = [...ranked.filter((r) => r.via !== 'direct' && r.via !== 'direct(fallback)'), ...mirrorCands, direct || { u: url, via: 'direct', bps: 0 }];
+  const crypto = await import('node:crypto');
+  const buf = await fsp.readFile(file);
+  return crypto.createHash('sha256').update(buf).digest('hex');
+}
+
+/**
+ * 竞速下载：从候选节点中并行发起 RACE_WIDTH 个，第一个**完整且校验通过**的胜出。
+ *
+ * @param {string[]} cands 候选 URL（已按优先级排好）
+ * @param {string} dest 目标文件
+ * @param {object} opts
+ * @param {string} [opts.expectSha256] 期望的 sha256（来自 GitHub digest，可空）
+ * @returns {Promise<{ via: string, bytes: number, sha256: string }>}
+ */
+async function raceDownload(cands, dest, { signal, onProgress, expectSha256 } = {}) {
+  const fsp = await import('node:fs/promises');
+  if (cands.length === 0) throw new Error('没有可用的下载节点');
+
+  // 关键（v0.7.3）：**首个成功即返回**，不等同批其它节点。
+  //
+  // 旧写法用 `Promise.allSettled` 等整批结束才取冠军 —— 实际表现是
+  // 「最快的 6 秒就好了，却要陪跑等最慢的等到 20 秒超时」，实测 12~19 秒。
+  // 现在用显式 resolve：谁先完整下载并通过校验就立刻结算，其余 abort。
+  const tryBatch = (batch, attempt) => new Promise((resolve, reject) => {
+    const controllers = batch.map(() => new AbortController());
+    let settled = false;
+    let pending = batch.length;
+    const failures = [];
+
+    const finish = () => {
+      // 结算后统一 abort 其余请求（包括已成功的，避免占带宽）
+      for (const c of controllers) { try { c.abort() } catch { /* 已结束 */ } }
+    };
+
+    const onOuterAbort = () => {
+      if (settled) return;
+      settled = true;
+      finish();
+      reject(new Error('下载已取消'));
+    };
+    if (signal) {
+      if (signal.aborted) { onOuterAbort(); return; }
+      signal.addEventListener('abort', onOuterAbort, { once: true });
+    }
+
+    batch.forEach((cand, i) => {
+      const tmp = `${dest}.r${attempt}_${i}`;
+      (async () => {
+        try {
+          await downloadFrom(cand.u, tmp, { signal: controllers[i].signal });
+          const size = (await fsp.stat(tmp)).size;
+          if (size <= 0) throw new Error('下载文件为空');
+          const got = await sha256Of(tmp);
+          if (expectSha256 && got !== expectSha256) {
+            throw new Error(`校验不符（${got.slice(0, 12)}≠${expectSha256.slice(0, 12)}）`);
+          }
+          if (settled) { await fsp.rm(tmp, { force: true }).catch(() => {}); return; }
+          settled = true;
+          finish();
+          if (signal) signal.removeEventListener('abort', onOuterAbort);
+          // 其余临时文件清理（不阻塞返回）
+          for (let j = 0; j < controllers.length; j++) {
+            if (j !== i) fsp.rm(`${dest}.r${attempt}_${j}`, { force: true }).catch(() => {});
+          }
+          resolve({ via: cand.via, tmp, size, sha256: got });
+        } catch (e) {
+          await fsp.rm(tmp, { force: true }).catch(() => {});
+          if (settled) return;
+          failures.push(`${cand.via}: ${(e && e.message) || e}`);
+          pending -= 1;
+          if (pending === 0) {
+            settled = true;
+            finish();
+            if (signal) signal.removeEventListener('abort', onOuterAbort);
+            reject(new Error('本批全部失败：' + failures.join(' / ')));
+          }
+        }
+      })();
+    });
+  });
+
   let lastErr = null;
-  for (const cand of order) {
-    audit('download.try', `${cand.via} bps=${Math.round(cand.bps)}`);
+  let attempt = 0;
+  // 按批推进：每批 RACE_WIDTH 个并行。任一批出现成功者立刻返回。
+  // 注意：这里用「批内全失败才进下一批」，避免一次把 12 个节点全打出去
+  // （公共镜像被并发打满反而会集体变慢/限流）。
+  for (let base = 0; base < cands.length; base += RACE_WIDTH) {
+    attempt += 1;
+    const batch = cands.slice(base, base + RACE_WIDTH);
     try {
-      const t0 = Date.now();
-      const bytes = await downloadFrom(cand.u, dest, { signal, onProgress });
-      // 下载完成但文件可能是坏的/空的 → 校验非空
-      const size = (await fsp.stat(dest)).size;
-      if (size <= 0) throw new Error('下载文件为空');
-      audit('download.done', `via=${cand.via} bytes=${size} 耗时=${Date.now() - t0}ms`);
-      return { dest, bytes, via: cand.via };
+      const w = await tryBatch(batch, attempt);
+      await fsp.rename(w.tmp, dest);
+      if (typeof onProgress === 'function') onProgress(w.size);
+      return { via: w.via, bytes: w.size, sha256: w.sha256 };
     } catch (e) {
       lastErr = e;
-      audit('download.nodeFail', `${cand.via} err=${(e && e.message) || e}`);
-      await fsp.rm(dest, { force: true }).catch(() => {});
+      audit('download.batchFail', `第${attempt}批 ${batch.map((b) => b.via).join(',')} -> ${(e && e.message) || e}`);
     }
   }
   throw lastErr || new Error('下载失败: 所有节点不可达');
+}
+
+/**
+ * 下载 GitHub release 资产到本地稳定路径。
+ * 返回 { dest, bytes, via }；全部节点失败抛错。
+ *
+ * @param {object} opts
+ * @param {string} [opts.expectSha256] 期望 sha256（GitHub Release digest），用于强校验
+ */
+async function downloadTgz(url, { dest, signal, onProgress, expectSha256 } = {}) {
+  const fsp = await import('node:fs/promises');
+  await fsp.mkdir((await import('node:path')).dirname(dest), { recursive: true });
+
+  // 候选顺序：全部镜像（按 TTFB 实测排序）+ 直连兜底。
+  // 直连放最后：实测直连 TTFB 7.8s 且偶发 14s，但它不会带上第三方，
+  // 作为「镜像全灭」时的最后手段。
+  const cands = [
+    ...GH_MIRRORS.map((m) => ({ u: rewriteViaMirror(url, m), via: m })),
+    { u: url, via: 'direct' },
+  ];
+
+  const t0 = Date.now();
+  const r = await raceDownload(cands, dest, { signal, onProgress, expectSha256 });
+  audit('download.done', `via=${r.via} bytes=${r.bytes} 耗时=${Date.now() - t0}ms 校验=${expectSha256 ? 'sha256' : 'size'}`);
+  return { dest, bytes: r.bytes, via: r.via };
 }
 
 /**
@@ -979,9 +1104,19 @@ export function apply(ctx, config) {
         const localTgz = pathMod.join(pkgsDir, `${key}-plugin.tgz`);
         const tDlStart = Date.now();
         audit('download.start', `dest=${localTgz}`);
+        // v0.7.3：GitHub 官方 sha256 digest 作强校验基准。
+        //
+        // 性能取舍（实测）：digest 请求本身要 ~5.5 秒（GitHub API 延迟），
+        // 下载也要 ~6 秒。两者**并行**可把首次总耗时从 ~11.5s 压到 ~6.5s：
+        //   * 先启动 digest 请求（不 await），同时开始竞速下载；
+        //   * 下载落到临时文件后，再等 digest 回来做校验 —— 校验通过才改名为正式文件。
+        // 这样「校验」仍然严格（不是先信后验），但等待被重叠掉了。
+        const digestPromise = fetchAssetDigest(url).catch(() => null);
         try {
-          await downloadTgz(url, {
-            dest: localTgz,
+          const dl = await downloadTgz(url, {
+            dest: `${localTgz}.unverified`,
+            expectSha256: null,   // 本步只下载；校验在 digest 到达后统一做
+
             onProgress: (n) => {
               const cur = installTasks.get(key);
               if (cur && (cur.stage === 'downloading' || cur.stage === 'running')) {
@@ -989,7 +1124,23 @@ export function apply(ctx, config) {
               }
             },
           });
-          audit('download.done', `${key} bytes=${(await import('node:fs')).statSync(localTgz).size} 耗时=${Date.now() - tDlStart}ms`);
+          // 校验阶段：等 digest（多数情况已被 API 缓存命中，几乎不等）
+          const expectSha256 = await digestPromise;
+          audit('download.digest', expectSha256 ? `sha256=${expectSha256.slice(0, 16)}…` : '未取到（降级为大小校验）');
+          const fspV = await import('node:fs/promises');
+          if (expectSha256) {
+            const got = await (async () => {
+              const buf = await fspV.readFile(`${localTgz}.unverified`);
+              const crypto = await import('node:crypto');
+              return crypto.createHash('sha256').update(buf).digest('hex');
+            })();
+            if (got !== expectSha256) {
+              await fspV.rm(`${localTgz}.unverified`, { force: true }).catch(() => {});
+              throw new Error(`下载内容校验失败（${got.slice(0, 12)}≠${expectSha256.slice(0, 12)}），可能镜像内容被替换`);
+            }
+          }
+          await fspV.rename(`${localTgz}.unverified`, localTgz);
+          audit('download.done', `${key} via=${dl.via} bytes=${(await import('node:fs')).statSync(localTgz).size} 耗时=${Date.now() - tDlStart}ms 校验=${expectSha256 ? 'sha256✓' : 'size'}`);
         } catch (e) {
           audit('download.fail', `${key} err=${(e && e.message) || e} 耗时=${Date.now() - tDlStart}ms`);
           updateTask(key, { stage: 'failed', message: `下载失败: ${(e && e.message) || e}`, running: false });

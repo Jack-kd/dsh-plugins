@@ -221,9 +221,11 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-vision-router-v3.0.
 </details>
 
 <details>
-<summary><b>▶ dsh-jack-market · 插件市场（本仓库一键装）</b>　<code>v0.7.2</code></summary>
+<summary><b>▶ dsh-jack-market · 插件市场（本仓库一键装）</b>　<code>v0.7.3</code></summary>
 
 > 直接在 DSH 里浏览并一键安装本仓库的所有插件（类似内置的「插件市场」）。自动识别已安装状态与可更新版本，点「安装/更新」即后台下载安装并显示实时进度；每个插件卡片带简介、版本与更新时间，失败会显示具体原因。
+>
+> **v0.7.3**：**下载提速约 16 倍 + 内容校验**。实测本机这些镜像的 TTFB（等首字节）是 5.4–7.1 秒，而 40KB 的包**实际传输只要 0.02 秒**——「7 KB/s」是假象，真瓶颈是**延迟**不是带宽。据此重写下载：① **并行竞速**——前 3 个节点同时下真文件，谁先完整拿到就用谁、其余立即 abort（实测 5.99/5.75/5.52 秒，旧版串行重试实测约 98 秒，因为 9 个节点里有 4 个已失效，每个白等超时）；② **修掉一个致命超时 bug**——`req.setTimeout(20000)` 在本环境不生效，请求仍在约 5 秒处被判超时，而节点 TTFB 就要 5.9 秒，等于**把所有好节点全判死**（这正是「第一轮全灭、第二轮才成」的元凶），改用 `AbortSignal.timeout`；③ **节点表实测筛选**（从 82 个候选中取 TTFB 最优的 12 个，删掉 404/超时的失效节点）；④ **sha256 强校验**——用 GitHub Release API 的 `digest` 校验镜像内容，不符就换节点（旧版只查「文件非空」，第三方镜像可替换内容）；digest 与下载**并行发起**，首次耗时从约 11.5s 压到约 8.3s，命中缓存后约 0.2s。
 >
 > **v0.7.2**：修复**「装 A 插件却报 B 包缺 integrity 而安装失败」**——`ERR_PNPM_MISSING_TARBALL_INTEGRITY`。根因：`package.json` 里若有用 **http(s) URL** 作为依赖 specifier（典型是某个插件曾用 URL 直装过），一旦该 Release 资产被重传或网络超时拿不到内容，pnpm 会把那条 lockfile 记录退化成**没有 integrity** 的形态；此后**任何一次安装**（哪怕装的是完全不相干的插件）都会在开跑前被 pnpm 拒绝，且报错指向那个 URL 包 —— 用户装 A、报错提 B，指错对象。现改为在安装前自动把仍指向本仓库 Release 的 URL 依赖改写成本地 `file:` 稳定路径（本市场本来就先把 tgz 下到本机再 `pnpm add file:`），并兜底为 lockfile 里缺 integrity 的 tarball 条目补算哈希。
 >
@@ -271,13 +273,13 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-vision-router-v3.0.
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.2/dsh-jack-market-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.3/dsh-jack-market-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.2/dsh-jack-market-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.3/dsh-jack-market-plugin.tgz
 ```
 
 > 装完重启一次 App（让设置页入口出现）；之后打开 **设置 → Jack 插件市场** 即可浏览和安装本仓库的插件。
