@@ -13,12 +13,17 @@ Jack-kd 的 DSH 插件市场：直接从本仓库浏览可安装的插件，并�
 ## 安装
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.1/dsh-jack-market-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.2/dsh-jack-market-plugin.tgz
 ```
 
 ## 使用
 
 装完重启一次 App（让设置页入口出现），然后打开 **设置 → Jack 插件市场**。列出插件点「安装」即可一键安装；已安装的插件显示「已安装」，若仓库有新版本则显示蓝色「更新」按钮，点击即升级。
+
+> **v0.7.2 修复「装 A 插件却报 B 包缺 integrity 而失败」**
+> - **症状**：点某插件「安装」，进度到 100% 后失败，报 `ERR_PNPM_MISSING_TARBALL_INTEGRITY Cannot install package "<另一个插件>"` —— 装的是 A、报错提的却是 B。
+> - **根因**：`package.json` 里若存在用 **http(s) URL** 作 specifier 的依赖（典型是某插件曾用 URL 直装过），一旦该 Release 资产被重传或网络超时，pnpm 会把它在 `pnpm-lock.yaml` 里的记录退化成**没有 `integrity`** 的形态。此后 pnpm 在**任何**安装开跑前都会因这条坏记录直接拒绝，并把错误指向这个 URL 包。
+> - **修复**：安装前自动把仍指向本仓库 Release 的 URL 依赖改写成**本地 `file:` 稳定路径**（本市场本来就会先把 tgz 下到 `.dsh-market/pkgs/` 再 `pnpm add file:`，URL specifier 属于历史残留）；同时兜底为 lockfile 里其余缺 `integrity` 的 tarball 条目补算 sha512，补不了则整条移除交由 pnpm 重解析。
 
 > **v0.7.1 装上即启用 + 深色模式按钮可读**
 > - **「装完还要去插件页面手动启用一次」**（根因）：本市场走的是 `pnpm add`，而 pnpm 只写 `package.json` 的 `dependencies`（装到磁盘），**从不写 `dsh.profile.bundles`**（进运行时）。官方安装器装完会补一步 `selectBundle(name, true)`，本市场没有这一步，于是每个插件装完都停在「已安装但未启用」。

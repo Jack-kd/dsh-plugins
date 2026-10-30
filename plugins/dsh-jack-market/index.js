@@ -579,6 +579,142 @@ async function readProfileState(profileDir) {
 }
 
 /**
+ * 自愈 pnpm-lock.yaml 里「tarball 条目缺 integrity」的问题（v0.7.2）。
+ *
+ * 背景：pnpm-lock 的 packages 段若某个 tarball 依赖长这样——
+ *
+ *   foo@https://….tgz:
+ *     resolution: {tarball: https://….tgz}     ← 没有 integrity
+ *
+ * pnpm 会在**任何**一次安装开始前直接拒绝，报
+ * `ERR_PNPM_MISSING_TARBALL_INTEGRITY Cannot install package "foo"`。
+ * 它拒的是 foo，但用户正在装的是另一个插件 —— 报错完全指错对象。
+ *
+ * 这个函数扫一遍 lockfile：
+ *   * `file:` 指向本机文件 → 读文件算 sha512 补进 integrity；
+ *   * 其它 URL → 用已下载的本地副本（.dsh-market/pkgs 里的同名 tgz）补；
+ *   * 都补不了 → 整条移除（让 pnpm 重新解析），并计入 removed。
+ *
+ * 只动「缺 integrity」的条目，其它内容原样保留；无变化则不写盘。
+ *
+ * @returns {Promise<{ changed: boolean, fixed: number, removed: number }>}
+ */
+async function healLockfileIntegrity(profileDir) {
+  const fs = await import('node:fs');
+  const fsp = await import('node:fs/promises');
+  const path = await import('node:path');
+  const crypto = await import('node:crypto');
+
+  const lockPath = path.join(profileDir, 'pnpm-lock.yaml');
+  const manifestPath = path.join(profileDir, 'package.json');
+  if (!fs.existsSync(lockPath) || !fs.existsSync(manifestPath)) {
+    return { changed: false, fixed: 0, removed: 0, rewritten: 0 };
+  }
+  const crypto512 = (buf) => 'sha512-' + crypto.createHash('sha512').update(buf).digest('base64');
+  const pkgsDir = path.join(profileDir, '.dsh-market', 'pkgs');
+
+  // ── 真正的病根：`package.json` 里用 **http(s) URL** 作为依赖 specifier ──
+  //
+  // pnpm 对 URL specifier 会写成 `foo@<url>: resolution: {integrity: …, tarball: <url>}`
+  // 起初还好；但一旦该 Release 资产被重传/替换，或网络超时导致 pnpm 拿不到
+  // 内容，它就会把这条记录退化成**没有 integrity** 的形态。之后每一次安装
+  // （哪怕装的是完全不相干的插件）都会在开跑前直接抛：
+  //
+  //   ERR_PNPM_MISSING_TARBALL_INTEGRITY
+  //   Cannot install package "<那个 URL 包>": its lockfile entry has no "integrity"
+  //
+  // 报错指的是 A，用户装的是 B —— 指错对象，极难排查。
+  //
+  // 本市场本来就先把 tgz 下到本机固定路径、再用 `pnpm add file:…`，
+  // 所以正确形态应始终是 `file:` 本地引用。这里把 manifest 里仍指向本仓库
+  // Release 的 URL 依赖改写成本地 file: 路径；本地副本不存在就跳过（不动它）。
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  let rewritten = 0;
+  const deps = manifest?.dependencies;
+  if (deps && typeof deps === 'object') {
+    for (const [name, spec] of Object.entries(deps)) {
+      if (typeof spec !== 'string' || !/^https?:\/\//i.test(spec)) continue;
+      if (!/\/releases\/download\/[^/]+\/([^/]+)\.tgz(?:[?#]|$)/i.test(spec)) continue;
+      const m = /\/releases\/download\/[^/]+\/([^/]+)\.tgz(?:[?#]|$)/i.exec(spec);
+      const base = m ? m[1] : name.replace(/^@[^/]+\//, '') + '-plugin';
+      const cands = [
+        path.join(pkgsDir, `${base}.tgz`),
+        path.join(pkgsDir, `${name.replace(/^@[^/]+\//, '')}-plugin.tgz`),
+      ];
+      const local = cands.find((c) => fs.existsSync(c));
+      if (!local) continue;                       // 本地没副本就不动，避免制造坏引用
+      deps[name] = 'file:' + local;
+      rewritten += 1;
+    }
+    if (rewritten > 0) {
+      const tmpM = manifestPath + '.market-heal';
+      await fsp.writeFile(tmpM, JSON.stringify(manifest, void 0, 2) + '\n', { mode: 0o600 });
+      await fsp.rename(tmpM, manifestPath);
+    }
+  }
+
+  // ── 退而求其次：修 lockfile 里仍缺 integrity 的 tarball 条目 ──
+  // 上面改写后 pnpm 会重新解析，这些坏条目通常会被自然替换掉；但若本轮
+  // 没能改写 manifest（例如本地副本缺失），至少让 lockfile 本身不再致命。
+  const text = fs.readFileSync(lockPath, 'utf8');
+  const lines = text.split('\n');
+  const out = [];
+  let fixed = 0;
+  let removed = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const headMatch = /^(\s{2})([^\s:]+)@(https?:|file:)(\S+):\s*$/.exec(line);
+    if (!headMatch) { out.push(line); continue; }
+
+    const resLine = lines[i + 1] || '';
+    const resMatch = /^(\s{4})resolution:\s*\{([^}]*)\}\s*$/.exec(resLine);
+    if (!resMatch || /\bintegrity\b/.test(resMatch[2])) { out.push(line); continue; }
+
+    const scheme = headMatch[3];
+    const spec = headMatch[4];
+    let integrity = '';
+    try {
+      if (scheme === 'file:') {
+        const abs = spec.startsWith('/') ? spec : path.join(profileDir, spec);
+        if (fs.existsSync(abs)) integrity = crypto512(fs.readFileSync(abs));
+      } else {
+        const name = headMatch[2].replace(/^@[^/]+\//, '');
+        for (const c of [path.join(pkgsDir, `${name}-plugin.tgz`), path.join(pkgsDir, `${name}.tgz`)]) {
+          if (fs.existsSync(c)) { integrity = crypto512(fs.readFileSync(c)); break; }
+        }
+      }
+    } catch { integrity = ''; }
+
+    if (!integrity) {
+      removed += 1;
+      i += 2;
+      continue;
+    }
+
+    out.push(line);
+    out.push(`    resolution: {integrity: ${integrity}, ${resMatch[2].trim()}}`);
+    if (/^\s{4}version:/.test(lines[i + 2] || '')) { out.push(lines[i + 2]); i += 2; }
+    else { i += 1; }
+    fixed += 1;
+  }
+
+  const changed = rewritten > 0 || fixed > 0 || removed > 0;
+  if (rewritten === 0 && (fixed > 0 || removed > 0)) {
+    const next = out.join('\n');
+    const tmp = lockPath + '.market-heal';
+    await fsp.writeFile(tmp, next, { mode: 0o600 });
+    await fsp.rename(tmp, lockPath);
+  }
+  if (changed) {
+    // pnpm 的私锁会覆盖主 lockfile，删掉让它按修好的 manifest 重建。
+    try { await fsp.rm(path.join(profileDir, 'node_modules', '.pnpm', 'lock.yaml'), { force: true }); } catch { /* 无此文件 */ }
+  }
+  return { changed, fixed, removed, rewritten };
+}
+
+
+/**
  * 把一个已安装的包写进 `dsh.profile.bundles`，即「启用」。
  *
  * 复刻官方 dsh-plugin-manager 的 `selectBundle(name, true)` 行为（见
@@ -863,6 +999,35 @@ export function apply(ctx, config) {
 
         // ③ `pnpm add file:<稳定路径>` —— 稳定写 integrity、成功
         updateTask(key, { stage: 'installing', message: '安装中…', running: true });
+
+        // ③-b v0.7.2：安装前先自愈 lockfile。
+        //
+        // 实测踩过的坑（2026-10-30）：profile 的 pnpm-lock.yaml 里只要**任意一条
+        // tarball 依赖缺 integrity**（典型是某个用 URL 装进来的插件，pnpm 写
+        // `resolution: {tarball: ...}` 而漏了 integrity），pnpm 就会在真正开始
+        // 安装前直接抛：
+        //
+        //   ERR_PNPM_MISSING_TARBALL_INTEGRITY
+        //   Cannot install package "<别的包>": its lockfile entry has no "integrity"
+        //
+        // 注意它拒的是**别的包**，用户却在装 A 插件 —— 于是表现为「装 A 失败，
+        // 报错里提到的却是 B」，极难排查。这个坏条目通常由 https 直装
+        // （`pnpm add <github-url>`）产生，而本市场从 URL 装过一次市场自己就会留下。
+        //
+        // 处理：把缺 integrity 的 tarball 条目补算 integrity；补不了的
+        // （远端不可达 / 非本机文件）就整条移除，交给 pnpm 下次重新解析。
+        // 改完若没有任何变化就不写盘，避免无意义抖动。
+        let lockHealed = null;
+        try {
+          lockHealed = await healLockfileIntegrity(dir);
+          audit('lockfile.heal', lockHealed.changed
+            ? `修复 ${lockHealed.fixed} 条、移除 ${lockHealed.removed} 条`
+            : 'lockfile 无需修复');
+        } catch (e) {
+          // 自愈失败不阻断安装：pnpm 自己会报它原本的错误，用户仍能看到真实原因。
+          audit('lockfile.healFail', `${(e && e.message) || e}`);
+        }
+
         const tPnpmStart = Date.now();
         audit('pnpm.spawn', `cmd=pnpm add file:${localTgz} cwd=${dir}`);
         const child = spawn('pnpm', ['add', `file:${localTgz}`], {
