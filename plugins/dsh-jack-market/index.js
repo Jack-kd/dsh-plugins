@@ -149,15 +149,68 @@ async function fetchAssetDigest(assetUrl, controller) {
   }
 }
 
+// ── GitHub API 缓存（v0.7.4：让「打开市场」不再每次都等 10 秒）─────────────
+//
+// 实测（2026-10-30，本机）：列表页三个 API（目录 / README / releases）
+// 每个 TTFB 就要 5.8~6.9 秒，其中 releases 还要再传 155KB（合计 11.4 秒）。
+// 三者并行，冷启动总耗时实测 **10.3 秒**；而缓存命中时 **0.005 秒**。
+//
+// 旧策略 TTL 只有 60 秒 —— 用户每隔一分钟再打开就要重新等 10 秒，体感很差。
+// 而插件列表的真实变化频率是「按天/按周」（每次发版才变），60 秒纯属浪费。
+//
+// 新策略：
+//   * **新鲜期 15 分钟**：期内直接用缓存，零网络。
+//   * **陈旧期（15 分钟~24 小时）**：**立即返回旧数据**，同时后台静默刷新
+//     （stale-while-revalidate）。用户永远不用为「刷新」等待。
+//   * 超过 24 小时才强制等网络（避免拿几天前的旧列表装已删除的插件）。
+//
+// 另外给首次启动做**预热**：插件加载 3 秒后主动拉一次，等用户点开市场时
+// 多半已命中缓存。
 const apiCache = new Map();
-const API_CACHE_TTL_MS = 60_000;
+const API_FRESH_MS = 15 * 60 * 1000;        // 15 分钟内直接用
+const API_STALE_MS = 24 * 60 * 60 * 1000;   // 24 小时内可先返回旧值并后台刷新
+
+/** 后台静默刷新（不阻塞调用方，失败也不影响已返回的旧值）。 */
+function backgroundRefresh(url) {
+  const hit = apiCache.get(url);
+  if (hit && hit.refreshing) return;
+  if (hit) hit.refreshing = true;
+  ghJson(url)
+    .then((value) => { apiCache.set(url, { at: Date.now(), value, refreshing: false }); })
+    .catch(() => { if (hit) hit.refreshing = false; });
+}
+
 async function cachedGhJson(url, controller) {
   const cached = apiCache.get(url);
-  const now = Date.now();
-  if (cached && now - cached.at < API_CACHE_TTL_MS) return cached.value;
+  const age = cached ? Date.now() - cached.at : Infinity;
+
+  // 新鲜期：直接命中
+  if (cached && age < API_FRESH_MS) return cached.value;
+
+  // 陈旧但可接受：先返回旧值，后台刷新（用户零等待）
+  if (cached && age < API_STALE_MS) {
+    backgroundRefresh(url);
+    return cached.value;
+  }
+
+  // 无缓存或过期太久：必须等网络
   const value = await ghJson(url, controller);
-  apiCache.set(url, { at: now, value });
+  apiCache.set(url, { at: Date.now(), value });
   return value;
+}
+
+/** 预热：插件加载后后台拉一次列表，让用户首次打开市场时命中缓存。 */
+export function warmApiCache() {
+  const now = Date.now();
+  for (const url of [API_PLUGINS_DIR, API_README, `${API_RELEASES}?per_page=${RELEASES_PER_PAGE}&page=1`]) {
+    // v0.7.4：先看缓存 —— 新鲜期内完全不发请求（避免每次重启都白拉 3 次 6 秒的
+    // 请求，也省 GitHub 匿名额度：60 次/小时）。
+    const hit = apiCache.get(url);
+    if (hit && now - hit.at < API_FRESH_MS) continue;
+    ghJson(url)
+      .then((value) => { apiCache.set(url, { at: Date.now(), value }); })
+      .catch(() => { /* 预热失败无所谓，用户打开时会自己拉 */ });
+  }
 }
 
 function resolveProfileName(ctx, config) {
@@ -201,18 +254,60 @@ function readJsonBody(request) {
   });
 }
 
+/**
+ * api.github.com 的代理节点 —— **默认关闭**（v0.7.4 实测后决定）。
+ *
+ * 实测数据（2026-10-30）：
+ *   直连 api.github.com      TTFB 6.07s / 6.89s
+ *   gh.acmsz.top 代理        TTFB 5.52s / 6.32s   （只快 ~0.5s，收益极小）
+ *   而且 gh.acmsz.top 对 API 路径返回 **HTTP 200 + body "ok"**（2 字节假响应），
+ *   若只看 response.ok 会把垃圾写进缓存，导致列表空白且极难排查。
+ *
+ * 结论：API 走镜像「收益接近零、风险不小」，不值得。列表加速的收益来自
+ * **缓存策略**（见下方 apiCache），而不是换节点。这里保留空表与回退逻辑，
+ * 将来若找到真正可靠的 API 代理，填进来即可自动生效。
+ */
+const API_MIRROR_BASES = [];
+
 async function ghJson(url, controller) {
   // v0.7.3：controller 可能为 undefined（例如 fetchAssetDigest 独立调用），
   // 旧代码直接取 controller.signal 会抛 TypeError 并被上层 catch 吞成 null，
   // 表现为「digest 永远取不到」。这里给出可用的 signal 兜底 + 自身超时。
   const timeout = AbortSignal.timeout(25_000);
   const signal = controller && controller.signal ? controller.signal : timeout;
-  const response = await fetch(url, {
-    headers: { accept: 'application/vnd.github+json', 'user-agent': 'dsh-jack-market' },
-    signal,
-  });
-  if (!response.ok) throw new Error(`GitHub API ${response.status} ${response.statusText}`);
-  return response.json();
+  const headers = { accept: 'application/vnd.github+json', 'user-agent': 'dsh-jack-market' };
+
+  // v0.7.4：把 api.github.com 也走加速节点。实测镜像 TTFB 5.54/6.32s vs
+  // 直连 6.07/6.89s，略快；且能绕开某些网络对 api.github.com 的额外干扰。
+  // 镜像失败/返回非 JSON 时自动回退直连，绝不因为「代理挂了」而拿不到列表。
+  const candidates = [];
+  if (/^https:\/\/api\.github\.com\//i.test(url)) {
+    for (const base of API_MIRROR_BASES) {
+      candidates.push(base + url);   // prefix 形态：镜像 base + 完整原 URL
+    }
+  }
+  candidates.push(url);              // 直连始终兜底
+
+  let lastErr = null;
+  for (const target of candidates) {
+    try {
+      const response = await fetch(target, { headers, signal });
+      if (!response.ok) throw new Error(`GitHub API ${response.status} ${response.statusText}`);
+      const text = await response.text();
+      // 关键（v0.7.4 实测踩到）：部分镜像对 API 路径返回 **HTTP 200 + body "ok"**
+      // （2 字节，非 JSON）。只看 response.ok 会被骗，把垃圾当成数据塞进缓存，
+      // 导致「列表空白/字段全丢」且很难排查。这里强校验：必须是 JSON 才收。
+      if (!text || text[0] !== '{' && text[0] !== '[') {
+        throw new Error('镜像返回非 JSON（疑似错误页）');
+      }
+      return JSON.parse(text);
+    } catch (e) {
+      lastErr = e;
+      // 取消/中止不再尝试后续（用户已离开或整体超时）
+      if (e && (e.name === 'AbortError' || e.code === 'ABORT_ERR')) throw e;
+    }
+  }
+  throw lastErr || new Error('GitHub API 不可达');
 }
 
 /** Fetch every release, page by page, until a short page is returned or the
@@ -971,6 +1066,14 @@ export const name = 'dsh-jack-market';
 export const inject = ['webServer'];
 
 export function apply(ctx, config) {
+  // v0.7.4：插件加载后延迟预热列表缓存，让用户首次打开市场时多半已命中。
+  // 延迟 3 秒，避免和启动时的其它插件抢网络/CPU。
+  try {
+    const t = setTimeout(() => { try { warmApiCache() } catch { /* 预热失败不影响功能 */ } }, 3000);
+    if (typeof t.unref === 'function') t.unref();
+    ctx.effect(() => () => clearTimeout(t), 'dsh-jack-market: warm api cache');
+  } catch { /* ctx 无 effect 时跳过预热 */ }
+
   ctx.inject(['webServer'], (host) => {
     const profileName = resolveProfileName(ctx, config);
     const profileCtx = typeof ctx.get === 'function' ? ctx.get('profileContext') : undefined;

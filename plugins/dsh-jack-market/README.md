@@ -13,12 +13,18 @@ Jack-kd 的 DSH 插件市场：直接从本仓库浏览可安装的插件，并�
 ## 安装
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.3/dsh-jack-market-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.4/dsh-jack-market-plugin.tgz
 ```
 
 ## 使用
 
 装完重启一次 App（让设置页入口出现），然后打开 **设置 → Jack 插件市场**。列出插件点「安装」即可一键安装；已安装的插件显示「已安装」，若仓库有新版本则显示蓝色「更新」按钮，点击即升级。
+
+> **v0.7.4 插件列表加载提速（不再每次等 10 秒）**
+> - **诊断**：列表页要拉三个 `api.github.com` 接口，**每个 TTFB 就 5.8–6.9 秒**（目录 5.98s / README 6.79s / releases 7.38s），其中 releases 还要再传 **155KB**（合计 11.4s）。三者并行，冷启动实测 **10.3 秒**；缓存命中 **0.005 秒**。
+> - **旧缓存 TTL 只有 60 秒**：用户每分钟重开市场就要重新等 10 秒。
+> - **新策略**：① 新鲜期 **15 分钟**（期内零网络）；② 陈旧期（15 分钟–24 小时）**先返回旧数据、后台静默刷新**（stale-while-revalidate），用户永不为刷新等待；③ **启动 3 秒后预热**，且预热前先查缓存，避免每次重启都白拉 3 次 6 秒请求（也省 GitHub 匿名 60 次/小时的额度）。
+> - **关于加速节点**：实测 `gh.acmsz.top` 代理 `api.github.com` 只快约 0.5s（5.52s vs 6.07s），收益接近零；更关键的是它对 API 路径返回 **`HTTP 200` + body `"ok"`（2 字节假响应）**，只看 `response.ok` 会把垃圾写进缓存导致列表空白且极难排查。因此**默认关闭 API 镜像**，保留回退逻辑，并给 JSON 解析加内容校验。
 
 > **v0.7.3 下载提速约 16 倍 + sha256 校验**
 > - **诊断**：实测这些镜像的 TTFB（等首字节）5.4–7.1 秒，而 40KB 包的**实际传输只要 0.02 秒**——所谓「7 KB/s」是把 5 秒等待摊进了速度里，真瓶颈是**延迟**不是带宽。所以「多线程」没用（实测同节点 8 线程 0.97x、跨节点 8 线程 7.27s，都比单线程慢）。
