@@ -2,6 +2,18 @@
 
 **gh-accel 与 dl-accel 合二为一**：一个插件同时负责 GitHub 与任意站点的下载/上传加速。
 
+## v2.10.0 · 修复胶囊实时速度 / 进度显示（进度不再卡 / 跳 / 闪完成）
+
+修复胶囊「进度要么卡着不动、要么一下跳一大节、要么卡一会直接显示完成」的根因——问题不在渲染端，而在**进度数据的取值方式**：
+
+- **速度改用瞬时采样（滑动窗口增量）+ EMA 平滑**：旧实现用「全程累计 ÷ 全程耗时」算平均速度，会被选路空窗（TTFB 5~9s 无字节）稀释、被多线程 chunk 积聚拉平——表现为「刚起来很慢像卡住，然后突然跳一大节」。现在取**距上次上报的字节增量 / 时间增量**，并对瞬时值做 **EMA 平滑**（α≈0.5），既如实反映当前速率、又消除「0 ↔ 峰值」的剧烈锯齿。停顿（剩最后一个慢分片被源 hold）时**保留最近速率**，不再指数衰减到 1KB/s 造成「好像卡死」的误导。
+- **分片细粒度化（单片 ≤2MB）根治进度台阶**：旧的 `seg = size/threads` 单片可达数十 MB，各分片一次性完成会使 `done` 呈「停很久→突跳」阶梯。现在 `seg = min(size/threads, 2MB)`，8 个并发 worker 各持循环、下完一小片立刻取下片，`done` 随每片完成均匀增长，单慢片也不再拖住整体进度。
+- **总量未知时不再假满 100%**：旧逻辑在小文件/探测拿不到 `content-length` 时把 `totalB` 填成实际字节，导致 `done/total` 恒等于 100%，胶囊「卡一下就显示下载完成」。现在总量未知时进度走**转圈（indeterminate）**，决不假装下满。
+- **已下载文本与圆环同节奏平滑**：旧实现圆环用 rAF 插值、但 `已下载/总量` 文本直接显示原始字节，二者节拍不同步（数字跳、圆环慢慢追），视觉割裂。现在文本用插值比例反推，与圆环完全同步。
+- **收尾精确抵达目标**：插值逼近系数 0.35→0.5、收敛阈值 0.05→0.001，圆环更快贴合且最终精确到 100%，不再「永远差一格然后突跳一下」。
+
+> 纯进度上报/分片粒度优化，不改变选路策略与容量。实测 42MB 大文件进度由「停 2~6s 跳一次」变为「每 ~200ms 平滑增长」。安装后需重启 DSH 进程生效（插件代码无热重载）。
+
 ## v2.9.2 · 大文件按带宽分层选路 + 归档通道自动降级
 
 针对「部分超大官方资产在镜像全 404」与「大文件选错慢镜像」两个实测问题优化：
@@ -70,7 +82,7 @@
 
 > 安装：
 > ```bash
-> dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.9.2/gh-accel-plugin.tgz
+> dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.10.0/gh-accel-plugin.tgz
 > ```
 
 ## v2.6.1 · 胶囊刷新更顺滑
@@ -84,7 +96,7 @@
 
 > 安装：
 > ```bash
-> dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.9.2/gh-accel-plugin.tgz
+> dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.10.0/gh-accel-plugin.tgz
 > ```
 
 ## v2.6.0 · 胶囊实时速度 / 进度显示（方案 A）
@@ -100,7 +112,7 @@
 
 > 安装：
 > ```bash
-> dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.9.2/gh-accel-plugin.tgz
+> dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.10.0/gh-accel-plugin.tgz
 > ```
 
 ## v2.5.2 · 修复系统提示从未注入 + 补全 HF/npm 全局镜像
@@ -240,7 +252,7 @@ https://registry.npmmirror.comhttps://registry.npmjs.org/typescript/...
 ## 安装
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.9.2/gh-accel-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.10.0/gh-accel-plugin.tgz
 ```
 
 或「插件管理 → 添加插件」粘贴同一地址。

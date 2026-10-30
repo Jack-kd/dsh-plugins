@@ -72,9 +72,12 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/chat-keeper-mobile-v1.2
 </details>
 
 <details>
-<summary><b>▶ 加速器 · 下载加速（GitHub + 通用，合并版）</b>　<code>v2.9.2</code></summary>
+<summary><b>▶ 加速器 · 下载加速（GitHub + 通用，合并版）</b>　<code>v2.10.0</code></summary>
 
 > GitHub 与任意站点的下载/上传加速：自动测速直连与多个加速镜像、**谁快选谁**，大文件多线程分段下载；`github_accel_download` / `github_accel_clone` / `github_accel_push` / `url_accel_download` / `url_accel_probe` 五件套。下载时输入框上方显示实时速度与进度胶囊。
+>
+> **v2.10.0**：修复胶囊**实时速度/进度显示**——速度改为瞬时采样（滑动窗口增量），不再被选路空窗稀释或 chunk 积聚拉平（告别「卡着不动 / 一下跳一大节」）；总量未知时进度走转圈、不再假满 100%（告别「卡一会直接显示下载完成」）；已下载文本与圆环用同一插值比例同步平滑、收尾精确抵达目标（告别「数字跳/圆环慢追」与「永远差一格突然跳」。安装后需重启 DSH 进程生效。
+>
 >
 > **v2.8.0**：**默认档 `smart` 改为公平比较（谁快选谁）**——直连与镜像用同一把尺子（≥40KB/s 即参与比较），不再对直连放水（旧 120KB/s）或对镜像严苛（旧 150KB/s）；「镜像其实更快但没到门槛」的边界情况修正为选镜像。`mirror`/`direct` 显式档不变。
 >
@@ -97,13 +100,13 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/chat-keeper-mobile-v1.2
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.9.2/gh-accel-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.10.0/gh-accel-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.9.2/gh-accel-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.10.0/gh-accel-plugin.tgz
 ```
 
 > 镜像（ghfast.top 等）是公共第三方服务、有失效风险；可在配置里用 `mirrors`/`rules` 自行增删站点规则。下载大文件建议指定绝对 `out` 路径。

@@ -82,8 +82,10 @@
 
           // 实时速度/进度：轮询 host /gh-accel/progress
           const [progress, setProgress] = React.useState(null);
-          // 环形圈平滑插值：真实进度每 200ms 才更新一格，用 rAF 每帧逼近目标，
+          // 环形圈 + 数字平滑插值：真实进度每 200ms 才更新一格，用 rAF 每帧逼近目标，
           // 让「转圈 + 已下载/总量」视觉上连续丝滑，不看数据更新节奏。
+          // 系数 0.5：比旧 0.35 更快贴合，避免「慢慢追不上」的拖沓；membership 用够小的
+          // 阈值(0.001)而非 0.05，保证收尾精确抵达 target 而非留下一小格差再突跳。
           const [dispPct, setDispPct] = React.useState(0);
           React.useEffect(() => {
             if (!active || !progress || !(progress.totalB > 0)) { setDispPct(0); return; }
@@ -92,8 +94,8 @@
             const step = () => {
               setDispPct((p) => {
                 const diff = target - p;
-                if (Math.abs(diff) < 0.05) return target;
-                return p + diff * 0.35;
+                if (Math.abs(diff) < 0.001) return target;
+                return p + diff * 0.5;
               });
               raf = requestAnimationFrame(step);
             };
@@ -143,7 +145,9 @@
           if (direction === 'upload') {
             line2 = '↑ 推送中…';
           } else {
-            // 下载态：速度（有则显示）+ 分式（拿到总量才显示）
+            // 下载态：速度（有则显示）+ 分式（拿到总量才显示）。
+            // 已下载字节用「插值后的比例 × 总量」反推，让文本与圆环同节奏平滑，
+            // 不再让 raw doneB 一下跳一大格而圆环却慢慢追（视觉割裂）。
             let speedText = null;
             if (progress) {
               if (progress.kbPerSec >= 1024) {
@@ -152,12 +156,13 @@
                 speedText = `↓ ${Math.round(progress.kbPerSec)} KB/s`;
               }
             }
+            const smoothDoneB = hasProgress ? Math.round((pct / 100) * progress.totalB) : 0;
             if (speedText && hasProgress) {
-              line2 = `${speedText} · ${fmtBytes(progress.doneB)}/${fmtBytes(progress.totalB)}`;
+              line2 = `${speedText} · ${fmtBytes(smoothDoneB)}/${fmtBytes(progress.totalB)}`;
             } else if (speedText) {
               line2 = speedText;
             } else if (hasProgress) {
-              line2 = `↓ · ${fmtBytes(progress.doneB)}/${fmtBytes(progress.totalB)}`;
+              line2 = `↓ · ${fmtBytes(smoothDoneB)}/${fmtBytes(progress.totalB)}`;
             } else {
               line2 = '↓ 下载中…';
             }

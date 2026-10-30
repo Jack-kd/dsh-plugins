@@ -570,15 +570,27 @@ export async function runDownload(url, {
   // 已下载字节累计（多线程分片并发时各分片 onBytes 并发回调，用闭包共享计数）
   let done = 0;
   let lastEmit = 0;
+  let lastDone = 0;
+  let emaKbps = 0; // 指数移动平均速度，平滑多线程分片离散完成导致的锯齿
+  // 瞬时速度：取「距上次上报的字节增量 / 时间增量」，而非全程平均（done/elapsed）。
+  // 全程平均会被选路空窗(5~9s)和旧低速稀释；而原始瞬时值在多线程分片并发下
+  // 会因「某几个分片瞬间完成/某几个被源 hold 住」而在 0 与峰值间剧烈锯齿。
+  // 这里对瞬时值再做 **EMA 平滑**（α≈0.5）：既如实反映当前速率，又不像全程平均
+  // 那样滞后、也不像纯瞬时那么跳，胶囊呈现为平缓稳定的曲线。
   const reportProgress = (total) => {
     if (typeof onProgress !== 'function') return;
     const now = Date.now();
     // 节流：至少 200ms 上报一次，让胶囊进度/速度更顺滑（200ms 仍远低于下载压力）
     if (now - lastEmit < 200 && done < total) return;
+    const dt = Math.max(now - lastEmit, 1);
+    const dBytes = Math.max(done - lastDone, 0);
     lastEmit = now;
-    const elapsed = Math.max(now - t0, 1) / 1000;
-    const kbPerSec = Math.round(done / Math.max(elapsed, 0.01) / 1024);
-    onProgress({ doneB: done, totalB: total, kbPerSec });
+    lastDone = done;
+    const rawKbps = Math.round(dBytes / (dt / 1000) / 1024);
+    // EMA 只在确实有字节增量时更新；停顿（raw=0）时保持最近速率，避免
+    // 「只剩最后一个慢分片」时速度指数衰减到 1KB/s 造成「好像卡死」的误导。
+    if (rawKbps > 0) emaKbps = emaKbps === 0 ? rawKbps : Math.round(emaKbps + (rawKbps - emaKbps) * 0.5);
+    onProgress({ doneB: done, totalB: total, kbPerSec: emaKbps });
   };
   const sumBytes = (n) => { done += n; };
   const rule = mirror
@@ -632,10 +644,12 @@ export async function runDownload(url, {
           lastErr = new Error(`下载失败: ${t}`);
           continue;
         }
-        // 下载完成：上报 100%（进度收尾）
+        // 下载完成：上报进度收尾。totalB 仅在 size 已知时填 size（进度真实到 100%）；
+        // size 未知时填 0，让客户端走「总量未知」的转圈态，避免 doneB/totalB 假满 100%
+        // 造成「卡一下就显示下载完成」的错觉。
         stopReporter();
         const fin = fs.existsSync(out) ? fs.statSync(out).size : done;
-        if (typeof onProgress === 'function') onProgress({ doneB: fin, totalB: size || fin, kbPerSec: 0 });
+        if (typeof onProgress === 'function') onProgress({ doneB: fin, totalB: size || 0, kbPerSec: 0 });
         return summarize(out, t === url ? 'direct' : t, size, t0, rule);
       } catch (e) {
         lastErr = e;
@@ -645,7 +659,13 @@ export async function runDownload(url, {
     throw lastErr || new Error('download failed');
   }
 
-  const seg = Math.max(1, Math.floor(size / threads));
+  // 细粒度分片：目标单片 ≤ SEG_MAX，让 8 个并发 worker 连续快速消费小片。
+  // 旧实现 seg=size/threads（单片可达数十 MB），各 worker 大块一次性完成，
+  // 进度/速度随单片的离散完成而「停很久→突跳」；现在 8 个 worker 各持循环、
+  // 下完一片立刻取下片（mapLimit 的 worker 忙则连续取），done 每完成一小片就
+  // 上报一次而均匀增长，单个慢片也不再拖住整体进度。
+  const SEG_MAX = 2 * 1024 * 1024; // 单片上限 2MB（Range 请求开销与进度细腻度的平衡）
+  const seg = Math.min(Math.max(1, Math.floor(size / threads)), SEG_MAX);
   const ranges = [];
   for (let s = 0; s < size; s += seg) ranges.push([s, Math.min(s + seg - 1, size - 1)]);
   const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'ghaccel-'));
