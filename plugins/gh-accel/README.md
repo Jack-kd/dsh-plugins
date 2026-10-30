@@ -2,6 +2,19 @@
 
 **gh-accel 与 dl-accel 合二为一**：一个插件同时负责 GitHub 与任意站点的下载/上传加速。
 
+## v2.9.0 · 选路提速（TTFB 竞速 + 死镜像淘汰 + 连接复用）
+
+针对「点击下载半天不动」的延迟主导场景（国内各节点 TTFB 实测 5~7s，带宽不是瓶颈）优化选路与连接，小文件下载实测 **~4.5× 提速**：
+
+- **带宽测速 → TTFB 竞速（先到先得）**：旧版用 `Promise.allSettled` 并发测带宽、**等所有候选收齐**才选，最慢/超时的死镜像决定总耗时，慢到十几秒。v2.9.0 改为并发发起所有候选，**谁先返回有效响应头谁直接胜出**（Range=bytes=0-0 最小探测），其余探针立即收场。
+- **果断淘汰死镜像**：连接失败/超时/4xx 的镜像在竞速中直接出局，不再拖满预算。浪费在等待上的时间归零。
+- **获胜 socket 复用（关键提速点）**：探测用极小 Range 拿响应头后**同步排空 1 字节响应体**，让 socket 干净回到 keep-alive 池 → 后续真实下载**直接复用这条已建连接**（~0.2s），而不是再开一条冷连接再吃一遍 5~7s TTFB。此前小文件下载因此被拖到 26s，现在 ≈ 一次 TTFB（~6s）即完成。
+- **竞速后立即 abort 其余探针**：免得死镜像的 TLS 握手一直占着 HTTP agent 的 socket，影响后续下载连接复用。
+- **探测器超时改用 `AbortSignal.timeout`**：旧 `req.setTimeout` 在本环境定时不准、会提前 ~5s 触发杀掉连接（TTFB 5.4s+，全被误判为超时）。统一为可靠的中止信号，并把小文件探测预算从 2.5s 提到 ≥ 最大 TTFB，避免所有镜像在首字节到来前就被判超时误回退直连。
+- **镜像清单换成实测按 TTFB 排序**（与「🛒 应用商店」共享结论），`gh.acmsz.top` 等实测可用的放前面。
+
+> 说明：这些改进同时惠及 `smart`/`direct` 档；`mirror`/`direct` 显式档仍保留原语义。
+
 ## v2.8.0 · 公平比较（谁快选谁）
 
 **默认档 `smart` 的阈值改为公平**：直连与镜像用**同一把尺子**（≥40 KB/s 即参与比较），**谁快选谁**。
@@ -35,7 +48,7 @@
 
 > 安装：
 > ```bash
-> dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.8.0/gh-accel-plugin.tgz
+> dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.9.0/gh-accel-plugin.tgz
 > ```
 
 ## v2.6.1 · 胶囊刷新更顺滑
@@ -49,7 +62,7 @@
 
 > 安装：
 > ```bash
-> dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.8.0/gh-accel-plugin.tgz
+> dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.9.0/gh-accel-plugin.tgz
 > ```
 
 ## v2.6.0 · 胶囊实时速度 / 进度显示（方案 A）
@@ -65,7 +78,7 @@
 
 > 安装：
 > ```bash
-> dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.8.0/gh-accel-plugin.tgz
+> dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.9.0/gh-accel-plugin.tgz
 > ```
 
 ## v2.5.2 · 修复系统提示从未注入 + 补全 HF/npm 全局镜像
@@ -205,7 +218,7 @@ https://registry.npmmirror.comhttps://registry.npmjs.org/typescript/...
 ## 安装
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.8.0/gh-accel-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.9.0/gh-accel-plugin.tgz
 ```
 
 或「插件管理 → 添加插件」粘贴同一地址。

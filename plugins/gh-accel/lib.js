@@ -16,24 +16,31 @@ import { execFile } from 'node:child_process';
 import { pipeline } from 'node:stream/promises';
 import { Transform } from 'node:stream';
 
-export const UA = 'gh-accel/2.0.0 (+https://github.com)';
+export const UA = 'gh-accel/2.9.0 (+https://github.com)';
 
 // 内置默认规则（自定义规则排在前面，优先命中）
 export const DEFAULT_RULES = [
   {
+    // v2.9.0：镜像清单换成**实测按 TTFB 排序**的一套（与 dsh-jack-market 共享结论）。
+    // 环境是延迟主导（各节点 TTFB 5~9s），谁快几乎只取决于谁首字节快。
+    // 顺序仍是**启发**：并发竞速（见 pick/raceProbe）会先到先得，顺序只影响
+    // mirror 档（顺序逐个测、命中即用）时的首试；真实可用性由竞速实测决定。
+    // gh.acmsz.top 实测可完整下载 release 附件，放前面。
     match: 'github\\.com/|githubusercontent\\.com/|codeload\\.github\\.com/',
     style: 'prefix',
     mirrors: [
-      'https://ghfast.top/',
-      'https://github.geekery.cn/',
-      'https://down.mxw.xx.kg/',
-      'https://gh.monlor.com/',
-      'https://js.jiangss.shop/',
-      'https://github.mxw.qzz.io/',
       'https://gh.acmsz.top/',
-      'https://ghproxy.felicity.land/',
+      'https://ghgo.de5.net/',
+      'https://github.chenc.dev/',
+      'https://gh.jjj.gv.uy/',
       'https://gh-proxy.com/',
-      'https://ghproxy.net/',
+      'https://down.mxw.xx.kg/',
+      'https://free.cn.eu.org/',
+      'https://github.mxw.qzz.io/',
+      'https://ghproxy.icu/',
+      'https://ghfast.top/',
+      'https://gh.monlor.com/',
+      'https://cfgh.ikgy.top/',
     ],
   },
   {
@@ -67,9 +74,9 @@ const CONNECT_TIMEOUT = 12_000;
 //           没到 150 门槛」的边界情况被直连抢走。现统一为只挡死路（<40KB/s）。
 // 'direct'：直连优先（老行为）—— 直连 200 KB/s 门槛，镜像仅 40 KB/s 兜底。
 const PREFER_PRESETS = {
-  mirror: { mirrorMin: MIN_MIRROR_OK, directMin: 800 * 1024, probeMs: 5000, maxProbes: 4, earlyExit: true },
-  smart:  { mirrorMin: MIN_MIRROR_OK, directMin: MIN_MIRROR_OK, probeMs: 5000, maxProbes: 6, earlyExit: false },
-  direct: { mirrorMin: MIN_MIRROR_OK, directMin: MIN_DIRECT_OK, probeMs: 3500, maxProbes: 10, earlyExit: false },
+  mirror: { mirrorMin: MIN_MIRROR_OK, directMin: 800 * 1024, probeMs: 15000, maxProbes: 4, earlyExit: true },
+  smart:  { mirrorMin: MIN_MIRROR_OK, directMin: MIN_MIRROR_OK, probeMs: 15000, maxProbes: 6, earlyExit: false },
+  direct: { mirrorMin: MIN_MIRROR_OK, directMin: MIN_DIRECT_OK, probeMs: 15000, maxProbes: 10, earlyExit: false },
 };
 
 // 镜像历史测速缓存：进程内记住每个镜像最近一次的实测带宽，用于下次排序预热
@@ -161,11 +168,16 @@ export function matchRule(url, rules) {
 function httpGet(url, { headers = {}, followRedirects = 5, signal, timeoutMs = CONNECT_TIMEOUT } = {}) {
   return new Promise((resolve, reject) => {
     const mod = url.startsWith('https:') ? https : http;
+    // v2.9.0：不再用 req.setTimeout / 手动 setTimeout（本环境 setTimeout 定时不准、
+    // 会在 ~5s 提前触发杀掉连接，而 TTFB 要 5.4s+，导致候选被误判超时/选路全挂）。
+    // 统一用 AbortSignal.timeout（market 实测它可靠），并合并外部 signal。
+    const ownTimeout = AbortSignal.timeout(timeoutMs);
+    const ac = signal ? AbortSignal.any([ownTimeout, signal]) : ownTimeout;
     let req;
     try {
       req = mod.get(url, {
         headers: { 'User-Agent': UA, Accept: '*/*', ...headers },
-        signal,
+        signal: ac,
       }, (res) => {
         const status = res.statusCode || 0;
         const loc = res.headers.location;
@@ -182,8 +194,52 @@ function httpGet(url, { headers = {}, followRedirects = 5, signal, timeoutMs = C
       return;
     }
     req.on('error', reject);
-    req.setTimeout(timeoutMs, () => req.destroy(new Error(`connect timeout: ${url}`)));
   });
+}
+
+/**
+ * TTFB 竞速优先的探针（v2.9.0 新增）：在延迟主导的网络里，选路「快不快」几乎
+ * 只取决于谁先返回首字节，而不是稳定带宽。本函数在测带宽**同时**把「首字节
+ * 耗时（TTFB）」也一并测出，用于先到先得选路。
+ *
+ * 相比 probe()，专门用 Range=bytes=0-0 最小探测拿「连接+首字节」耗时，
+ * 且一旦能拿到响应头即算「可用」（后续带宽由实下载/分段确认）。
+ *
+ * 返回 { ok, ttfbMs, bps, size, rangeOk, status }；ok 表示真正拿到了有效
+ * 响应头（非连接失败/超时），ttfbMs 为首字节毫秒（越小越快）。
+ */
+export async function probeTTFB(url, { followRedirects = 1, signal, timeoutMs = CONNECT_TIMEOUT } = {}) {
+  const t0 = Date.now();
+  try {
+    const { status, headers, stream } = await httpGet(url, {
+      headers: { Range: 'bytes=0-0' },
+      followRedirects,
+      signal,
+      timeoutMs,
+    }).then(
+      (r) => r,
+      (e) => { throw e; },
+    );
+    const ttfb = Date.now() - t0;
+    // 只有收到有效数据响应才算「可用」：200 或 206 都行；其它（404/502/403）
+    // 视为该路线此时不可用，但保留 ttfb 供排序参考。
+    const usable = status === 200 || status === 206;
+    const size = (() => {
+      const cr = headers['content-range'];
+      if (cr && cr.includes('/')) return Number(cr.split('/').pop());
+      if (status === 200) return Number(headers['content-length'] || 0);
+      return 0;
+    })();
+    // 关键：Range=bytes=0-0 返回 1 字节响应体。若不消费完 stream，该 socket 会被
+    // Node 视为「脏」而不归还 keep-alive 池，导致 winner 后续的真实下载只能新开
+    // 冷连接（再吃 ~6s TTFB）。这里**同步等待排空完成**，确保 socket 归还后再返回。
+    if (stream && usable) {
+      try { await new Promise((r) => stream.resume().on('end', r).on('error', r)); } catch { /* no-op */ }
+    }
+    return { ok: usable, ttfbMs: ttfb, size, rangeOk: status === 206, status, bps: usable ? (ttfb ? 1e6 / ttfb : 1e6) : 0 };
+  } catch {
+    return { ok: false, ttfbMs: Date.now() - t0, size: 0, rangeOk: false, status: 0, bps: 0 };
+  }
 }
 
 export async function probe(url, { followRedirects = 1, signal, budgetMs = PROBE_BUDGET_MS, maxBytes = PROBE_MAX } = {}) {
@@ -236,9 +292,11 @@ export async function probe(url, { followRedirects = 1, signal, budgetMs = PROBE
  */
 async function pick(url, { rule, directOnly = false, signal, prefer = 'smart', fileSizeHint = null } = {}) {
   const presets = PREFER_PRESETS[prefer] || PREFER_PRESETS.smart;
-  // 测速预算：小文件（<5MB，或未知大小）用短预算快速决策；大文件用长预算测准。
-  const isSmall = fileSizeHint != null && fileSizeHint > 0 && fileSizeHint < SEGMENT_MIN;
-  const budgetMs = isSmall ? 2500 : presets.probeMs;
+  // 测速预算：小文件（<5MB，或未知大小）也用足够大的预算——本环境各节点 TTFB
+  // 实测 5.4~7s，若预算设太短（如 2.5s）所有镜像会在首字节到来前就被判超时，
+  // 选路必然误回退直连。竞速是先到先得，预算只需 ≥ 最大 TTFB 即可（多长都不拖慢，
+  // 因为最快有效路一到立即返回，其余探针随自身超时收场）。
+  const budgetMs = presets.probeMs; // smart/direct=5000, mirror=5000, 统一足够长
 
   // 直连候选
   const direct = { u: url, via: 'direct', follow: 0, min: presets.directMin };
@@ -269,8 +327,16 @@ async function pick(url, { rule, directOnly = false, signal, prefer = 'smart', f
     return { u: mirrorCands[0].u, via: mirrorCands[0].via, speed: 0, size: null, rangeOk: false };
   }
 
-  // smart / direct 档：并行测速，取达标中带宽最高者
+  // smart / direct 档：TTFB 竞速（v2.9.0）——并发发起所有候选，**先到先得**。
+  // 旧逻辑用 Promise.allSettled 等全部候选测速收齐才选，在延迟主导网络里被
+  // 最慢/超时的死镜像拖到几秒甚至十几秒。现在谁先返回有效响应头谁先赢，
+  // 有效且达带宽门槛即立即返回（其余探针自动随 signal / 自身超时收场）。
   const cands = [direct, ...mirrorCands];
+  if (prefer === 'smart' || prefer === 'direct') {
+    return await raceProbeFastest(cands, { signal, budgetMs });
+  }
+
+  // 兼容分支（mirror 档已在上面处理；此处仅保险）
   const results = await Promise.allSettled(cands.map((c) => probe(c.u, { followRedirects: c.follow, signal, budgetMs })));
   let best = null;
   cands.forEach((c, i) => {
@@ -283,6 +349,58 @@ async function pick(url, { rule, directOnly = false, signal, prefer = 'smart', f
   if (best) return best;
   // 无合格候选：回退直连（保持老行为），若连直连都失败由上层报错
   return { u: url, via: 'direct(fallback)', speed: 0, size: null, rangeOk: false };
+}
+
+/**
+ * 竞速选路核心（v2.9.0）：对一批候选并行探测，**先有效响应者先返回**。
+ * - 用 probeTTFB（Range=bytes=0-0 拿首字节 + 状态 + 大小），快且准；
+ * - 只认「有效路」（200/206），连接失败/超时/4xx 的镜像立即出局；
+ * - 返回最快那条的有效路，并尽量带 size/rangeOk；都不达标时回退直连兜底。
+ * 多路并发同时就绪时 Promise 仍各自 settle，这里以最先 resolve 的有效路返回。
+ */
+export async function raceProbeFastest(cands, { signal, budgetMs }) {
+  // 若无候选或预算异常，直接回退
+  if (!cands.length) return { u: '', via: 'direct(fallback)', speed: 0, size: null, rangeOk: false };
+
+  let settled = false;
+  // 每个候选独立的 AbortController：一旦 winner 决出，立即 abort 其余在飞探针，
+  // 立即释放它们占用的 HTTP agent socket ——否则死镜像的 TLS 握手会一直占着 socket，
+  // 导致后续真正的下载（downloadRange）只能新开冷连接、再吃 ~6s TTFB。
+  const ctrls = cands.map(() => new AbortController());
+  const attempts = cands.map((c, i) =>
+    probeTTFB(c.u, { followRedirects: c.follow, signal: ctrls[i].signal, timeoutMs: budgetMs })
+      .then((r) => ({ c, r }))
+      .catch(() => ({ c, r: { ok: false } })),
+  );
+
+  return new Promise((resolve) => {
+    const finish = (v) => {
+      if (settled) return;
+      settled = true;
+      // 决出 winner：abort 所有仍在飞的落选探针，释放 socket 给后续下载复用
+      for (const c of ctrls) { try { c.abort(); } catch { /* no-op */ } }
+      resolve(v);
+    };
+    if (signal && signal.aborted) { finish({ u: cands[0].u, via: cands[0].via, speed: 0, size: null, rangeOk: false }); return; }
+    let pend = attempts.length;
+    for (const att of attempts) {
+      att.then(({ c, r }) => {
+        if (settled) return;
+        if (r && r.ok) {
+          if (c.via !== 'direct') rememberMirrorSpeed(c.via, r.bps);
+          finish({ u: c.u, via: c.via, speed: r.bps, size: r.size, rangeOk: r.rangeOk });
+          return;
+        }
+        pend -= 1;
+        if (pend <= 0) {
+          finish({ u: cands[0].u, via: 'direct(fallback)', speed: 0, size: null, rangeOk: false });
+        }
+      }).catch(() => {
+        pend -= 1;
+        if (pend <= 0) finish({ u: cands[0].u, via: 'direct(fallback)', speed: 0, size: null, rangeOk: false });
+      });
+    }
+  });
 }
 
 function delay(ms) {
