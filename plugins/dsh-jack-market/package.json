@@ -1,9 +1,9 @@
 {
   "name": "dsh-jack-market",
-  "version": "0.7.4",
+  "version": "0.7.5",
   "private": true,
   "type": "module",
-  "description": "Jack-kd 的 DSH 插件市场：直接从 GitHub 仓库浏览并一键安装插件；v0.7.4 插件列表加载提速（缓存 15 分钟+后台刷新+启动预热，避免每次等 10 秒）",
+  "description": "Jack-kd 的 DSH 插件市场：直接从 GitHub 仓库浏览并一键安装插件；v0.7.5 修复列表加载失败/HTTP 502（undici fetch 在弱网下拉大 JSON 失败，改用原生 https + connection:close）",
   "main": "index.js",
   "exports": {
     ".": "./index.js",

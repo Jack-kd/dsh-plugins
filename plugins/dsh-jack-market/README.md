@@ -13,12 +13,18 @@ Jack-kd 的 DSH 插件市场：直接从本仓库浏览可安装的插件，并�
 ## 安装
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.4/dsh-jack-market-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.5/dsh-jack-market-plugin.tgz
 ```
 
 ## 使用
 
 装完重启一次 App（让设置页入口出现），然后打开 **设置 → Jack 插件市场**。列出插件点「安装」即可一键安装；已安装的插件显示「已安装」，若仓库有新版本则显示蓝色「更新」按钮，点击即升级。
+
+> **v0.7.5 修复插件列表加载失败 / HTTP 502（v0.7.4 回归）**
+> - **根因**：Node 的 `fetch`（undici）在本网络下拉 148KB 的 `releases` JSON 会 **`TypeError: fetch failed`**（10.5 秒后崩），而同一请求用 `curl` / 原生 `https` 都成功。这是 undici 连接复用在弱网/代理环境下的兼容问题 —— 它正是「加载失败 / 502」的直接来源。
+> - **修复**：`ghJson` 改用原生 `https`，并加 **`connection: close`**。实测同一请求：默认复用连接 **6622ms**，关闭连接 **255ms**。
+> - **顺带减负**：`per_page` 100 → **30**。本仓库有 32 条 release，但插件只有 9~10 个，**30 条已覆盖全部插件的最新版**（实测覆盖 10 个 key），拉 100 条纯属浪费。
+> - 保留 JSON 内容强校验（防「HTTP 200 + body `ok`」这类假响应被当数据缓存）。
 
 > **v0.7.4 插件列表加载提速（不再每次等 10 秒）**
 > - **诊断**：列表页要拉三个 `api.github.com` 接口，**每个 TTFB 就 5.8–6.9 秒**（目录 5.98s / README 6.79s / releases 7.38s），其中 releases 还要再传 **155KB**（合计 11.4s）。三者并行，冷启动实测 **10.3 秒**；缓存命中 **0.005 秒**。

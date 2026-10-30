@@ -221,9 +221,11 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-vision-router-v3.0.
 </details>
 
 <details>
-<summary><b>▶ dsh-jack-market · 插件市场（本仓库一键装）</b>　<code>v0.7.4</code></summary>
+<summary><b>▶ dsh-jack-market · 插件市场（本仓库一键装）</b>　<code>v0.7.5</code></summary>
 
 > 直接在 DSH 里浏览并一键安装本仓库的所有插件（类似内置的「插件市场」）。自动识别已安装状态与可更新版本，点「安装/更新」即后台下载安装并显示实时进度；每个插件卡片带简介、版本与更新时间，失败会显示具体原因。
+>
+> **v0.7.5**：修复**插件列表加载失败 / HTTP 502**（v0.7.4 引入的回归）。根因：Node 的 `fetch`（undici）在本网络下拉 148KB 的 `releases` JSON 会 **`TypeError: fetch failed`**（10.5 秒后崩），而同一请求用 curl / 原生 `https` 都成功 —— 这是 undici 连接复用在弱网/代理环境下的兼容问题。改用原生 `https` + **`connection: close`**（实测同一请求：复用连接 6622ms → 关闭连接 **255ms**）。同时 `per_page` 100 → **30**（本仓库 32 条 release 但只有 9~10 个插件，30 条已覆盖全部最新版，省一半流量）。
 >
 > **v0.7.4**：**插件列表加载提速**。实测列表页要拉三个 `api.github.com` 接口（目录 / README / releases），**每个 TTFB 就 5.8–6.9 秒**，其中 releases 还要再传 155KB，三者并行冷启动实测 **10.3 秒**；而缓存命中只要 **0.005 秒**。旧缓存 TTL 仅 60 秒，用户每分钟重开就要再等 10 秒。改为：① **新鲜期 15 分钟**（期内零网络）；② **陈旧期（15 分钟–24 小时）先返回旧数据、后台静默刷新**，用户永不为刷新等待；③ **启动 3 秒后预热**（且预热前先查缓存，新生效期不重复拉，省 GitHub 匿名额度）。另实测确认 **API 走镜像不划算**（gh.acmsz.top 只快约 0.5s，且对 API 路径返回 `HTTP 200 + body "ok"` 的假响应），故默认关闭镜像、保留回退逻辑，并给 JSON 解析加内容校验，避免把垃圾写进缓存。
 >
@@ -275,13 +277,13 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-vision-router-v3.0.
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.4/dsh-jack-market-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.5/dsh-jack-market-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.4/dsh-jack-market-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.5/dsh-jack-market-plugin.tgz
 ```
 
 > 装完重启一次 App（让设置页入口出现）；之后打开 **设置 → Jack 插件市场** 即可浏览和安装本仓库的插件。

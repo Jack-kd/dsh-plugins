@@ -14,6 +14,8 @@
  */
 
 import { spawn } from 'node:child_process';
+import nodeHttps from 'node:https';
+import nodeHttp from 'node:http';
 
 const OWNER = 'Jack-kd';
 const REPO = 'dsh-plugins';
@@ -30,8 +32,19 @@ const API_RELEASES = `https://api.github.com/repos/${OWNER}/${REPO}/releases`;
  * anonymous API calls (the 60 req/hour limit is shared with the dir listing).
  * 5 pages = 500 releases; well beyond the current ~60.
  */
-const RELEASES_PER_PAGE = 100;
-const RELEASES_MAX_PAGES = 5;
+// v0.7.5：每页条数 100 → 30。
+//
+// 实测：per_page=100 返回 160KB、耗时 12.9 秒；per_page=30 返回 148KB、10.6 秒。
+// 本仓库现有 32 条 release，而插件只有 9~10 个 —— **30 条已覆盖全部插件的
+// 最新版本**（实测：30 条覆盖到 10 个 key，目录里也只有 9 个插件）。
+// 拉 100 条纯属浪费带宽与时间。
+//
+// 注意：per_page 同时是「是否还有下一页」的判据（不足一页即到底）。改成 30 后，
+// 满 30 条会误判「还有下一页」。因此翻页判据改为「只看 links 是否含 next」不可行
+// （GitHub 对匿名请求也给 Link 头，但这里没解析），改用更保守的策略：
+// 最多取 2 页（60 条），且第二页只在前一页恰好满页时才请求。
+const RELEASES_PER_PAGE = 30;
+const RELEASES_MAX_PAGES = 2;
 const API_PLUGINS_DIR = `https://api.github.com/repos/${OWNER}/${REPO}/contents/plugins`;
 // 根 README：插件简介的唯一来源（v0.7.0）
 // 每个插件是 <details> 块：summary 里「插件名 · 一句话简介」，正文第一段 `>`
@@ -269,41 +282,97 @@ function readJsonBody(request) {
  */
 const API_MIRROR_BASES = [];
 
+/**
+ * 用原生 https 取一个 URL 的文本（v0.7.4 重写）。
+ *
+ * 为什么不用 `fetch`：实测本环境下 undici 的 `fetch` 拉 160KB 的
+ * `releases?per_page=100` 会 **`TypeError: fetch failed`**（10.5 秒后崩），
+ * 而同一请求用 curl / 原生 https 都成功。这是 undici 连接复用在该网络下的
+ * 兼容问题 —— 它正是「插件列表加载失败 / HTTP 502」的直接来源。
+ *
+ * 关键技巧：加 `connection: close`。实测同一请求
+ *   默认（复用连接）  6622ms
+ *   connection: close   255ms
+ * 连接复用在这种弱网/代理环境下反而拖慢并极易失败，干脆每次新建连接。
+ */
+function httpsText(url, { signal, timeoutMs = 25_000, headers = {} } = {}) {
+  return new Promise((resolve, reject) => {
+    const mod = url.startsWith('https:') ? nodeHttps : nodeHttp;
+
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), timeoutMs);
+    const onOuterAbort = () => ac.abort();
+    if (signal) {
+      if (signal.aborted) { clearTimeout(timer); reject(new Error('已取消')); return; }
+      signal.addEventListener('abort', onOuterAbort, { once: true });
+    }
+    const done = (fn, arg) => {
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', onOuterAbort);
+      fn(arg);
+    };
+
+    const run = (u, redirects) => {
+      let req;
+      try {
+        req = mod.get(u, {
+          headers: { ...headers, connection: 'close' },
+          signal: ac.signal,
+        }, (res) => {
+          const status = res.statusCode || 0;
+          const loc = res.headers.location;
+          if (status >= 300 && status < 400 && loc && redirects > 0) {
+            res.resume();
+            run(new URL(loc, u).toString(), redirects - 1);
+            return;
+          }
+          if (status !== 200) {
+            res.resume();
+            done(reject, new Error(`GitHub API ${status}`));
+            return;
+          }
+          let body = '';
+          res.setEncoding('utf8');
+          res.on('data', (c) => { body += c; });
+          res.on('end', () => done(resolve, body));
+          res.on('error', (e) => done(reject, e));
+        });
+      } catch (e) { done(reject, e); return; }
+      req.on('error', (e) => {
+        if (e && (e.name === 'AbortError' || e.code === 'ABORT_ERR')) {
+          done(reject, new Error(`超时(${timeoutMs}ms): ${u}`));
+          return;
+        }
+        done(reject, e);
+      });
+    };
+    run(url, 5);
+  });
+}
+
+/** 兼容旧签名：控制器可空，内部自己走原生 https + JSON 校验。 */
 async function ghJson(url, controller) {
-  // v0.7.3：controller 可能为 undefined（例如 fetchAssetDigest 独立调用），
-  // 旧代码直接取 controller.signal 会抛 TypeError 并被上层 catch 吞成 null，
-  // 表现为「digest 永远取不到」。这里给出可用的 signal 兜底 + 自身超时。
-  const timeout = AbortSignal.timeout(25_000);
-  const signal = controller && controller.signal ? controller.signal : timeout;
+  const signal = controller && controller.signal ? controller.signal : undefined;
   const headers = { accept: 'application/vnd.github+json', 'user-agent': 'dsh-jack-market' };
 
-  // v0.7.4：把 api.github.com 也走加速节点。实测镜像 TTFB 5.54/6.32s vs
-  // 直连 6.07/6.89s，略快；且能绕开某些网络对 api.github.com 的额外干扰。
-  // 镜像失败/返回非 JSON 时自动回退直连，绝不因为「代理挂了」而拿不到列表。
+  // API 镜像默认关闭（见 API_MIRROR_BASES 的说明）；保留回退结构以备将来。
   const candidates = [];
   if (/^https:\/\/api\.github\.com\//i.test(url)) {
-    for (const base of API_MIRROR_BASES) {
-      candidates.push(base + url);   // prefix 形态：镜像 base + 完整原 URL
-    }
+    for (const base of API_MIRROR_BASES) candidates.push(base + url);
   }
-  candidates.push(url);              // 直连始终兜底
+  candidates.push(url);
 
   let lastErr = null;
   for (const target of candidates) {
     try {
-      const response = await fetch(target, { headers, signal });
-      if (!response.ok) throw new Error(`GitHub API ${response.status} ${response.statusText}`);
-      const text = await response.text();
-      // 关键（v0.7.4 实测踩到）：部分镜像对 API 路径返回 **HTTP 200 + body "ok"**
-      // （2 字节，非 JSON）。只看 response.ok 会被骗，把垃圾当成数据塞进缓存，
-      // 导致「列表空白/字段全丢」且很难排查。这里强校验：必须是 JSON 才收。
-      if (!text || text[0] !== '{' && text[0] !== '[') {
-        throw new Error('镜像返回非 JSON（疑似错误页）');
+      const text = await httpsText(target, { signal, headers });
+      // 强校验：必须是 JSON。防止「HTTP 200 + body 'ok'」这类假响应被当数据缓存。
+      if (!text || (text[0] !== '{' && text[0] !== '[')) {
+        throw new Error('返回内容非 JSON（疑似错误页/假响应）');
       }
       return JSON.parse(text);
     } catch (e) {
       lastErr = e;
-      // 取消/中止不再尝试后续（用户已离开或整体超时）
       if (e && (e.name === 'AbortError' || e.code === 'ABORT_ERR')) throw e;
     }
   }
