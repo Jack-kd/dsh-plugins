@@ -54,7 +54,9 @@ window.__ModuleLoader__.load({
     };
     const progressFill = {
       height: '100%', borderRadius: '3px',
-      background: 'var(--dsw-alias-brand-primary, #247bbf)',
+      // 进度条是**图形**，用 state-business-primary（浅 #4176e6 / 深 #7aaaff），
+      // 而不是 brand-primary：后者在深色主题下是近白色，进度条会几乎看不见。
+      background: 'var(--dsw-alias-state-business-primary, #4176e6)',
       transition: 'width .3s ease',
     };
     // 阶段 → 进度百分比（估算：下载 15-75%，校验 80%，安装 90%，完成/失败 100%）
@@ -63,10 +65,28 @@ window.__ModuleLoader__.load({
       running: '启动中…', downloading: '下载中…', verifying: '校验中…',
       installing: '安装中…', done: '安装成功 ✓', failed: '安装失败 ✗',
     };
+    // v0.7.1 深色模式：这些值全部是**文字色**，必须随主题自适应。
+    //
+    // 旧版把 `--dsw-alias-brand-primary` 当文字色：该 token 在浅色主题下是近黑
+    // （#0f1115）、深色主题下是近白（#f9fafb）。它同时被当**底色**用（按钮、
+    // 进度条），于是「底色 + 字色」永远是同色系 → 深浅切换总有一边糊掉。
+    //
+    // 现在分开：
+    //   * 底色 → `--dsw-alias-button-primary-fill`（按钮）/ `state-business-primary`（进度条）
+    //   * 字色 → `label-primary-foreground`（按钮内）/ `state-business-primary`（进度文字）
+    //
+    // 成功绿单独处理：主题的 `state-success-primary` 深浅两套都是 #22c55e，
+    // 在浅色白底上只有 2.28:1（不达 AA）。这里用 color-mix 与主题的
+    // label-primary 混合 50% —— 浅色主题下压深成 #186b3a（6.56:1），
+    // 深色主题下混入近白只略微提亮（仍 ≥6:1），两套都达标。
+    const doneGreen = 'color-mix(in srgb, var(--dsw-alias-state-success-primary, #22c55e) 50%, var(--dsw-alias-label-primary, #0f1115))';
     const stageColor = {
-      running: 'var(--dsw-alias-label-secondary,#666)', downloading: 'var(--dsw-alias-brand-primary,#247bbf)',
-      verifying: 'var(--dsw-alias-brand-primary,#247bbf)', installing: 'var(--dsw-alias-brand-primary,#247bbf)',
-      done: 'var(--dsw-alias-state-success-primary,#2a8f4e)', failed: 'var(--dsw-alias-state-error-primary,#c00)',
+      running: 'var(--dsw-alias-label-secondary, #666)',
+      downloading: 'var(--dsw-alias-state-business-primary, #4176e6)',
+      verifying: 'var(--dsw-alias-state-business-primary, #4176e6)',
+      installing: 'var(--dsw-alias-state-business-primary, #4176e6)',
+      done: doneGreen,
+      failed: 'var(--dsw-alias-state-error-primary, #ec1313)',
     };
 
     function compareVersions(a, b) {
@@ -97,29 +117,48 @@ window.__ModuleLoader__.load({
       return [...set];
     }
 
-    function PluginCard({ plugin, installedMap, busy, task, onInstall }) {
+    function PluginCard({ plugin, installedMap, enabledMap, busy, task, onInstall, onEnable }) {
       const installedVersion = installedMap ? installedMap.get(plugin.key) : undefined;
       const installedLocal = installedVersion !== undefined;
+      // v0.7.1：区分「装到磁盘」与「已启用（在 bundles 里）」。
+      // 旧版只看 dependencies，「装好了但没进运行时」会显示灰色「已安装」，
+      // 用户以为能用，实际功能根本没加载 —— 这就是「装完还要手动启用」。
+      const enabledLocal = installedLocal && (!enabledMap || enabledMap.has(plugin.key));
       const superseded = !!plugin.supersededBy;
       const installable = plugin.installable !== false && !!plugin.url;
       const version = plugin.version || plugin.tag || '';
       const hasUpdate = installedLocal && version && plugin.version && compareVersions(plugin.version, installedVersion) > 0;
       // 任务状态：running/done/failed 时显示进度反馈
       const activeTask = task && (task.running || task.stage === 'done' || task.stage === 'failed');
-      let btnLabel = installedLocal ? (hasUpdate ? '更新' : '已安装') : (busy ? '安装中…' : '安装');
-      let btnDisabled = (installedLocal && !hasUpdate) || busy || (!installedLocal && superseded) || (!installedLocal && !superseded && !installable);
+      let btnLabel = installedLocal
+        ? (hasUpdate ? '更新' : (enabledLocal ? '已安装' : '启用'))
+        : (busy ? '安装中…' : '安装');
+      let btnDisabled = installedLocal
+        ? (!hasUpdate && enabledLocal) || busy
+        : (busy || (!superseded && !installable));
       if (!installedLocal && superseded) btnLabel = `已并入 ${plugin.supersededBy}`;
       else if (!installedLocal && !superseded && !installable) btnLabel = '未发布包';
-      // Blue accent for actions that actually do something (install or update).
-      const brandBlue = 'var(--dsw-alias-brand-primary, #247bbf)';
+      // Blue accent for actions that actually do something (install / update / enable).
+      //
+      // v0.7.1 深色模式修复：文字颜色**绝对不能硬编码 `#fff`**。
+      // `--dsw-alias-brand-primary` 在深色主题下会变成 near-white
+      // （浅色主题是 #0f1115，深色主题是 #f9fafb），硬编码白字落在近白底上
+      // 对比度只有 1.05:1 —— 等于白字写白底，完全看不清「安装」两个字。
+      // 官方主按钮的标准组合是
+      //   background: var(--dsw-alias-button-primary-fill)
+      //   color:      var(--dsw-alias-label-primary-foreground)
+      // 后者在深浅两套主题下自动反色（浅=#fff 配深底，深=#0f1115 配近白底，
+      // 对比度 18.9:1 / 18.08:1），这才是随主题走的写法。
+      const brandFill = 'var(--dsw-alias-button-primary-fill, var(--dsw-alias-brand-primary, #247bbf))';
+      const brandFg = 'var(--dsw-alias-label-primary-foreground, #fff)';
       const idleGray = 'var(--dsw-alias-state-idle-primary, #ccc)';
-      const active = busy || (installedLocal && hasUpdate) || (!installedLocal && !superseded && installable);
+      const active = busy || (installedLocal && (hasUpdate || !enabledLocal)) || (!installedLocal && !superseded && installable);
       // 进度反馈渲染（阶段文字 + 进度条 + 失败原因）
       let feedback = null;
       if (activeTask) {
         const pct = stagePct[task.stage] || 10;
         const label = stageLabel[task.stage] || '进行中…';
-        const color = stageColor[task.stage] || '#666';
+        const color = stageColor[task.stage] || 'var(--dsw-alias-label-secondary, #666)';
         const isFail = task.stage === 'failed';
         const isDone = task.stage === 'done';
         if (isDone) {
@@ -153,11 +192,15 @@ window.__ModuleLoader__.load({
         h('div', { style: rowStyle },
           h('div', { style: { minWidth: 0 } },
             h('p', { style: titleStyle }, plugin.key,
-              version ? h('span', { style: { fontWeight: 400, color: 'var(--dsw-alias-label-secondary,#666)', marginLeft: 6, fontSize: 12 } }, `v${version}`) : null),
+              version ? h('span', { style: { fontWeight: 400, color: 'var(--dsw-alias-label-secondary, #666)', marginLeft: 6, fontSize: 12 } }, `v${version}`) : null),
             // v0.7.0：一句话简介（README summary）——用户一眼知道这插件干嘛的
             plugin.summary ? h('p', { style: { ...metaStyle, fontWeight: 500, marginTop: 2 } }, plugin.summary) : null,
             installedVersion
-              ? h('p', { style: metaStyle }, `当前版本：v${installedVersion}`)
+              ? h('p', { style: metaStyle },
+                  `当前版本：v${installedVersion}`
+                  + (enabledLocal
+                      ? ''
+                      : '　·　未启用（点右侧「启用」后重启生效）'))
               : null,
             plugin.version
               ? h('p', { style: metaStyle }, `最新版本：v${plugin.version}${plugin.publishedAt ? `　·　${new Date(plugin.publishedAt).toLocaleDateString()}` : ''}`)
@@ -166,11 +209,18 @@ window.__ModuleLoader__.load({
           h('button', {
             style: {
               ...btnBase,
-              background: active ? brandBlue : idleGray,
-              color: active ? '#fff' : 'var(--dsw-alias-label-secondary,#666)',
+              background: active ? brandFill : idleGray,
+              // 主按钮用 label-primary-foreground（随主题反色）；禁用态用二级标签色，
+              // 两者都是 token，不再出现写死的 #fff / #666。
+              color: active ? brandFg : 'var(--dsw-alias-label-secondary, #666)',
             },
             disabled: btnDisabled,
-            onClick: (e) => { e.preventDefault(); if (onInstall) onInstall(plugin); },
+            onClick: (e) => {
+              e.preventDefault();
+              // 已安装但未启用 → 走启用接口；其余（安装/更新）走安装接口。
+              if (installedLocal && !hasUpdate && !enabledLocal) { if (onEnable) onEnable(plugin); return; }
+              if (onInstall) onInstall(plugin);
+            },
           }, btnLabel),
         ),
         (superseded && !installedLocal) && h('p', {
@@ -186,6 +236,8 @@ window.__ModuleLoader__.load({
     function Market({ ownerProps }) {
       const [plugins, setPlugins] = useState([]);
       const [installedMap, setInstalledMap] = useState(new Map());
+      // v0.7.1：已启用的市场 key 集合（来自 bundles），用来区分「已安装」与「已启用」
+      const [enabledMap, setEnabledMap] = useState(new Set());
       const [busyKey, setBusyKey] = useState(null);
       const [tasks, setTasks] = useState(new Map()); // key -> task
       const [error, setError] = useState('');
@@ -200,21 +252,25 @@ window.__ModuleLoader__.load({
           ]);
           setPlugins(Array.isArray(list.plugins) ? list.plugins : []);
           const deps = Array.isArray(inst.installed) ? inst.installed : [];
-          // Each dep is { name, version }. Build a map key -> installed version,
+          // Each dep is { name, version, enabled }. Build a map key -> installed version,
           // stripping any scope to the final segment (e.g. "@local/enter-newline"
           // matches the market key "enter-newline").
           const map = new Map();
+          const onSet = new Set();
           for (const d of deps) {
             const name = typeof d === 'string' ? d : (d && d.name);
             const ver = typeof d === 'object' && d ? (d.version || '') : '';
+            const isOn = typeof d === 'object' && d ? d.enabled !== false : true;
             if (typeof name === 'string') {
               for (const cand of keyCandidates(name)) {
                 // Keep the highest version seen for the same candidate.
                 if (!map.has(cand) || compareVersions(ver, map.get(cand)) > 0) map.set(cand, ver || '');
+                if (isOn) onSet.add(cand);
               }
             }
           }
           setInstalledMap(map);
+          setEnabledMap(onSet);
         } catch (e) {
           setError(String(e && e.message || e));
         } finally {
@@ -223,6 +279,31 @@ window.__ModuleLoader__.load({
       }, []);
 
       useEffect(() => { load(); }, [load]);
+
+      // v0.7.1：已安装但未启用 → 一键写入 bundles（历史遗留插件用）
+      const enable = useCallback(async (plugin) => {
+        setBusyKey(plugin.key); setError('');
+        setTasks((prev) => new Map(prev).set(plugin.key, { stage: 'installing', message: '正在启用…', running: true }));
+        try {
+          const res = await fetch(api('/dsh-jack-market/enable'), {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ name: plugin.depName || plugin.key }),
+          });
+          const j = await res.json().catch(() => ({}));
+          if (!res.ok || j.ok === false) throw new Error((j && (j.error || j.message)) || `HTTP ${res.status}`);
+          setTasks((prev) => new Map(prev).set(plugin.key, {
+            stage: 'done', message: (j && j.message) || '已启用，重启 App 后生效', running: false,
+          }));
+          await load();
+        } catch (e) {
+          const msg = String(e && e.message || e);
+          setError(msg);
+          setTasks((prev) => new Map(prev).set(plugin.key, { stage: 'failed', message: msg, running: false }));
+        } finally {
+          setBusyKey(null);
+        }
+      }, [load]);
 
       const install = useCallback(async (plugin) => {
         setBusyKey(plugin.key); setError('');
@@ -338,7 +419,16 @@ window.__ModuleLoader__.load({
         }, String(error)),
         loading && h('p', { style: metaStyle }, '加载中…'),
         !loading && plugins.length === 0 && !error && h('p', { style: metaStyle }, '没有可用的插件。'),
-        plugins.map((plugin) => h(PluginCard, { key: plugin.key, plugin, installedMap, busy: busyKey === plugin.key, task: tasks.get(plugin.key), onInstall: install })),
+        plugins.map((plugin) => h(PluginCard, {
+          key: plugin.key,
+          plugin,
+          installedMap,
+          enabledMap,
+          busy: busyKey === plugin.key,
+          task: tasks.get(plugin.key),
+          onInstall: install,
+          onEnable: enable,
+        })),
         h('p', {
           style: {
             ...metaStyle, marginTop: 12, fontSize: 11, color: 'var(--dsw-alias-label-secondary,#999)',

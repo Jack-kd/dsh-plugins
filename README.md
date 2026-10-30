@@ -221,9 +221,11 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-vision-router-v3.0.
 </details>
 
 <details>
-<summary><b>▶ dsh-jack-market · 插件市场（本仓库一键装）</b>　<code>v0.7.0</code></summary>
+<summary><b>▶ dsh-jack-market · 插件市场（本仓库一键装）</b>　<code>v0.7.1</code></summary>
 
 > 直接在 DSH 里浏览并一键安装本仓库的所有插件（类似内置的「插件市场」）。自动识别已安装状态与可更新版本，点「安装/更新」即后台下载安装并显示实时进度；每个插件卡片带简介、版本与更新时间，失败会显示具体原因。
+>
+> **v0.7.1**：修两个问题——① **装完还要去「插件」页面手动启用**（根因：市场走 `pnpm add`，pnpm 只写 `dependencies`（装到磁盘），**从不写 `dsh.profile.bundles`**（进运行时）；官方安装器装完会补 `selectBundle(name,true)`，本市场缺这一步）→ 现在**安装成功自动写入 bundles 启用**，已装未启用的历史插件卡片按钮直接变「启用」一键搞定，卡片也会提示「未启用」不再假装已装好；② **深色模式下「安装」文字看不清**（按钮底色用 `brand-primary` 而文字写死 `#fff`，该 token 深色下是近白色，白字压白底对比度仅 **1.05:1**）→ 改用官方主按钮标准组合 `button-primary-fill` + `label-primary-foreground`，深浅对比度 18.9:1 / 18.08:1，顺带修掉进度条与状态文字同类问题，两套主题均达 WCAG AA。
 >
 > **v0.7.0**：简介来源改为**根 README 插件段落**——卡片显示「一句话简介 + 完整介绍」（如「视觉路由（给 Agent 看图）」），不再显示版本更新说明；README 缺简介的插件段已补齐，全仓库 9 个插件简介齐全。
 >
@@ -267,13 +269,13 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-vision-router-v3.0.
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.0/dsh-jack-market-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.1/dsh-jack-market-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.0/dsh-jack-market-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.1/dsh-jack-market-plugin.tgz
 ```
 
 > 装完重启一次 App（让设置页入口出现）；之后打开 **设置 → Jack 插件市场** 即可浏览和安装本仓库的插件。

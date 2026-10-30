@@ -299,6 +299,10 @@ async function handleInstalled(request, response, profileDir) {
           ? manifest.dependencies
           : {};
         const names = Object.keys(deps);
+        // v0.7.1：同时读 bundles，让客户端能区分「已安装」与「已启用」。
+        // 只看 dependencies 会把「装好了但没进运行时」误报成「已安装」，
+        // 用户看到的按钮是灰的「已安装」，功能却根本没加载。
+        const enabledNames = new Set(manifest?.dsh?.profile?.bundles ?? []);
         // Resolve the actually-installed version from node_modules/<name>/package.json
         const nodeModules = path.join(dir, 'node_modules');
         const readVersion = (name) => {
@@ -311,7 +315,7 @@ async function handleInstalled(request, response, profileDir) {
           } catch { /* no-op */ }
           return '';
         };
-        result = names.map((name) => ({ name, version: readVersion(name) }));
+        result = names.map((name) => ({ name, version: readVersion(name), enabled: enabledNames.has(name) }));
         break;
       }
     }
@@ -552,6 +556,66 @@ async function snapshotProfileFiles(profileDir) {
   return saved;
 }
 
+/**
+ * 读出 profile 里「已装」与「已启用」两个集合（v0.7.1）。
+ *
+ * 关键区别（这是「装完还要手动启用」的根因）：
+ *   dependencies  = pnpm 装到了磁盘上
+ *   dsh.profile.bundles = 被加载进运行时（就是「插件」页面那个开关）
+ * 本市场走的是 `pnpm add`，pnpm 只写前者，**从不写 bundles**，所以装完必须由
+ * 我们自己补一步，否则用户永远要去「插件」页面手动启用一次。
+ *
+ * @returns {{ installed: Set<string>, enabled: Set<string>, manifest: object }}
+ */
+async function readProfileState(profileDir) {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const file = path.join(profileDir, 'package.json');
+  if (!fs.existsSync(file)) return { installed: new Set(), enabled: new Set(), manifest: null };
+  const manifest = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const installed = new Set(Object.keys(manifest?.dependencies ?? {}));
+  const enabled = new Set(manifest?.dsh?.profile?.bundles ?? []);
+  return { installed, enabled, manifest };
+}
+
+/**
+ * 把一个已安装的包写进 `dsh.profile.bundles`，即「启用」。
+ *
+ * 复刻官方 dsh-plugin-manager 的 `selectBundle(name, true)` 行为（见
+ * dsh-plugin-manager/lib/index.js:1800 安装收尾的 `if (options?.enabled !== false)
+ * await this.selectBundle(name, true)`）：只往 bundles 数组追加，不动别的字段。
+ *
+ * 安全约束：
+ *   * 只在包**确实已在 dependencies** 时才启用（避免把拼写错误的名字写进去）；
+ *   * 幂等：已在 bundles 里就原样返回；
+ *   * 只改 bundles 一个数组，其它字段（含用户自己的 patchReload、别人的顺序）原样保留。
+ *
+ * @returns {Promise<{ changed: boolean, name: string, reason?: string }>}
+ */
+async function enableBundle(profileDir, name) {
+  const fs = await import('node:fs');
+  const fsp = await import('node:fs/promises');
+  const path = await import('node:path');
+  if (typeof name !== 'string' || !name) return { changed: false, name: '', reason: 'empty-name' };
+  const file = path.join(profileDir, 'package.json');
+  if (!fs.existsSync(file)) return { changed: false, name, reason: 'no-manifest' };
+  const manifest = JSON.parse(fs.readFileSync(file, 'utf8'));
+  if (!manifest?.dependencies || !Object.hasOwn(manifest.dependencies, name)) {
+    return { changed: false, name, reason: 'not-installed' };
+  }
+  const profile = manifest.dsh?.profile;
+  if (profile === undefined) return { changed: false, name, reason: 'no-profile' };
+  const previous = profile.bundles ?? [];
+  if (previous.includes(name)) return { changed: false, name, reason: 'already-enabled' };
+  profile.bundles = [...previous, name];
+  // 原子写：先写临时文件再 rename，避免中途断电/被杀留下半截 package.json，
+  // 那会让整个 profile 起不来（官方同样用 writeFileAtomic）。
+  const tmp = file + '.market-tmp';
+  await fsp.writeFile(tmp, JSON.stringify(manifest, void 0, 2) + '\n', { mode: 0o600 });
+  await fsp.rename(tmp, file);
+  return { changed: true, name };
+}
+
 async function restoreProfileFiles(profileDir, saved) {
   const fs = await import('node:fs');
   const fsp = await import('node:fs/promises');
@@ -689,6 +753,46 @@ export function apply(ctx, config) {
       },
     }));
 
+    // v0.7.1：手动启用端点 —— 给「已安装但未启用」的历史插件用一键补启用。
+    // 只接受 profile 里**确实已经安装**的包名，不接受任意字符串，避免被
+    // 当成写 package.json 的通用入口。
+    disposers.push(host.webServer.register({
+      kind: 'exact',
+      path: '/dsh-jack-market/enable',
+      handler: async (request, response) => {
+        if (request.method !== 'POST') { response.writeHead(405, { allow: 'POST' }); response.end(); return; }
+        const origin = request.headers.origin;
+        if (origin !== undefined) {
+          const hostHeader = (request.headers.host || '').replace(/[^A-Za-z0-9.:[\]]/g, '');
+          try {
+            const o = new URL(origin);
+            const e = new URL(`http://${hostHeader}`);
+            if (o.origin !== e.origin) { sendJson(response, 403, { error: '跨源请求已拒绝' }); return; }
+          } catch { sendJson(response, 403, { error: '无法校验请求来源' }); return; }
+        }
+        let body;
+        try { body = await readJsonBody(request); }
+        catch { sendJson(response, 400, { error: 'invalid JSON body' }); return; }
+        const name = typeof body?.name === 'string' ? body.name.trim() : '';
+        if (!name) { sendJson(response, 400, { error: '缺少插件名' }); return; }
+        const dir = profileDir || '/root/.dsh/profiles/web';
+        try {
+          const r = await enableBundle(dir, name);
+          audit('enable.request', `${name} changed=${r.changed} reason=${r.reason || ''}`);
+          sendJson(response, r.changed ? 200 : 200, {
+            ok: r.changed || r.reason === 'already-enabled',
+            changed: r.changed,
+            reason: r.reason || '',
+            message: r.changed
+              ? `已启用 ${name}；重启 App 后生效`
+              : r.reason === 'already-enabled' ? `${name} 本就已启用` : `未能启用 ${name}：${r.reason}`,
+          });
+        } catch (e) {
+          sendJson(response, 500, { ok: false, error: String((e && e.message) || e) });
+        }
+      },
+    }));
+
     disposers.push(host.webServer.register({
       kind: 'exact',
       path: '/dsh-jack-market/install',
@@ -818,6 +922,53 @@ export function apply(ctx, config) {
             }
           }
           updateTask(key, { stage: failedNow ? 'failed' : 'done', message, running: false });
+
+          // ④ v0.7.1：安装成功 → **自动写 bundles 启用**（否则装完还要去「插件」
+          // 页面手动点一次启用）。这是官方 dsh-plugin-manager 安装收尾
+          // `selectBundle(name, true)` 的等价补步；pnpm 只写 dependencies，不会写 bundles。
+          //
+          // 插件名不写死为 key：市场 key 是仓库目录名，而 npm 包名可能带 scope
+          // （@local/gh-accel）或 dsh- 前缀，因此用「装之前 vs 装之后」的
+          // dependencies 差集来精确定位这次新装/更新的包名。
+          if (!failedNow) {
+            try {
+              const before = Object.keys(saved['package.json']
+                ? (JSON.parse(saved['package.json']).dependencies ?? {})
+                : {});
+              const after = await readProfileState(dir);
+              const newlyAdded = [...after.installed].filter((name) => !before.includes(name));
+              // 更新场景（同名包已存在）不会出现在差集里，此时按 key 的候选名兜底匹配
+              let target = newlyAdded.length === 1 ? newlyAdded[0] : '';
+              if (!target) {
+                const candidates = [key];
+                const bare = String(key || '').replace(/^@[^/]+\//, '');
+                for (const cand of [
+                  `@local/${bare}`, bare, `dsh-${bare.replace(/^dsh-/, '')}`,
+                  bare.startsWith('dsh-') ? bare : `dsh-${bare}`,
+                ]) {
+                  if (after.installed.has(cand)) { target = cand; break; }
+                }
+                if (!target && newlyAdded.length > 0) target = newlyAdded[0];
+              }
+              if (target) {
+                const r = await enableBundle(dir, target);
+                audit('install.enable', r.changed
+                  ? `已启用 ${target}（写入 bundles）`
+                  : `无需启用 ${target}：${r.reason || 'unknown'}`);
+                if (r.changed) message += `，已自动启用（重启 App 后生效）`;
+                else if (r.reason === 'already-enabled') message += `，已启用`;
+              } else {
+                audit('install.enable', `未能定位包名，跳过自动启用（key=${key}）`);
+              }
+            } catch (e) {
+              // 启用失败不能让「已装好」的结果变成失败：包确实装上了，
+              // 只是需要用户去「插件」页面手动启用。把原因带进消息里。
+              audit('install.enableFail', `${key} err=${(e && e.message) || e}`);
+              console.error('[dsh-jack-market] 自动启用失败:', e && e.message);
+              message += `（自动启用失败：${(e && e.message) || '未知错误'}，可到「插件」页面手动启用）`;
+            }
+          }
+
           audit('install.final', `${key} ${failedNow ? 'failed' : 'done'} msg=${message.slice(0, 200)}`);
           // 任务已结束：保留 30 秒（让客户端能轮询到最终 done/failed 状态），
           // 之后清除避免 stale 残留。

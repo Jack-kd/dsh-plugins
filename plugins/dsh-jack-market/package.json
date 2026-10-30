@@ -1,9 +1,9 @@
 {
   "name": "dsh-jack-market",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "private": true,
   "type": "module",
-  "description": "Jack-kd 的 DSH 插件市场：直接从 GitHub 仓库浏览并一键安装插件（类似内置的“插件市场”）。",
+  "description": "Jack-kd 的 DSH 插件市场：直接从 GitHub 仓库浏览并一键安装插件（类似内置的“插件市场”）。；v0.7.1 修复「装完还要手动启用」（安装后自动写 bundles）+ 深色模式「安装」按钮白字白底看不清",
   "main": "index.js",
   "exports": {
     ".": "./index.js",

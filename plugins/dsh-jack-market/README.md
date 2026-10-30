@@ -5,20 +5,29 @@ Jack-kd 的 DSH 插件市场：直接从本仓库浏览可安装的插件，并�
 ## 功能
 
 - **浏览插件**：列出 `plugins/` 目录下当前发布的有效插件（与 README 安装速查一致），含版本号与简介。
-- **已安装状态**：自动识别本地已安装的插件（按真实包名去 scope 比对），显示「已安装」，卡片单独列出「当前版本」与「最新版本」。
-- **一键安装**：点「安装」即调用 `dsh plugin --profile web add <tgz-url>` 安装该插件。
+- **已安装状态**：自动识别本地已安装的插件（按真实包名去 scope 比对），显示「已安装」，卡片单独列出「当前版本」与「最新版本」。v0.7.1 起区分**已安装**与**已启用**——装在磁盘但没进运行时的插件会显示「启用」按钮。
+- **一键安装**：点「安装」即调用 `dsh plugin --profile web add <tgz-url>` 安装该插件，**装完自动启用**（v0.7.1）。
 - **更新检测**：已安装的插件在仓库发布了更高版本时，按钮显示「更新」（蓝色），点击即重新安装升级到新版本。
 - **废弃标注**：被其他插件合并的旧资源（如 `dl-accel` 已并入 `gh-accel`）会自动标注「已并入」，不再误导。
 
 ## 安装
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.0/dsh-jack-market-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.1/dsh-jack-market-plugin.tgz
 ```
 
 ## 使用
 
 装完重启一次 App（让设置页入口出现），然后打开 **设置 → Jack 插件市场**。列出插件点「安装」即可一键安装；已安装的插件显示「已安装」，若仓库有新版本则显示蓝色「更新」按钮，点击即升级。
+
+> **v0.7.1 装上即启用 + 深色模式按钮可读**
+> - **「装完还要去插件页面手动启用一次」**（根因）：本市场走的是 `pnpm add`，而 pnpm 只写 `package.json` 的 `dependencies`（装到磁盘），**从不写 `dsh.profile.bundles`**（进运行时）。官方安装器装完会补一步 `selectBundle(name, true)`，本市场没有这一步，于是每个插件装完都停在「已安装但未启用」。
+>   - 现在安装成功后自动把新包写进 `bundles`（复刻官方行为），并按「装前 vs 装后 dependencies 差集」精确定位包名（兼容 `@local/xxx`、`dsh-xxx`、`xxx` 三种命名）；
+>   - 已装但未启用的历史插件，卡片按钮直接变成「启用」，点一下即可，无需去插件页面；
+>   - 卡片会明确提示「未启用（点右侧「启用」后重启生效）」，不再用灰色「已安装」骗人。
+> - **深色模式下「安装」两个字看不清**：按钮底色用 `--dsw-alias-brand-primary` 而文字写死 `#fff`。该 token 在深色主题下是**近白色**（#f9fafb），白字压白底，对比度只有 **1.05:1**（等于隐形）。
+>   - 改为官方主按钮标准组合：底色 `--dsw-alias-button-primary-fill` + 文字 `--dsw-alias-label-primary-foreground`（随主题反色，深浅对比度 18.9:1 / 18.08:1）；
+>   - 顺带修掉进度条（深色下用品牌色会变成近白条，几乎看不见）、阶段文字、成功/失败提示色的同类问题，深浅两套主题全部达到 WCAG AA。
 
 > **v0.7.0 简介来源改为根 README**
 > - **问题**：以前卡片上的「简介」取的是 Release 的版本更新说明（如「修复 xxx」），用户根本看不出这插件是干嘛的；
