@@ -54,6 +54,8 @@ const downloadOutputSchema = {
     kbPerSec: { type: 'number' },
     via: { type: 'string' },
     ruleMatched: { type: 'string' },
+    archiveDegraded: { type: 'boolean' },
+    originalUrl: { type: 'string' },
   },
 };
 
@@ -101,10 +103,32 @@ const probeOutputSchema = {
 
 const GITHUB_RE = /^https:\/\/(github\.com|raw\.githubusercontent\.com|codeload\.github\.com)\//i;
 
+// 把 release 资产 URL 转成等价源码归档(tarball)URL，用于原通道 404 时降级重试。
+//   /releases/download/<tag>/<file>  →  /archive/refs/tags/<tag>.tar.gz
+// 仅当 path 匹配 releases/download/<tag> 形态且能解析出 tag 时才有效；否则返回 null。
+function buildArchiveUrl(url) {
+  try {
+    const u = new URL(url);
+    if (!/^github\.com$/i.test(u.hostname)) return null;
+    const segs = u.pathname.split('/').filter(Boolean); // [user, repo, releases, download, tag, file...]
+    const ri = segs.indexOf('releases');
+    if (ri < 0 || segs[ri + 1] !== 'download' || !segs[ri + 2]) return null;
+    const tag = segs[ri + 2];
+    if (!tag) return null;
+    const repo = `${segs[0]}/${segs[1]}`;
+    return `https://github.com/${repo}/archive/refs/tags/${encodeURIComponent(tag)}.tar.gz`;
+  } catch {
+    return null;
+  }
+}
+
 function downloadRender(args, v) {
+  const deg = v.archiveDegraded
+    ? `\n⚠ 已自动降级到源码归档通道（release 资产镜像不可达）\n  原始: ${v.originalUrl}\n  注意: 这是源码 tar.gz，非预编译二进制。`
+    : '';
   return textResult(
     `已完成: ${v.ok ? '成功' : '失败'}\n路径: ${v.path}\n大小: ${(v.bytes / 1048576).toFixed(1)} MB\n` +
-    `用时: ${v.seconds}s  平均: ${v.kbPerSec} KB/s\n路线: ${v.via}\n命中规则: ${v.ruleMatched || '无（直连分段加速）'}`,
+    `用时: ${v.seconds}s  平均: ${v.kbPerSec} KB/s\n路线: ${v.via}\n命中规则: ${v.ruleMatched || '无（直连分段加速）'}${deg}`,
   );
 }
 
@@ -251,8 +275,40 @@ export function apply(ctx, config = {}) {
       const t = clampInt(args.threads ?? threads, 8, 32);
       const pref = normalizePrefer(args.prefer ?? prefer);
       const key = exec.callId || `dl-${Date.now()}`;
-      setProgress(key, { dir: 'download', doneB: 0, totalB: 0, kbPerSec: 0 });
-      return runDownload(url, { out: args.out || undefined, threads: t, rules, prefer: pref, mirror: args.mirror || null, mirrorStyle: args.mirrorStyle || null, signal: exec.signal, onProgress: (p) => setProgress(key, { dir: 'download', ...p }) });
+      // 尝试单个通道下载；失败抛错，由外层按顺序降级下一通道
+      const attemptChannel = async (chUrl) => {
+        if (exec.signal?.aborted) throw new Error('已取消');
+        setProgress(key, { dir: 'download', doneB: 0, totalB: 0, kbPerSec: 0 });
+        const r = await runDownload(chUrl, {
+          out: args.out || undefined, threads: t, rules, prefer: pref,
+          mirror: args.mirror || null, mirrorStyle: args.mirrorStyle || null,
+          signal: exec.signal,
+          onProgress: (p) => setProgress(key, { dir: 'download', ...p }),
+        });
+        return r;
+      };
+      try {
+        // 通道1：用户给的原始 URL（release 资产 / raw / 源码归档均可）
+        return await attemptChannel(url);
+      } catch (e) {
+        // 通道2：release 资产镜像不缓存（404/403）时，切到等价源码归档通道重试——
+        // 实测归档路径更易被镜像缓存命中（node v20 release→archive，镜像可 200 下载）。
+        // 语义提醒：release 资产是预编译二进制，archive 是源码 tar.gz，二者不等价；
+        // 这里仅在原通道确实失败、且能从 tag 构造归档路径时才降级。
+        const archiveUrl = buildArchiveUrl(url);
+        if (archiveUrl && !exec.signal?.aborted) {
+          try {
+            const r = await attemptChannel(archiveUrl);
+            // 标记为降级成功，让输出明确告知用户拿到的是源码归档而非原始 release 资产
+            r.archiveDegraded = true;
+            r.originalUrl = url;
+            return r;
+          } catch (e2) {
+            throw new Error(`release 通道与 archive 通道均失败。release: ${e.message}; archive: ${e2.message}`);
+          }
+        }
+        throw e;
+      }
     },
   }));
 

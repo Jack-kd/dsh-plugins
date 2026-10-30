@@ -317,13 +317,18 @@ async function pick(url, { rule, directOnly = false, signal, prefer = 'smart', f
   if (prefer === 'mirror' && mirrorCands.length) {
     const win = await raceProbeFastest(mirrorCands, { signal, budgetMs });
     if (win && win.via !== 'direct(fallback)' && win.speed > 0) {
-      return { u: win.u, via: win.via, speed: win.speed, size: win.size, rangeOk: win.rangeOk };
+      // 大文件：TTFB 快不代表带宽足够，对大文件再对可用镜像做真实带宽采样，
+      // 选「能吃下大文件」的镜像，避免 TTFB 快但带宽低的镜像把十几 MB 拉到几十秒。
+      return await maybeRefineBigFile(win, mirrorCands, { signal, budgetMs, prefer });
     }
     // 镜像都不可用/不达标：直连门槛较高（800KB/s），仍回退直连探测
     const dr = await probe(direct.u, { followRedirects: 0, signal, budgetMs });
     if (dr.bps >= direct.min) return { u: direct.u, via: 'direct', speed: dr.bps, size: dr.size, rangeOk: dr.rangeOk };
-    // 直连也不达标：仍选首个镜像（好过没有），并保留直连作为最终兜底
-    return { u: mirrorCands[0].u, via: mirrorCands[0].via, speed: 0, size: null, rangeOk: false };
+    // 到这里说明：镜像探测全败（raceProbeFastest 已返回 fallback）+ 直连也不达标。
+    // 此时**不能**再回退选「首镜像」——那会让下载阶段对 12 个候选逐个串行重试
+    // （每个都在冷连接上再吃 ~6s TTFB/404），把一次全败拖成上百秒。
+    // 正确做法是返回 fallback，让上层只做一次快速直连兜底后立即报错。
+    return { u: url, via: 'direct(fallback)', speed: 0, size: null, rangeOk: false };
   }
 
   // smart / direct 档：TTFB 竞速（v2.9.0）——并发发起所有候选，**先到先得**。
@@ -332,7 +337,8 @@ async function pick(url, { rule, directOnly = false, signal, prefer = 'smart', f
   // 有效且达带宽门槛即立即返回（其余探针自动随 signal / 自身超时收场）。
   const cands = [direct, ...mirrorCands];
   if (prefer === 'smart' || prefer === 'direct') {
-    return await raceProbeFastest(cands, { signal, budgetMs });
+    const win = await raceProbeFastest(cands, { signal, budgetMs });
+    return await maybeRefineBigFile(win, cands, { signal, budgetMs, prefer });
   }
 
   // 兼容分支（mirror 档已在上面处理；此处仅保险）
@@ -357,6 +363,83 @@ async function pick(url, { rule, directOnly = false, signal, prefer = 'smart', f
  * - 返回最快那条的有效路，并尽量带 size/rangeOk；都不达标时回退直连兜底。
  * 多路并发同时就绪时 Promise 仍各自 settle，这里以最先 resolve 的有效路返回。
  */
+/**
+ * 大文件选路强化（v2.9.2）：
+ * TTFB 竞速只保证「首字节快」，对几十 MB 的大文件，「持续带宽」才是决定下载耗时
+ * 的主导因素——TTFB 快 0.5s 但带宽差 3 倍的镜像，会把一次 100MB 下载拖慢数十秒。
+ * 因此当选路 winner 已知是「大文件」（size 确定且 ≥ 阈值）时，不再直接信任 TTFB
+ * 冠军，而是对它所在的候选集再做一次**真实带宽采样**（每只读 ~1MB 实测 bps），
+ * 选「能吃下大文件」的镜像，兼顾延迟(命中即用)与持续带宽(不选慢盘)。
+ * - 非大文件/未知大小：不做额外采样，直接返回 TTFB 竞速结果（保持现状、零额外开销）。
+ * - 采样带宽受 budget 约束；若所有采样都不比 TTFB 冠军好或采样失败，退回 TTFB 冠军。
+ */
+const BIG_FILE_THRESHOLD = 8 * 1024 * 1024; // ≥8MB 视为大文件，值得额外带宽采样
+const BIG_SAMPLE_BYTES = 256 * 1024;        // 每个候选带宽采样最多读 256KB（足够估 bps 且廉价）
+const BIG_SAMPLE_BUDGET_MS = 4000;          // 大文件采样整体预算：多 4s 内完成，之后按结果继续
+
+async function maybeRefineBigFile(win, cands, { signal, budgetMs }) {
+  try {
+    // 只有确认是大文件且 TTFB 冠军确实可用时才细化；未知大小一律按小文件快速路径走。
+    if (!win || win.via === 'direct(fallback)' || !win.size || win.size < BIG_FILE_THRESHOLD) {
+      return win;
+    }
+    // 采样子集：TTFB 冠军 + 其余候选（有限个，避免对几十个镜像全采样）
+    const targets = cands.length > 6 ? cands.slice(0, 6) : cands;
+    const results = await Promise.allSettled(
+      targets.map((c) =>
+        probeBandwidth(c.u, { followRedirects: c.follow, signal, maxBytes: BIG_SAMPLE_BYTES, timeoutMs: BIG_SAMPLE_BUDGET_MS }),
+      ),
+    );
+    // 选出带宽最高且大于 TTFB 冠军 bps 的候选；否则保留 TTFB 冠军（避免越选越差）
+    let best = { bps: win.speed || 0, cand: null };
+    let bestRange = win.rangeOk === true; // 默认沿用 TTFB 冠军的 range 判定
+    targets.forEach((c, i) => {
+      const r = results[i].status === 'fulfilled' ? results[i].value : { bps: 0, rangeOk: false };
+      if (r.bps > best.bps) { best = { bps: r.bps, cand: c }; bestRange = r.rangeOk === true; }
+    });
+    if (best.cand) {
+      if (best.cand.via !== 'direct') rememberMirrorSpeed(best.cand.via, best.bps);
+      // rangeOk 必须来自实际探测：只有采样确认该镜像支持 Range(206) 才允许分片。
+      // 硬编码 true 会误导上层认为可分片，实际不支持时导致"部分分片下载失败"。
+      return { u: best.cand.u, via: best.cand.via, speed: best.bps, size: win.size, rangeOk: bestRange };
+    }
+    return win;
+  } catch {
+    return win; // 采样过程异常不影响主流程，退回 TTFB 冠军
+  }
+}
+
+// 单个候选的真实带宽采样：读一段数据测 bps（区别于 probeTTFB 只拿首字节）。
+async function probeBandwidth(url, { followRedirects = 1, signal, maxBytes = BIG_SAMPLE_BYTES, timeoutMs = BIG_SAMPLE_BUDGET_MS }) {
+  const t0 = Date.now();
+  try {
+    const { status, headers, stream } = await httpGet(url, {
+      headers: { Range: `bytes=0-${maxBytes - 1}` },
+      followRedirects,
+      signal,
+      timeoutMs,
+    });
+    if (status !== 200 && status !== 206) { stream.resume(); return { bps: 0, size: null, rangeOk: false }; }
+    let size = null;
+    const cr = headers['content-range'];
+    if (cr && cr.includes('/')) size = Number(cr.split('/').pop());
+    else if (status === 200) size = Number(headers['content-length'] || 0);
+    let len = 0;
+    await new Promise((resolve) => {
+      let s = false;
+      const done = () => { if (!s) { s = true; resolve(); } };
+      stream.on('data', (c) => { len += c.length; });
+      stream.on('end', done); stream.on('close', done); stream.on('error', done);
+      if (signal) signal.addEventListener('abort', done, { once: true });
+    });
+    if (len <= 0) return { bps: 0, size: null, rangeOk: status === 206 };
+    const secs = Math.max((Date.now() - t0) / 1000, 0.01);
+    return { bps: Math.max(len / secs, 1), size, rangeOk: status === 206 };
+  } catch {
+    return { bps: 0, size: null, rangeOk: false };
+  }
+}
+
 export async function raceProbeFastest(cands, { signal, budgetMs }) {
   // 若无候选或预算异常，直接回退
   if (!cands.length) return { u: '', via: 'direct(fallback)', speed: 0, size: null, rangeOk: false };
@@ -437,6 +520,9 @@ async function downloadRange(url, start, end, dest, { retries = 2, signal, onByt
       const { status, stream } = await httpGet(url, { headers, followRedirects: 5, signal });
       if (status !== 200 && status !== 206) {
         stream.resume();
+        // 4xx 属于资源级错误（404 不存在 / 403 拒绝等）：该 URL 确定性不可用，
+        // 重试毫无意义，立即失败让上层切换到下一候选/通道，而不是反复等重试。
+        if (status >= 400 && status < 500) return false;
         throw new Error(`HTTP ${status}`);
       }
       // 无进度回调时保持原行为（纯管线直写）
