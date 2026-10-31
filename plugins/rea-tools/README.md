@@ -2,6 +2,23 @@
 
 把 **REA + Ghidra + JADX** 的逆向能力变成 DSH 原生工具：一键安装 + 原生二进制/APK 逆向。
 
+**v0.2.10**：**深度复查修复——消除选项状态泄漏 + 补全进度阶段覆盖**（全面重读了 install-manager.js / index.js / client.js / install-rea-ghidra.sh）：
+
+- **`rea_install` 的 `--compile` / `--install-dir` 选项状态残留（真 bug）**：旧实现把这两个选项写进全局 `process.env`（`REA_FORCE_COMPILE` / `REA_INSTALL_DIR`）且**从不清除**。`process.env` 是进程级单例，于是用户某次用 `--compile` 装过后，之后再跑裸 `rea_install()` 仍会被残留值污染——**静默地改走源码编译 / 改安装目录**，用户毫无察觉。同理 `--skip-rea` 写的 `REA_SKIP_REA` 是**死代码**（脚本从不读它，`ghidra-only` 靠 tier → `--skip-rea` 参数正确工作）。现改为**把这三个选项直接作为第 5 个参数 `opts` 传给 `startInstall`**（`{compile, installDir}`），完全不碰全局环境变量，零残留；`doInstall`（命令/HTTP 路径）本就从没设过 env，行为不变。
+- **x86_64 反编译器阶段漏标记（进度显示小瑕疵）**：`parseLine` 的反编译器阶段正则没覆盖脚本的 `x86_64 发布包自带反编译器，无需处理` 这行——x86_64 上反编译器是 GitHub 发布包自带的、无需下载，但该阶段既没 `setStage` 也没 `markDone`，进度分母里始终含这 2MB 而分子一直加不上，百分比会卡在 99%（直到「安装完成」才一次性到 100）。补上对 `x86_64…自带反编译器` 的识别：既正确设阶段（label「x86_64 反编译器（自带）」）、又直接 `markDone`。
+- **`rea-agents` 版本号硬编码误导**：脚本用 `npm install --global rea-agents` 装**最新版**（从不钉死版本），而 UI 弹窗里却硬显示 `rea-agents 6.5.0`（`VERSIONS.rea` 常量）——实际装到的常是更高版（如 6.7.0），展示是错的。`rea` 这项现在**不再显示具体版本号**（JADX/Ghidra 是脚本钉死的版本，仍如实显示）。
+
+**v0.2.9**：修复**「设置页点『安装环境』弹窗被设置页盖住，必须关掉设置页才能看到」**：
+
+- **根因**：安装弹窗挂在 `shell.overlay` 全屏浮层，而该容器自身 `z-index` 仅 **20**（`ui-layout` 的 `.pI_x6G_overlayLayer`），并且它**会形成独立的层叠上下文（stacking context）**——弹窗内部哪怕把 `z-index` 设成 60，也被锁在这层低 z-index 上下文里出不去。而 DSH 的设置页抽屉是**更高层的独立浮层**，于是弹窗被压在设置页之下，表现为「得先关掉设置页才看得到弹窗」。
+- **修复**：弹窗改用 **`React.createPortal` 直接渲染到 `document.body` 顶层**，z-index 提到 9999——**彻底脱离 shell.overlay 那层低 z-index 容器**的层级束缚，无论设置页是多高的浮层都能悬浮在其之上。进度详情面板（同一套 overlay）也一并修复。
+- 兼容保护：若运行时 `ReactDOM.createPortal` 不可用则自动回退到原渲染方式，不崩。
+- **「稍后再说」关闭前文案闪变**：点「稍后再说 / 保留 / 删除」这类非安装动作时，`busy` 标志也被置 `true`，导致弹窗关闭前一帧「后台安装…」误变成「正在启动…」。现在这些动作走新增的 `noBusy` 分支，**不触碰 busy 状态**（`busy` 只保留给真正会启动安装/下载的 install 动作，用于禁用防重复提交），软按钮文案不再闪变。
+- **弹窗关闭不顺手 / 系统返回键关不掉**：在 DSHA（`com.dsh.client`）这类**原生壳内嵌 WebView** 里，系统返回手势由 App 壳的 `onBackPressed` 接管（用来切换页面/回到工作区），返回键不会作为 `popstate` 传给壳内网页——所以插件侧无法用「系统返回」可靠地关掉网页内弹窗。现改为**更自然、不依赖系统返回的关闭方式**：① **点弹窗/面板外的遮罩空白处即可关闭**（Android 用户最习惯的手势）；② 「稍后再说」等关闭按钮**同步立刻收起 UI**（不再等网络往返，杜绝「点了没反应/卡住」）。进度详情面板同理：点面板外可收起，且不取消安装。
+- **安装进度胶囊大改（双进度条 + 速度 + 当前工具名 + 顺滑动画）**：此前胶囊只有一条总进度条，下载多个工具时看起来「忽 1%、忽 64%」像在倒退。现在改成：① **当前正在下载的那个工具**有一条进度条（细/绿色，工具内 0→100 顺滑递增）；② **总进度**（跨全部工具按体积加权）一条进度条（粗/蓝色）；③ 顶部显示**当前下载的工具名**；④ 底部显示**已下载体积 + 实时下载速度**（KB/s/MB/s，1.5s 采样、平滑平均，不突变）。进度条宽度带 CSS 过渡动画，不再跳大段。安装中客户端 1s 轮询刷新，保证进度和速度跟手。
+- **修复「Ghidra 装完却显示未安装/提示『升级到升级版本』」**：**根因**是解压分支 bug——系统**没有 `unzip`** 时脚本走 `jar xf` 分支，且它在 `INSTALL_DIR` 目录**内部**解压；而 Ghidra zip 的顶层目录本身就是 `ghidra_12.1.4_PUBLIC/`，于是解压出 `INSTALL_DIR/ghidra_12.1.4_PUBLIC/` 的**嵌套目录**，`Ghidra/application.properties` 落进内层，探测路径找不到 → 判定「没装 Ghidra」→ UI 一直显示「升级到升级版本」。现改为**无论 unzip 还是 jar 都先解压到临时根目录，再把内容展平搬到位**（含罕见双嵌套的自动展平兜底），并以 `application.properties` 是否就位做硬校验，杜绝错位后静默误判。
+- **下载加速接入 gh-accel？——实测后回退**：曾尝试把 GitHub 大文件（Ghidra/JADX/反编译器）下载接入 `@local/gh-accel` 的多线程 Range 分片（新增 `download-accel.mjs` 桥、让 `download_resume` 优先进它、失败回退 curl）。但**实际对比测速**：脚本原生 `ghfast.top` 镜像 + 单线程 curl 下 JADX 40MB 稳定 **14~30s（≈2.9MB/s）** 成功；而 gh-accel 多线程（8 分片）**167s 仍失败**（分片被源 hold 住、降级也失败、文件未落盘）——多线程 Range 分片对当前环境这类加速源支持不完整。**结论：在这里接入 gh-accel 反而更慢且失败，因此回退，保留原生 ghfast 单线程下载。**（记录在此供日后网络环境变化时参考，勿盲目重引入。）
+
 **v0.2.8**：修复**「首启不自动弹窗」+「设置页安装按钮点了没反应」**（三个 bug 叠加）：
 
 1. **弹窗永远不出现（根因）**：旧版把安装弹窗注册在 `conversation.composer`。该插槽在 `ui-conversation` 里声明为 **chain**（`kind: 'chain'`），而 `SlotCore.register` 对 chain **强制要求 `options.select`**，缺了直接抛 `chain slot "conversation.composer" requires options.select`。抛错发生在 `slots.inject` 的回调里，**只进 console** —— 注册整体不生效，所以「装完重启该自动弹窗却没弹」。

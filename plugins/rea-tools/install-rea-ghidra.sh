@@ -272,15 +272,35 @@ else
     echo "${GHIDRA_SHA256}  ${GHIDRA_ZIP}" | sha256sum -c - || die "Ghidra zip SHA-256 校验失败"
   fi
   log "解压到 ${INSTALL_DIR} ..."
-  mkdir -p "$(dirname "${INSTALL_DIR}")"
+  # 无论 unzip 还是 jar，都展开到一个「临时根目录」，再统一把内容放到 INSTALL_DIR。
+  # 旧版 jar 分支会在 INSTALL_DIR *内部* `jar xf`，而 Ghidra zip 的顶层目录就是
+  # ghidra_12.1.4_PUBLIC，于是解压出 INSTALL_DIR/ghidra_12.1.4_PUBLIC/ 的嵌套目录，
+  # 导致 application.properties 探测不到、UI 误判成「未装 Ghidra」。统一走临时根目录可根治。
+  PARENT="$(dirname "${INSTALL_DIR}")"
+  mkdir -p "${PARENT}"
+  STAGE_ROOT="${INSTALL_DIR}.unpacking.$$"
+  rm -rf "${STAGE_ROOT}" && mkdir -p "${STAGE_ROOT}"
   if has_cmd unzip; then
-    unzip -q "${GHIDRA_ZIP}" -d "$(dirname "${INSTALL_DIR}")"
+    unzip -q "${GHIDRA_ZIP}" -d "${STAGE_ROOT}"
   elif has_cmd jar; then
-    mkdir -p "${INSTALL_DIR}" && cd "${INSTALL_DIR}" && jar xf "${GHIDRA_ZIP}"
+    (cd "${STAGE_ROOT}" && jar xf "${GHIDRA_ZIP}")
   else
+    rm -rf "${STAGE_ROOT}"
     die "无 unzip/jar，无法解压"
   fi
-  [[ -d "${INSTALL_DIR}" ]] || die "解压后未找到 ${INSTALL_DIR}"
+  # zip 顶层若带单个根目录（Ghidra zip 的顶层就是 ghidra_12.1.4_PUBLIC），把该根目录
+  # 的内容整体搬到 INSTALL_DIR；否则直接把展开内容搬过去。双重保险防嵌套。
+  rm -rf "${INSTALL_DIR}"
+  if [[ -d "${STAGE_ROOT}/$(basename "${INSTALL_DIR}")" && \
+        ! -f "${STAGE_ROOT}/$(basename "${INSTALL_DIR}")/Ghidra/application.properties" && \
+        -f "${STAGE_ROOT}/$(basename "${INSTALL_DIR}")/$(basename "${INSTALL_DIR}")/Ghidra/application.properties" ]]; then
+    # 罕见双嵌套（展开根目录内又套同名目录）：把内层那个同名目录的内容搬到 INSTALL_DIR
+    mv "${STAGE_ROOT}/$(basename "${INSTALL_DIR}")/$(basename "${INSTALL_DIR}")" "${INSTALL_DIR}"
+  else
+    mv "${STAGE_ROOT}/$(basename "${INSTALL_DIR}")" "${INSTALL_DIR}"
+  fi
+  rm -rf "${STAGE_ROOT}"
+  [[ -f "${INSTALL_DIR}/Ghidra/application.properties" ]] || die "解压后未找到 Ghidra 主目录（application.properties 缺失）: ${INSTALL_DIR}"
   if [[ "${KEEP_ZIP}" -eq 0 ]]; then
     rm -f "${ZIP_CACHE}"
     log "已按要求删除 zip 缓存"

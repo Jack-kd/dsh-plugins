@@ -34,10 +34,14 @@
       factory(require) {
         const React = require('react')
         const h = React.createElement
+        // react-dom（用于 Portal 把弹窗挂到 body 顶层）。若某环境不可 require，
+        // 退化为 null，后续走「不 Portal 的原渲染」路径，绝不因 require 抛错拖垮整个插件。
+        let ReactDOM = null
+        try { ReactDOM = require('react-dom') } catch { /* 无 react-dom，回退到原渲染 */ }
 
         // ---------------- 样式（全部走主题 token） ----------------
         const CSS = `
-.reaOverlay{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;
+.reaOverlay{position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;
   background:color-mix(in srgb,var(--dsw-alias-bg-base) 62%,transparent);padding:16px;animation:reaFade .15s ease-out}
 .reaDialog{width:100%;max-width:560px;max-height:88vh;overflow:auto;border-radius:var(--dsw-radius-xl,16px);
   background:var(--dsw-specific-input-major,var(--dsw-alias-bg-module-platform));color:var(--dsw-alias-label-primary);
@@ -94,8 +98,27 @@
   50%{opacity:.5;box-shadow:0 0 10px var(--dsw-alias-state-business-primary)}}
 .reaBar{flex:1;min-width:40px;height:4px;border-radius:2px;background:var(--dsw-alias-bg-overlay);overflow:hidden}
 .reaBarIn{height:100%;background:var(--dsw-alias-state-business-primary);transition:width .3s ease}
+/* 胶囊双进度条：当前工具条(更细、高亮)与总进度条(较粗)。宽度变化带过渡，避免跳动。 */
 .reaPillBody{display:flex;flex-direction:column;gap:1px;min-width:0;line-height:1.25}
 .reaPillMainRow{white-space:nowrap}
+.reaPillTitleRow{display:flex;align-items:center;gap:6px;min-width:0}
+.reaPillStageName{font-weight:600;font-size:11px;color:var(--dsw-alias-state-business-primary,#1668dc);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:120px}
+.reaPillBarRow{display:flex;align-items:center;gap:7px;min-width:0}
+.reaPillBarRow .reaPillBarInner{flex:1;min-width:70px;height:4px;border-radius:2px;background:var(--dsw-alias-bg-overlay);overflow:hidden}
+.reaPillBarInner .reaPillBarIn{height:100%;border-radius:2px;transition:width .4s ease}
+.reaPillBarInner.reaPillBarTotal{height:6px}
+.reaPillBarInner.reaPillBarTotal .reaPillBarIn{background:var(--dsw-alias-state-business-primary,#1668dc)}
+.reaPillBarInner.reaPillBarStage{height:4px}
+.reaPillBarInner.reaPillBarStage .reaPillBarIn{background:var(--dsw-alias-state-success-primary,#2ea043)}
+/* 当前工具阶段若无字节进度(jdk/rea 是 apt/npm 装、无下载文件) → 用不确定动画跑马灯 */
+.reaPillBarInner.reaPillBarStage .reaPillBarIn.reaIndet{
+  width:36%!important;animation:reaIndet 1.1s ease-in-out infinite;
+  background:linear-gradient(90deg,transparent,var(--dsw-alias-state-success-primary,#2ea043),transparent)}
+@keyframes reaIndet{0%{transform:translateX(-110%)}55%{transform:translateX(0)}100%{transform:translateX(300%)}}
+.reaPillPct{flex:none;font-size:11px;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-secondary);min-width:34px;text-align:right}
+.reaPillMeta{font-size:11px;color:var(--dsw-alias-label-tertiary);white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
 .reaPillTarget{font-size:11px;font-weight:500;color:var(--dsw-alias-label-tertiary);white-space:nowrap;
   overflow:hidden;text-overflow:ellipsis;max-width:180px}
 .reaStages{margin:8px 0 0;display:flex;flex-direction:column;gap:7px}
@@ -127,6 +150,10 @@
           stage: 'reaStage', stageDone: 'reaStageDone', stageIco: 'reaStageIco', stageName: 'reaStageName',
           stageMeta: 'reaStageMeta', log: 'reaLog', settingRow: 'reaSettingRow', settingText: 'reaSettingText',
           settingName: 'reaSettingName', settingDesc: 'reaSettingDesc', ok: 'reaOk',
+          pillTitleRow: 'reaPillTitleRow', pillStageName: 'reaPillStageName', pillBarRow: 'reaPillBarRow',
+          pillBarInner: 'reaPillBarInner', pillBarTotal: 'reaPillBarTotal', pillBarStage: 'reaPillBarStage',
+          pillBarIn: 'reaPillBarIn', pillPct: 'reaPillPct', pillMeta: 'reaPillMeta',
+          indet: 'reaIndet',
         }
 
         // ---------------- 组件清单定义（数据驱动，便于联动） ----------------
@@ -136,7 +163,7 @@
         const DEFAULT_VERSIONS = { rea: '6.5.0', jadx: '0.7.1', ghidra: '12.1.4' }
         const itemDefs = (sizes, versions) => [
           { key: 'jdk', name: 'JDK 21 (headless)', mb: sizes.jdk, desc: 'Java 运行环境，JADX 与 rea 的运行前置' },
-          { key: 'rea', name: `rea-agents ${versions.rea}`, mb: sizes.rea, desc: '提供 rea 命令与 7 个分析工具' },
+          { key: 'rea', name: 'rea-agents', mb: sizes.rea, desc: '提供 rea 命令与 7 个分析工具' },
           { key: 'jadx', name: `JADX 桥接 ${versions.jadx}`, mb: sizes.jadx, desc: 'APK 反编译引擎（DEX → Java）' },
           { key: 'ghidra', name: `Ghidra ${versions.ghidra}`, mb: sizes.ghidra, desc: '可选增强：伪代码反编译 / 汇编分析 / 调用关系；含 arm64 反编译器 1.8 MB（配套件，自动带上）' },
         ]
@@ -279,8 +306,11 @@
                 h('div', { className: S.childDesc + (item.key === 'ghidra' ? ' ' + S.warn : '') }, item.desc)))
           }
 
-          return h('div', { className: S.overlay, role: 'dialog', 'aria-modal': 'true' },
-            h('div', { className: S.dialog },
+          return h('div',
+            // 点遮罩(弹窗外空白区域)也关闭弹窗 —— Android 上最自然的关闭方式，
+            // 不依赖系统返回键。
+            { className: S.overlay, role: 'dialog', 'aria-modal': 'true', onClick: onDismiss },
+            h('div', { className: S.dialog, onClick: (e) => e.stopPropagation() },
               h('div', { className: S.head },
                 h('h2', { className: S.title }, '⚙ REA 逆向环境需要准备'),
                 h('p', { className: S.sub },
@@ -352,8 +382,10 @@
           // 取消动作后**立即关闭确认框**（旧版点了保留/删除后 askCancel 仍为 true，
           // 按钮卡在确认态，用户以为没生效）
           const doCancel = (fn) => () => { setAskCancel(false); fn() }
-          return h('div', { className: S.overlay, role: 'dialog', 'aria-modal': 'true' },
-            h('div', { className: S.dialog },
+          return h('div',
+            // 点遮罩(面板外空白)关闭详情面板(同步、不取消安装)，行为一致且自然。
+            { className: S.overlay, role: 'dialog', 'aria-modal': 'true', onClick: onClose },
+            h('div', { className: S.dialog, onClick: (e) => e.stopPropagation() },
               h('div', { className: S.head },
                 h('h2', { className: S.title }, '⚙ REA 逆向环境 · 安装进度'),
                 h('p', { className: S.sub },
@@ -441,12 +473,56 @@
                   (target ? h('div', { className: S.pillTarget }, target) : null))))
           }
           const pct = Math.max(0, Math.min(100, (state && state.percent) || 0))
+          // 当前工具(阶段)进度：只有 jadx/ghidra 有可 stat 的下载文件能算字节百分比；
+          // jdk(apt)/rea(npm) 无下载文件 → stageProgressible=false → 显示跑马灯动画。
+          const stageMB = (state && state.stageMB) || 0
+          const stageTotal = (state && state.stageTotalMB) || 0
+          const stageProgressible = !!(state && state.stageProgressible)
+          const stagePct = stageProgressible && stageTotal
+            ? Math.min(100, Math.round((stageMB / stageTotal) * 100)) : 0
+          const stageName = (state && state.stageLabel) || '准备环境'
+          // 已下完工具数 / 总工具数（按目标层级）
+          const doneStages = Array.isArray(state && state.doneStages) ? state.doneStages : []
+          const tierKey = (state && state.targetTier) || 'basic'
+          const TIER_KEYS = {
+            basic: ['jdk', 'rea', 'jadx'],
+            full: ['jdk', 'rea', 'jadx', 'ghidra', 'decompiler'],
+            'ghidra-only': ['jdk', 'ghidra', 'decompiler'],
+          }
+          const tierTools = TIER_KEYS[tierKey] || TIER_KEYS.basic
+          const doneCount = tierTools.filter((k) => doneStages.includes(k)).length
+          const toolsPct = Math.round((doneCount / tierTools.length) * 100)
+          const totalMB = (state && state.totalMB) || 0
+          const doneMB = (state && state.doneMB) || 0
+          // 下载速度：KB/s → 友好字符串（MB/s 或 KB/s）
+          const kbps = (state && state.speedKBps) || 0
+          const speedText = kbps <= 0 ? null : (kbps >= 1024
+            ? (kbps / 1024).toFixed(1) + ' MB/s'
+            : Math.max(1, Math.round(kbps)) + ' KB/s')
           return h('div', { className: S.pill },
-            h('div', { className: S.pillCard, onClick: onOpen, role: 'status', 'aria-live': 'polite', title: '点击查看详情' },
-              h('span', { className: S.dot }),
-              h('span', null, '⚙ REA 环境准备中'),
-              h('span', { className: S.bar }, h('span', { className: S.barIn, style: { width: pct + '%' } })),
-              h('span', null, pct + '%')))
+            h('div', { className: S.pillCard, onClick: onOpen, role: 'status', 'aria-live': 'polite',
+              title: '正在下载 ' + stageName + ' · 已下完 ' + doneCount + '/' + tierTools.length + ' 个工具 · 总进度 ' + pct + '%' },
+              h('div', { className: S.pillBody },
+                // 标题行：光点 + 标题 + 当前工具名
+                h('div', { className: S.pillTitleRow },
+                  h('span', { className: S.dot }),
+                  h('span', null, '⚙ 正在下载'),
+                  h('span', { className: S.pillStageName }, stageName)),
+                // 当前工具进度条（细·绿）：有字节进度则百分比，否则跑马灯动画
+                h('div', { className: S.pillBarRow },
+                  h('div', { className: S.pillBarInner + ' ' + S.pillBarStage },
+                    h('div', { className: S.pillBarIn + (stageProgressible || stageTotal <= 0 ? '' : ' ' + S.indet),
+                      style: stageProgressible && stageTotal > 0 ? { width: stagePct + '%' } : (stageTotal > 0 ? {} : { width: '0%' }) })),
+                  h('span', { className: S.pillPct }, stageProgressible && stageTotal > 0 ? stagePct + '%' : '…')),
+                // 已下完工具数条（粗·蓝）：N/M 个工具
+                h('div', { className: S.pillBarRow },
+                  h('div', { className: S.pillBarInner + ' ' + S.pillBarTotal },
+                    h('div', { className: S.pillBarIn, style: { width: toolsPct + '%' } })),
+                  h('span', { className: S.pillPct }, doneCount + '/' + tierTools.length)),
+                // 底部元信息：已下载体积 + 下载速度
+                speedText ? h('div', { className: S.pillMeta },
+                  '已下载 ' + fmt(doneMB || stageMB) + ' / ' + fmt(totalMB || stageTotal) + ' MB · ' + speedText)
+                  : null)))
         }
 
         // ================= 设置页入口 =================
@@ -522,13 +598,18 @@
           }
 
           // 统一的动作执行：失败一定写进 uiState.error（不再静默）
-          const runAction = async (payload, okPatch) => {
-            push({ busy: true, error: null })
+          // opts.noBusy=true 时不改 busy —— 用于「稍后再说 / 保留 / 删除 / 关闭」这类
+          // 非安装动作。它们若也置 busy，会瞬间把「后台安装…」按成「正在启动…」，
+          // 造成弹窗关闭前一帧的文案闪烁。
+          const runAction = async (payload, okPatch, opts) => {
+            if (!(opts && opts.noBusy)) push({ busy: true, error: null })
             const r = await postAction(payload)
             if (r.ok) {
-              push({ busy: false, ...(okPatch || {}) })
+              if (!(opts && opts.noBusy)) push({ busy: false })
+              push(okPatch || {})
             } else {
-              push({ busy: false, error: r.text || '操作失败' })
+              if (!(opts && opts.noBusy)) push({ busy: false })
+              push({ error: r.text || '操作失败' })
             }
             await source.refresh()
             return r
@@ -538,9 +619,14 @@
             { action: 'install', tier: tier === 'full' ? 'full' : 'basic', remember: remember !== false },
             { dialog: false },
           )
-          const dismiss = () => runAction({ action: 'dismiss' }, { dialog: false, detail: false })
-          const cancelKeep = () => runAction({ action: 'cancel' })
-          const cancelClean = () => runAction({ action: 'cancel-clean' })
+          // 「稍后再说」/ 点遮罩关闭：立即同步把 UI 关掉（不依赖网络往返，保证弹窗
+          // 必消失、不会因 HTTP 失败而卡住），再在后台通知服务端，不阻塞 UI。
+          const dismiss = () => {
+            push({ dialog: false, detail: false })
+            postAction({ action: 'dismiss' }).catch(() => {})
+          }
+          const cancelKeep = () => runAction({ action: 'cancel' }, null, { noBusy: true })
+          const cancelClean = () => runAction({ action: 'cancel-clean' }, null, { noBusy: true })
 
           // ---------- 1) 安装弹窗 + 进度详情（全屏浮层，root 作用域）----------
           // 注册在 shell.overlay 而不是 conversation.composer：后者是 chain 插槽，
@@ -552,25 +638,65 @@
           }, function ReaOverlay() {
             const state = useSource(source)
             const ui = useUiState()
+            // 系统返回键关闭弹窗：弹窗可见时压一条 history 记录并监听 popstate，
+            // 这样 Android/WebView 的返回键(或浏览器后退)会触发 popstate → 关弹窗，
+            // 而不是直接作用到底层页面/退出应用。
+            const visible = !!(state && (ui.detail || ui.dialog || !!state.showDialog))
+            const REA_BACK_KEY = 'rea-tools-back'
+            React.useEffect(() => {
+              if (!visible) return undefined
+              const lenBefore = window.history.length
+              // 压入弹窗标记位，让返回键先"命中"这个记录而非底层页面
+              window.history.pushState(Object.assign({}, window.history.state, { [REA_BACK_KEY]: true }), '')
+              try { console.log('[rea-tools] dialog visible, history.length=' + lenBefore + '->' + window.history.length) } catch { /* ignore */ }
+              const onPop = () => {
+                // 返回触发：移除监听防重入。
+                window.removeEventListener('popstate', onPop)
+                try { console.log('[rea-tools] popstate fired, closing overlay') } catch { /* ignore */ }
+                // 同步关闭弹窗，不依赖异步 HTTP —— 弹窗必须「立即」从屏幕上消失。
+                // （dismiss 走 HTTP，若等它回来再关会有可见延迟；且这里仅需关掉 UI。）
+
+                push({ detail: false, dialog: false })
+                // 后台通知服务端「弹窗已被关闭」，不阻塞 UI，失败忽略。
+                postAction({ action: 'dismiss' }).catch(() => {})
+              }
+              window.addEventListener('popstate', onPop)
+              return () => {
+                window.removeEventListener('popstate', onPop)
+                // 弹窗因按钮正常关闭时，把压入的标记位回退掉，避免在 history 里残留
+                if (history.state && history.state[REA_BACK_KEY]) history.back()
+              }
+            }, [visible, ui.detail])
             if (!state) return null
             // 详情面板优先（用户主动点的），否则按宿主 showDialog 自动弹窗
+            let content
             if (ui.detail) {
-              return h(ProgressPanel, {
+              content = h(ProgressPanel, {
                 state,
                 onClose: () => push({ detail: false }),
                 onCancelKeep: cancelKeep,
                 onCancelClean: cancelClean,
               })
+            } else {
+              const wantDialog = ui.dialog || !!state.showDialog
+              if (wantDialog) {
+                content = h(InstallDialog, {
+                  state,
+                  busy: ui.busy,
+                  error: ui.error,
+                  onInstall: (tier, remember) => install(tier, remember),
+                  onDismiss: dismiss,
+                })
+              }
             }
-            const wantDialog = ui.dialog || !!state.showDialog
-            if (!wantDialog) return null
-            return h(InstallDialog, {
-              state,
-              busy: ui.busy,
-              error: ui.error,
-              onInstall: (tier, remember) => install(tier, remember),
-              onDismiss: dismiss,
-            })
+            // Portal 到 document.body：shell.overlay 容器自身 z-index 仅 20，
+            // 而 DSH 设置页抽屉是更高层的独立浮层——弹窗若留在 overlay 容器里，
+            // 会因父层 stacking context 被设置页盖住，必须「关掉设置页才能看到」。
+            // 用 React Portal 直接挂 body 顶层 + 高 z-index，即可始终悬浮在设置页之上。
+            if (content == null) return null
+            return ReactDOM && typeof ReactDOM.createPortal === 'function'
+              ? ReactDOM.createPortal(content, document.body)
+              : content
           }))
 
           // ---------- 2) 进度胶囊 / 工具工作状态 ----------

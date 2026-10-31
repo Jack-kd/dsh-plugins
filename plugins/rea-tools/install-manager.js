@@ -160,6 +160,9 @@ function parseLine(line, state) {
       s.stageLabel = label
       s.stageTotalMB = mb
       s.stageMB = 0          // 只有换阶段才清零
+      // 该阶段是否有「可 stat 的下载文件」：jadx/ghidra 有独立 tar/jar 文件可算字节
+      // 百分比；jdk(apt)/rea(npm) 落地成系统组件，无法算字节进度 → 前端显示动画。
+      s.stageProgressible = !!STAGE_FILES[key]
     } else if (!s.stageTotalMB) {
       // 同阶段重复命中：只补全 label/total，不动 stageMB
       s.stageLabel = label
@@ -170,6 +173,7 @@ function parseLine(line, state) {
   if (/下载 Ghidra|检测到已存在的 Ghidra/.test(line)) setStage('ghidra', 'Ghidra 12.1.4', SIZES.ghidra)
   else if (/下载 JADX|JADX 桥接已存在|JADX 桥接就绪/.test(line)) setStage('jadx', 'JADX 桥接', SIZES.jadx)
   else if (/尝试从仓库拉取|使用预编译反编译器|反编译器已存在|反编译器编译完成/.test(line)) setStage('decompiler', 'arm64 反编译器', SIZES.decompiler)
+  else if (/x86_64 发布包自带反编译器/.test(line)) setStage('decompiler', 'x86_64 反编译器（自带）', SIZES.decompiler)
   else if (/apt 安装 openjdk|未找到 JDK|检测到 Java/.test(line)) setStage('jdk', 'JDK 21', SIZES.jdk)
   else if (/安装 rea-agents|检测到已安装 rea-agents/.test(line)) setStage('rea', 'rea-agents', SIZES.rea)
 
@@ -180,6 +184,7 @@ function parseLine(line, state) {
   if (/检测到已存在的 Ghidra/.test(line)) markDone('ghidra')
   if (/JADX 桥接已存在且校验通过/.test(line)) markDone('jadx')
   if (/反编译器已存在且可执行/.test(line)) markDone('decompiler')
+  if (/x86_64 发布包自带反编译器/.test(line)) markDone('decompiler')  // 自带无需下载，直接算完成
   if (/检测到 Java 21/.test(line)) markDone('jdk')
   if (/检测到已安装 rea-agents/.test(line)) markDone('rea')
   if (/缓存校验通过，直接复用/.test(line)) markDone('ghidra')
@@ -241,8 +246,13 @@ export function currentProgress() { return current ? current.progress : null }
  * @param {'basic'|'full'} tier 目标环境
  * @param {(progress:object)=>void} onProgress 进度回调（写投影用）
  * @param {()=>Promise<void>} onDone 结束回调
+ * @param {{compile?:boolean, installDir?:string}} [opts]
+ *   v0.2.10 修复：额外的安装选项改为**显式参数**传入，不再用 process.env 传递。
+ *   旧实现靠 `process.env.REA_FORCE_COMPILE / REA_INSTALL_DIR`，而 process.env 是全局
+ *   单例、设了不清除 → 用户在 rea_install 用了一次 `--compile`/`--install-dir`，之后
+ *   再调 rea_install（不带这些选项）仍会被上一次的值污染，silently 走编译/改路径。
  */
-export function startInstall(pluginDir, tier, onProgress, onDone) {
+export function startInstall(pluginDir, tier, onProgress, onDone, opts = {}) {
   if (current) return { ok: false, error: 'ALREADY_RUNNING' }
 
   const script = path.join(pluginDir, 'install-rea-ghidra.sh')
@@ -253,8 +263,8 @@ export function startInstall(pluginDir, tier, onProgress, onDone) {
   //   ghidra-only = 只装 Ghidra（跳过 rea）                    → --skip-rea
   if (tier === 'basic') args.push('--skip-ghidra')
   else if (tier === 'ghidra-only') args.push('--skip-rea')
-  if (process.env.REA_FORCE_COMPILE === '1') args.push('--compile')
-  if (process.env.REA_INSTALL_DIR) args.push('--install-dir', process.env.REA_INSTALL_DIR)
+  if (opts.compile) args.push('--compile')
+  if (opts.installDir) args.push('--install-dir', opts.installDir)
 
   const child = spawn('bash', [script, ...args], {
     cwd: pluginDir,
@@ -271,6 +281,7 @@ export function startInstall(pluginDir, tier, onProgress, onDone) {
     stageLabel: null,
     stageMB: 0,
     stageTotalMB: 0,
+    stageProgressible: false,
     stageDone: [],
     source: null,
     percent: 0,
@@ -278,6 +289,10 @@ export function startInstall(pluginDir, tier, onProgress, onDone) {
     logTail: [],
     done: false,
     error: null,
+    // 下载速度统计（KB/s）与采样游标
+    speedKBps: 0,
+    lastTotalMB: 0,
+    lastT: 0,
   }
 
   // 记录上一阶段的完成
@@ -288,21 +303,40 @@ export function startInstall(pluginDir, tier, onProgress, onDone) {
   // 这比解析 curl 的 `\r` 进度行可靠（后者在脚本改 --no-progress-meter 后不再输出，
   // 且旧代码把 stderr 丢了根本拿不到）。文件不存在时保持 0。
   const sizeTicker = setInterval(() => {
-    const file = STAGE_FILES[state.stage]
-    if (!file || !state.stageTotalMB) return
+    const now = Date.now()
     try {
-      const bytes = fs.statSync(file).size
-      if (bytes > 0) {
-        const mb = state.stageTotalMB
-        state.stageMB = Math.round((bytes / 1048576))
-        const p = computePercent(state, tier)
-        state.percent = state.done ? 100 : p.percent
-        state.totalMB = p.total
-        state.doneMB = p.done
-        state.downloadedMB = Math.round(bytes / 1048576)
-        if (onProgress) onProgress({ ...state })
+      // ── 下载速度：用「总已完成体积 doneMB」采样增量 / 间隔（1.5s）→ KB/s
+      // 放在 stat 之前算，避免因文件暂不存在而漏掉速度更新。
+      let p = computePercent(state, tier)
+      const dt = Math.max(0.001, (now - state.lastT) / 1000)
+      const incMB = Math.max(0, (p.done - state.lastTotalMB))
+      const kBps = dt > 0 ? Math.round((incMB * 1024) / dt) : 0
+      // 平滑：与上次值平均一次，避免瞬时抖动（网络波动不至于速度乱跳）
+      state.speedKBps = state.lastT > 0 ? Math.round((state.speedKBps + kBps) / 2) : kBps
+      state.lastT = now
+      state.lastTotalMB = p.done
+
+      const file = STAGE_FILES[state.stage]
+      if (file && state.stageTotalMB) {
+        let bytes = 0
+        try { bytes = fs.statSync(file).size } catch { bytes = 0 }
+        if (bytes > 0) {
+          const mb = state.stageTotalMB
+          state.stageMB = Math.round((bytes / 1048576))
+          p = computePercent(state, tier)
+          state.percent = state.done ? 100 : p.percent
+          state.totalMB = p.total
+          state.doneMB = p.done
+          state.downloadedMB = Math.round(bytes / 1048576)
+        }
       }
-    } catch { /* 文件还没创建 */ }
+      // 阶段已切到下一个且当前文件暂无时，percent 仍按 computePercent 推（把上一个工具
+      // 计入已完成），保证总进度不倒退。
+      state.percent = state.done ? 100 : p.percent
+      state.totalMB = p.total
+      state.doneMB = p.done
+      if (onProgress) onProgress({ ...state })
+    } catch { /* 轮询异常忽略，下次再试 */ }
   }, 1500)
 
   const handle = (chunk) => {

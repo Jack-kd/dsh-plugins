@@ -132,16 +132,18 @@ export function apply(ctx) {
           return `已有安装正在进行中（${p && p.percent ? p.percent + '%' : '启动中'}）。`
             + '可在输入框上方胶囊查看进度，或再调 rea_status。'
         }
-        // --skip-rea / --compile / --install-dir 仍通过环境变量传给脚本（startInstall 只区分 tier）
-        if (args.skip_rea) process.env.REA_SKIP_REA = '1'
-        if (args.compile) process.env.REA_FORCE_COMPILE = '1'
-        if (args.install_dir) process.env.REA_INSTALL_DIR = args.install_dir
-
+        // v0.2.10 修复：--skip-rea / --compile / --install-dir 改为显式传给 startInstall
+        // 的 opts，不再写 process.env。旧写法把选项塞进全局环境变量且永不清理，导致
+        // 用户某次用 `--compile`/`--install-dir` 装过后，之后不带这些参数再装仍被
+        // 残留值污染（环境单例）。这里只推 tier + opts，状态零泄漏。
         const tier = args.skip_rea ? 'ghidra-only' : 'full'
         await writeState(__dirname, { installing: true, targetTier: tier, dismissed: true, lastError: null })
         ui.dismissed = true
         ui.showDialog = false
-        const r = startInstall(__dirname, args.skip_rea ? 'ghidra-only' : 'full', syncProgress, onInstallDone)
+        const r = startInstall(__dirname, tier, syncProgress, onInstallDone, {
+          compile: args.compile === true,
+          installDir: typeof args.install_dir === 'string' && args.install_dir.trim() ? args.install_dir.trim() : undefined,
+        })
         if (!r.ok) {
           ui.installing = false
           await writeState(__dirname, { installing: false })
@@ -269,6 +271,10 @@ export function apply(ctx) {
     source: null,
     doneMB: 0,
     totalMB: 0,
+    stageMB: 0,
+    stageTotalMB: 0,
+    stageProgressible: false,
+    speedKBps: 0,
     targetTier: null,
     doneStages: [],
     logTail: [],
@@ -297,6 +303,11 @@ export function apply(ctx) {
     ui.doneMB = p.doneMB || 0
     ui.totalMB = p.totalMB || 0
     ui.logTail = p.logTail || []
+    // 当前工具(阶段)的进度与速度：客户端据此显示「当前工具条 + 总进度条 + 速度」
+    ui.stageMB = p.stageMB || 0
+    ui.stageTotalMB = p.stageTotalMB || 0
+    ui.stageProgressible = p.stageProgressible ?? false
+    ui.speedKBps = p.speedKBps || 0
     if (p.tier) ui.targetTier = p.tier
     ui.doneStages = Array.isArray(p.stageDone) ? p.stageDone : []
   }
@@ -396,6 +407,10 @@ export function apply(ctx) {
           source: ui.source,
           doneMB: ui.doneMB,
           totalMB: ui.totalMB,
+          stageMB: ui.stageMB || 0,
+          stageTotalMB: ui.stageTotalMB || 0,
+          stageProgressible: ui.stageProgressible ?? false,
+          speedKBps: ui.speedKBps || 0,
           logTail: ui.logTail,
           lastError: ui.lastError,
           dismissed: ui.dismissed,
@@ -580,6 +595,11 @@ export function apply(ctx) {
       source: (p && p.source) || ui.source || null,
       doneMB: (p && p.doneMB) || ui.doneMB || 0,
       totalMB: (p && p.totalMB) || ui.totalMB || 0,
+      // 当前工具(阶段)进度与速度（胶囊双进度条用）
+      stageMB: (p && p.stageMB) || ui.stageMB || 0,
+      stageTotalMB: (p && p.stageTotalMB) || ui.stageTotalMB || 0,
+      stageProgressible: (p && p.stageProgressible) ?? ui.stageProgressible ?? false,
+      speedKBps: (p && p.speedKBps) || ui.speedKBps || 0,
       targetTier: ui.targetTier || null,
       doneStages: ui.doneStages || [],
       logTail: (p && p.logTail) || ui.logTail || [],
