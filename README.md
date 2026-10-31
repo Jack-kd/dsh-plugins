@@ -115,9 +115,13 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.10.0/gh-acc
 </details>
 
 <details>
-<summary><b>▶ rea-tools · REA 逆向工具链（一键安装 + 原生/APK 逆向）</b>　<code>v0.2.8</code></summary>
+<summary><b>▶ rea-tools · REA 逆向工具链（一键安装 + 原生/APK 逆向）</b>　<code>v0.2.10</code></summary>
 
 > 一键安装 **REA + Ghidra + JADX**（arm64 反编译器免编译、断点续传、zip 缓存、幂等），并提供 7 个逆向工具：`rea_install`（安装）、`rea_doctor`（就绪检查）、`rea_analyze`（二进制概览）、`rea_function`（函数伪代码，Ghidra）、`rea_inspect_apk` / `rea_inspect_apk_class` / `rea_inspect_apk_method`（APK 静态逆向，不运行目标代码）。已在 arm64 实测：NewPipe APK 7096 类，Manifest/类成员/方法反编译全部正常。
+>
+> **v0.2.10**：**深度复查修复——消除选项状态泄漏 + 补全进度阶段覆盖**：① `rea_install` 的 `--compile` / `--install-dir` 选项此前写进全局 `process.env` 且不清除（进程级单例），用户某次用 `--compile` 装过后，之后再跑裸 `rea_install()` 仍被残留值污染——静默改走源码编译/改安装目录；`--skip-rea` 写的 `REA_SKIP_REA` 还是死代码。现改为把这三个选项作为显式 `opts` 参数传给 `startInstall`，完全不碰全局环境变量，零残留。② x86_64 反编译器阶段漏标记（进度卡 99%）——补上对 `x86_64…自带反编译器` 的识别，既正确设阶段又直接标记完成。③ `rea-agents` 版本号硬编码误导（脚本装最新版却显示 6.5.0）——不再显示具体版本号。
+>
+> **v0.2.9**：修复**「设置页点『安装环境』弹窗被设置页盖住，必须关掉设置页才看得到」**：根因是安装弹窗挂在 `shell.overlay` 浮层，该容器 `z-index` 仅 20 且形成独立层叠上下文，弹窗内再高也被锁死在低层——被更高层的设置页抽屉压住。现改用 `React.createPortal` 直渲到 `document.body` 顶层、z-index 9999，彻底脱离容器层级（无 portal 自动回退不崩）。并修「稍后再说」等软按钮文案闪变、「系统返回键关不掉」（改点遮罩空白关 + 关闭同步收起 UI），进度胶囊大改（当前工具细进度条 + 总进度粗进度条 + 实时速度 + 顺滑动画），以及 Ghidra 嵌套解压 bug（无 unzip 走 jar 分支解在 INSTALL_DIR 内部产生嵌套、application.properties 探测不到误判「未装」——统一先解到临时根目录再展平，硬校验）。
 >
 > **v0.2.8**：修复**「装完重启该自动弹窗却没弹」+「设置页点安装环境/后台安装/稍后再说，一点反应都没有」**（三个 bug 叠加）：① **弹窗挂错插槽**——旧版注册在 `conversation.composer`，该插槽是 **chain** 类型，DSH 强制要求注册时提供 `select()`，缺了直接抛错；抛错只进 console，注册整体失效（这就是不弹窗的根因）。现改挂 `shell.overlay`（官方全屏浮层 list 插槽）。② **按钮走会话命令**——`ctx.remote.commands.execute()` 必须有可用会话，而设置页是 root 作用域拿不到 sessionId，失败又被 `try/catch` 吞掉、UI 零提示（这就是「点了没反应」的根因）。现改走宿主 HTTP 端点 `GET /rea-tools/state` + `POST /rea-tools/action`，与会话解耦，失败一定显示红字原因。③ **「记住我的选择」永远是假的**——命令 handler 收的是 invocation 对象（`rawInput` 字段），旧版当字符串正则匹配，恒为 false；已修。
 >
@@ -142,13 +146,13 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.10.0/gh-acc
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/rea-tools-v0.2.8/rea-tools-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/rea-tools-v0.2.10/rea-tools-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/rea-tools-v0.2.8/rea-tools-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/rea-tools-v0.2.10/rea-tools-plugin.tgz
 ```
 
 > 首次打开自动弹窗选择版本后台安装；或在设置 → 通用 → REA 逆向环境 里安装；也可调 `rea_install` 工具。升级需先卸载再装新版本。
