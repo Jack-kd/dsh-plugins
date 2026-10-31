@@ -1,4 +1,0 @@
-- insert:
-    - id: enter-newline
-      name: '@local/enter-newline'
-      config: {}
