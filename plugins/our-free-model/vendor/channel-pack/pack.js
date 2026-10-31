@@ -60208,6 +60208,65 @@ function shortId() {
   crypto.getRandomValues(buf);
   return Array.from(buf, (b) => b.toString(16).padStart(2, "0")).join("");
 }
+/**
+ * 手动添加凭证（全平台通用）：
+ *
+ * 适用于所有账号渠道（codearts / buddy系 / lobsterai / qoder系 / trae /
+ * cline / loomy / raccoon / minimax / zcode / gemini 等）。用户粘贴的是
+ * **「复制凭证」原样导出的内部凭据 JSON**（各渠道结构各不相同，但都是
+ * 登录回调的真实凭据）。这里只校验“JSON 合法 + 该渠道的身份 token 字段
+ * 非空”，然后把**原始对象**作为该账号的凭据原样存储——
+ * 不做 camel↔snake 转换、不做 JWT 解码，因为各渠道字段名和格式并不统一。
+ *
+ * 不在这里做网络探活：是否为「有效凭证」以可入池为准，与
+ * `account.create` 后台登录成功后即入池是同一约定。
+ *
+ * @param raw - 用户粘贴的原始 JSON 字符串。
+ * @param provider - 渠道 id。
+ * @returns {ok:true, credential, nickname} 或 {ok:false, error}
+ */
+function manualCredentialToCredential(raw, provider) {
+  let record;
+  try {
+    record = JSON.parse(raw);
+  } catch {
+    return { ok: false, error: "invalid-json" };
+  }
+  if (typeof record !== "object" || record === null || Array.isArray(record)) {
+    return { ok: false, error: "invalid-json" };
+  }
+  // 各渠道的「身份 token」候选字段（兼容 camelCase / snake_case）：
+  //   - codearts：access_key_id / secret_access_key / security_token
+  //   - 其余渠道：access_token（个别历史格式用 token，或 key 命名）
+  const identityCandidates = provider === "codearts"
+    ? ["access_key_id", "accessKeyId", "secret_access_key", "security_token"]
+    : ["access_token", "accessToken", "token", "key"];
+  let identity = "";
+  for (const k of identityCandidates) {
+    const v = readStringField(record, k);
+    if (v.length > 0) { identity = v; break; }
+  }
+  if (identity.length === 0) {
+    return { ok: false, error: "missing-identity" };
+  }
+  // 昵称从常见身份字段里取一个；取不到就用渠道 id 占位。
+  const nicknameFields = ["nickname", "label", "user_name", "displayName", "user_id", "uid"];
+  let nickname = "";
+  for (const k of nicknameFields) {
+    const v = readStringField(record, k);
+    if (v.length > 0) { nickname = v; break; }
+  }
+  if (nickname.length === 0) nickname = provider;
+  // 原样存储解析出的对象：各渠道内部凭据格式各不相同，直接透传即可被 adapter 消费。
+  return { ok: true, credential: record, nickname: nickname };
+}
+/**
+ * 「复制凭证」：原样透传内部存储的凭据（即各渠道登录回调的真实凭据），
+ * 不重排 key、不加字段，手动添加时能原样粘回。对全部账号渠道通用。
+ */
+function toExportableCredential(credential) {
+  return JSON.parse(JSON.stringify(credential));
+}
 function normalizeZcodeLoginProvider(raw) {
   if (raw === "zai") return "zai";
   if (raw !== ZCODE_LOGIN_PROVIDER) {
@@ -61101,6 +61160,74 @@ function registerChannelPackEndpoints(ctx, pool, codearts, buddy, workbuddy, lob
         const req = payload;
         await pool.removeAccount(req.accountId);
         return { ok: true, value: void 0 };
+      }
+      // ── 手动添加凭据（全平台通用）──
+      // 用户从「复制凭证」/其它来源拿到一份 JSON，粘贴到「手动添加凭证」
+      // 弹窗。通用校验：合法 JSON + 该渠道身份 token 字段非空，即原样存入
+      // 凭据并入池，对全部 14 个账号渠道开放。
+      case "account.importByCredential": {
+        const req = payload;
+        if (typeof req.provider !== "string" || req.provider.length === 0) {
+          return { ok: false, error: { code: "bad-request", message: "\u7F3A\u5C11 provider" } };
+        }
+        const source = typeof req.credential === "string" ? req.credential : "";
+        if (source.length === 0 || source.length > 20000) {
+          return {
+            ok: false,
+            error: { code: "invalid", message: "\u51ED\u636E\u5185\u5BB9\u4E0D\u5408\u6CD5" }
+          };
+        }
+        const parsed = manualCredentialToCredential(source, req.provider);
+        if (!parsed.ok) {
+          const code = parsed.error;
+          const detail = code === "invalid-json" ? "\u4E0D\u662F\u5408\u6CD5\u7684 JSON"
+            : code === "missing-identity" ? "\u4E0D\u80FD\u8BC6\u522B\u8BE5\u6E20\u9053\u7684\u8EAB\u4EFD token" : "\u51ED\u636E\u4E0D\u5408\u6CD5";
+          return { ok: false, error: { code: "invalid", message: detail } };
+        }
+        const id = `${req.provider}-${shortId()}`;
+        const suffix = shortId().toUpperCase();
+        const refName = `${req.provider.toUpperCase()}_ACCOUNT_${suffix}`;
+        const ref = credentialRef13(refName);
+        try {
+          await ctx.credentials.set(ref, JSON.stringify(parsed.credential));
+        } catch (error) {
+          ctx.logger.warn(`[channel-pack] \u624B\u52A8\u5BFC\u5165\u51ED\u636E\u5B58\u50A8\u5931\u8D25\uFF1A${String(error)}`);
+          return { ok: false, error: { code: "store-failed", message: "凭据存储失败" } };
+        }
+        await pool.addAccount({
+          id,
+          provider: req.provider,
+          nickname: parsed.nickname,
+          enabled: true,
+          credentialRef: refName,
+          refreshable: false,
+          createdAt: Date.now()
+        });
+        // 拥有 refresh 调度器的渠道在入池后触发一次续期登记。
+        if (req.provider === CODEBUDDY.id) buddy.scheduleRefresh();
+        else if (req.provider === WORKBUDDY.id) workbuddy.scheduleRefresh();
+        broadcastCatalogChanged(ctx);
+        return { ok: true, value: { accountId: id, nickname: parsed.nickname } };
+      }
+      // ── 复制凭据（buddy 家族）──
+      // 把账号内部存储的凭据原样以 JSON 返回，供「复制凭证」按钮一键拷贝，
+      // 可再粘贴到「手动添加凭证」迁到别的宿主。对全部账号渠道通用。
+      case "account.exportCredential": {
+        const req = payload;
+        const accountId = req.accountId;
+        if (typeof accountId !== "string" || accountId === "") {
+          return { ok: false, error: { code: "bad-request", message: "\u7F3A\u5C11 accountId" } };
+        }
+        const entry = pool.findAccount(accountId);
+        if (entry === void 0) {
+          return { ok: false, error: { code: "bad-request", message: `\u8D26\u53F7 ${accountId} \u4E0D\u5B58\u5728` } };
+        }
+        const resolved = await pool.resolveCredentialForAccount(accountId);
+        if (resolved === void 0) {
+          return { ok: false, error: { code: "bad-request", message: "\u8D26\u53F7\u51ED\u636E\u4E0D\u53EF\u7528" } };
+        }
+        const credential = toExportableCredential(resolved);
+        return { ok: true, value: { credential } };
       }
       // 拖拽排序：重写该 provider 账号在池中的顺序。
       // 该顺序是自动选号与限流换号的候选优先级，因此不是纯 UI 操作。

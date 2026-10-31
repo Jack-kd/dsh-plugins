@@ -386,6 +386,19 @@ window.__ModuleLoader__.load({
         'chan.act.test': '测试',
         'chan.act.delete': '移除',
         'chan.act.claim': '一键领取',
+        'chan.act.addManual': '手动添加凭证',
+        'chan.act.copyCred': '复制凭证',
+        'chan.manual.title': '手动添加凭证',
+        'chan.manual.hint': '粘贴从其它宿主的「复制凭证」得到的 JSON，即可把账号迁到这里。',
+        'chan.manual.placeholder': '粘贴 凭证 JSON…',
+        'chan.manual.add': '添加',
+        'chan.manual.cancel': '取消',
+        'chan.manual.adding': '添加中…',
+        'chan.manual.added': '添加成功',
+        'chan.manual.invalid': '无效',
+        'chan.manual.unsupported': '该渠道不支持手动添加凭证',
+        'chan.manual.copied': '已复制凭证',
+        'chan.manual.copyFailed': '复制失败',
         'chan.fold.accounts': '账号',
         'chan.fold.models': '模型',
         'chan.noAccount': '还没有账号——点「添加账号」开始登录。',
@@ -1055,6 +1068,19 @@ window.__ModuleLoader__.load({
         'chan.act.test': 'Test',
         'chan.act.delete': 'Remove',
         'chan.act.claim': 'Claim daily',
+        'chan.act.addManual': 'Add credential',
+        'chan.act.copyCred': 'Copy credential',
+        'chan.manual.title': 'Add credential',
+        'chan.manual.hint': 'Paste the JSON from another host’s “Copy credential” to migrate this account here.',
+        'chan.manual.placeholder': 'Paste credential JSON…',
+        'chan.manual.add': 'Add',
+        'chan.manual.cancel': 'Cancel',
+        'chan.manual.adding': 'Adding…',
+        'chan.manual.added': 'Added successfully',
+        'chan.manual.invalid': 'Invalid',
+        'chan.manual.unsupported': 'This channel does not support manual credential import',
+        'chan.manual.copied': 'Credential copied',
+        'chan.manual.copyFailed': 'Copy failed',
         'chan.fold.accounts': 'Accounts',
         'chan.fold.models': 'Models',
         'chan.noAccount': 'No account yet — press “Add account” to sign in.',
@@ -3986,6 +4012,7 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = useState('')
       const [notice, setNotice] = useState('')
       const [login, setLogin] = useState(null)
+      const [manualAdd, setManualAdd] = useState(null)
       const modelBatchPending = useRef(false)
       const [balanceError, setBalanceError] = useState('')
       const [balanceLoading, setBalanceLoading] = useState(false)
@@ -4147,6 +4174,41 @@ window.__ModuleLoader__.load({
         try { await fn() } catch (error) { onError(channel, error) } finally { setBusy('') }
       }
 
+      // 复制凭证：读取该账号的凭据并转成 camelCase JSON 写进剪贴板。
+      const copyAccountCredential = async accountId => {
+        if (busy !== '' || !rpc) return
+        try {
+          const value = await rpc('account.exportCredential', { accountId }, 30_000)
+          if (value?.ok === false) {
+            setNotice(t('chan.manual.invalid'))
+            return
+          }
+          const json = JSON.stringify(value?.value?.credential, null, 2)
+          copy(json, ok => { setNotice(ok ? t('chan.manual.copied') : t('chan.manual.copyFailed')) })
+        } catch (error) { onError(channel, error) }
+      }
+
+      // 手动添加凭证：新增弹窗管理，内容为空时不发送请求。
+      const submitManualAdd = async value => {
+        if (busy !== '' || !rpc) return
+        value = (value ?? '').trim()
+        if (value === '') return
+        setBusy('manualAdd')
+        try {
+          const res = await rpc('account.importByCredential', { provider: channel.id, credential: value }, 90_000)
+          if (res?.ok === true) {
+            setManualAdd(null)
+            setNotice(t('chan.manual.added'))
+            onChanged()
+            await loadAccounts(); void loadCredits?.(); void loadBalances(true)
+          } else {
+            setNotice(t('chan.manual.invalid'))
+          }
+        } catch (error) {
+          setNotice(t('chan.manual.invalid'))
+        } finally { setBusy('') }
+      }
+
       const setAllModels = async disabled => {
         if (busy !== '' || modelBatchPending.current || !rpc || !models?.length) return
         modelBatchPending.current = true
@@ -4216,6 +4278,10 @@ window.__ModuleLoader__.load({
               : balances === undefined ? '…' : '—')) : null),
         h('div', { className: 'ofm_chanacts' },
           h('button', { type: 'button', className: 'ofm_btn', disabled: busy !== '' || !rpc, 'aria-busy': busy === 'add' ? 'true' : undefined, onClick: startLogin }, busy === 'add' ? '…' : t('chan.act.add')),
+          h('button', {
+            type: 'button', className: 'ofm_btn ghost', disabled: busy !== '' || !rpc,
+            onClick: () => setManualAdd(''),
+          }, t('chan.act.addManual')),
           accountsCount > 0 ? h('button', {
             type: 'button', className: 'ofm_btn ghost', disabled: busy !== '' || !rpc, 'aria-busy': busy === 'refreshAll' ? 'true' : undefined,
             onClick: () => accountAction('refreshAll', '', async () => {
@@ -4281,6 +4347,10 @@ window.__ModuleLoader__.load({
                     }, t('chan.act.test')),
                     h('button', {
                       type: 'button', className: 'ofm_minibtn', disabled: busy !== '' || !rpc,
+                      title: t('chan.act.copyCred'), onClick: () => void copyAccountCredential(row.id),
+                    }, t('chan.act.copyCred')),
+                    h('button', {
+                      type: 'button', className: 'ofm_minibtn', disabled: busy !== '' || !rpc,
                       onClick: () => accountAction('refresh:' + row.id, row.id, async () => {
                         await rpc('account.refresh', { accountId: row.id }, 90_000)
                         onChanged(); await loadAccounts(); void loadBalances(true)
@@ -4343,7 +4413,23 @@ window.__ModuleLoader__.load({
             login.url === '' ? null : h('a', { className: 'ofm_btn primary', href: login.url, target: '_blank', rel: 'noreferrer noopener' }, t('chan.login.open')),
             h('button', { type: 'button', className: 'ofm_btn ghost', onClick: () => setLogin(null) }, t('chan.login.cancel')))))
 
-      return h(Fragment, null, card, modal)
+      const manualModal = manualAdd === null ? null : h('div', {
+        className: 'ofm_scrim', role: 'presentation', onClick: event => { if (event.target === event.currentTarget && busy !== 'manualAdd') setManualAdd(null) },
+      },
+        h('div', { className: 'ofm_modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': t('chan.manual.title') },
+          h('div', { className: 'ofm_modalhead' }, t('chan.manual.title')),
+          h('div', { className: 'ofm_modalbody' },
+            h('p', { className: 'ofm_note' }, t('chan.manual.hint')),
+            h('textarea', {
+              className: 'ofm_input', rows: 6, placeholder: t('chan.manual.placeholder'), spellCheck: false,
+              value: manualAdd, disabled: busy !== '',
+              onChange: event => setManualAdd(event.target.value),
+            })),
+          h('div', { className: 'ofm_modalfoot' },
+            h('button', { type: 'button', className: 'ofm_btn primary', disabled: busy !== '', 'aria-busy': busy === 'manualAdd' ? 'true' : undefined, onClick: () => void submitManualAdd(manualAdd) }, busy === 'manualAdd' ? t('chan.manual.adding') : t('chan.manual.add')),
+            h('button', { type: 'button', className: 'ofm_btn ghost', disabled: busy !== '', onClick: () => setManualAdd(null) }, t('chan.manual.cancel')))))
+
+      return h(Fragment, null, card, modal, manualModal)
     }
 
     function ChannelsPage(props) {
