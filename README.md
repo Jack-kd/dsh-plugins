@@ -159,9 +159,11 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/rea-tools-v0.2.10/rea-t
 </details>
 
 <details>
-<summary><b>▶ our-free-model · 免费模型（免登录免 Key，多模型开箱即用）</b>　<code>v2.7.0</code></summary>
+<summary><b>▶ our-free-model · 免费模型（免登录免 Key，多模型开箱即用）</b>　<code>v2.7.1</code></summary>
 
 > 装上即用，无需登录、注册或填 API Key：DeepSeek V4.1 Flash、Kimi K3 等前沿模型直接出现在输入框的 **Our Free Model** 分组，免费不限量（上游为 OpenCode Zen / Kilo 公共网关）。另含 Kilo 免费池、EAC 协付渠道（桌面端）、13 个账号渠道（CodeArts/CodeBuddy/Qoder/TRAE/Gemini 等）、76 家聚合提供商（自带 Key 接入）、Token 压缩、命名降级链（combo）、本地 OpenAI/Anthropic 兼容网关与局域网转发、数据看板与运行日志，九页毛玻璃设置界面（**设置 → Our Free Model**）。第三方插件，作者 Ebony-Vinyl，MIT。
+>
+> **v2.7.1**：修复「复制凭证」与「手动添加凭证」的信号返回解包错误——此前因 RPC 返回值已剥掉一层，复制会得到字面量 `undefined`、手动添加即使成功也会误报「无效」。现在复制能正确导出账号内部凭据 JSON、手动添加能正确识别成功/失败。
 >
 > **v2.7.0**：「手动添加凭证」与「复制凭证」由 CodeBuddy/WorkBuddy 扩展到**全部 13 个账号渠道**（CodeArts/CodeBuddy/Qoder/QoderCN/TRAE/Cline/Loomy/Raccoon/MiniMax/ZCode/Gemini 等）。手动添加改为通用校验：合法 JSON + 该渠道的身份 token 字段（codearts 用 `access_key_id`，其余用 `access_token` 等）非空即原样入池，不再强制 JWT 格式；复制凭证原样导出各渠道内部凭据，跨宿主迁移更完整。
 >
@@ -172,13 +174,13 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/rea-tools-v0.2.10/rea-t
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/our-free-model-v2.7.0/our-free-model-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/our-free-model-v2.7.1/our-free-model-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/our-free-model-v2.7.0/our-free-model-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/our-free-model-v2.7.1/our-free-model-plugin.tgz
 ```
 
 > 装完重启一次 App。模型可用性按你自己这台机器的网络出口实测，切换网络后可在设置页「重新探测可用性」。升级需先卸载再装新版本。

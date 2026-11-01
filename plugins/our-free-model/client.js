@@ -4179,11 +4179,13 @@ window.__ModuleLoader__.load({
         if (busy !== '' || !rpc) return
         try {
           const value = await rpc('account.exportCredential', { accountId }, 30_000)
-          if (value?.ok === false) {
+          // rpc() 已在 ok 时剥掉一层 value：这里拿到的就是服务端 value={ credential }
+          const credential = value?.credential
+          if (credential === undefined || credential === null) {
             setNotice(t('chan.manual.invalid'))
             return
           }
-          const json = JSON.stringify(value?.value?.credential, null, 2)
+          const json = JSON.stringify(credential, null, 2)
           copy(json, ok => { setNotice(ok ? t('chan.manual.copied') : t('chan.manual.copyFailed')) })
         } catch (error) { onError(channel, error) }
       }
@@ -4195,15 +4197,12 @@ window.__ModuleLoader__.load({
         if (value === '') return
         setBusy('manualAdd')
         try {
-          const res = await rpc('account.importByCredential', { provider: channel.id, credential: value }, 90_000)
-          if (res?.ok === true) {
-            setManualAdd(null)
-            setNotice(t('chan.manual.added'))
-            onChanged()
-            await loadAccounts(); void loadCredits?.(); void loadBalances(true)
-          } else {
-            setNotice(t('chan.manual.invalid'))
-          }
+          // rpc() 在 ok 时已剥壳返回 value（无 ok 字段），失败时 throw 进入 catch。
+          await rpc('account.importByCredential', { provider: channel.id, credential: value }, 90_000)
+          setManualAdd(null)
+          setNotice(t('chan.manual.added'))
+          onChanged()
+          await loadAccounts(); void loadCredits?.(); void loadBalances(true)
         } catch (error) {
           setNotice(t('chan.manual.invalid'))
         } finally { setBusy('') }
