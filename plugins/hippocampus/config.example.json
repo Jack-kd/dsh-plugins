@@ -1,0 +1,53 @@
+{
+  "_说明": [
+    "把这份改名成 config.json，放在 ~/.dsh/hippocampus/ 下。",
+    "最省事的路：先只填 workspaces 一个字段，让它跑起来，再慢慢加 lines。"
+  ],
+  "enabled": true,
+
+  "workspaces": [
+    "D:\\path\\to\\your-workspace"
+  ],
+
+  "_lines说明": "lines 是「多线」：同一个文件夹里住着不止一个身份时，按会话 id 分线，各自的记忆互不可见。只有一个身份就别写这段。",
+  "lines": [
+    {
+      "name": "line-name",
+      "cwd": "D:\\path\\to\\your-workspace",
+      "root": "session-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+      "members": [
+        "session-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+      ],
+      "autoJoin": true
+    }
+  ],
+
+  "_群消息说明": "humanName 是群聊里「人」的显示名。群里靠它区分『这句是人说的』和『这句是别的 bot 说的』。不填默认就是下面的值。",
+  "humanName": "human",
+
+  "capture": true,
+  "backfillOnMount": true,
+  "includeArchived": false,
+
+  "perTurnPriming": true,
+  "primeMax": 3,
+  "_预激活说明": "primeRecentCooldown：连续多少轮没命中相关，才补一条「最近」兜底。",
+  "primeRecentCooldown": 8,
+
+  "anchor": true,
+  "anchorQuotes": 4,
+  "anchorChars": 120,
+
+  "arrival": true,
+  "arrivalChars": 2400,
+
+  "facts": true,
+  "factMax": 8,
+
+  "recallMaxChars": 2200,
+
+  "_时间衰减说明": "recency 决定「越近越亮、越远越暗」的曲线：t0 是拐点（天，比它近的几乎不动）、alpha 是尾巴厚度（越大掉得越快）、floor 是地板（只用来拖住归零）。默认这组是标定出来的，别随手改。",
+  "recency": { "t0": 0.25, "alpha": 0.8, "floor": 0 },
+
+  "meetingGapMs": 7200000
+}

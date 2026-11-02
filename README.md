@@ -305,6 +305,29 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.5/
 > **升级提示**：升级需先卸载再装新版本。
 </details>
 
+<details>
+<summary><b>▶ hippocampus · 海马体（不靠自觉的记忆系统）</b>　<code>v0.2.13</code></summary>
+
+> 给 DSH 的会话装一个**不用「记得去记」**的记忆：每一次对话自动落盘，说到旧事时相关段落**自己浮起来**，要细节就翻原话。按工作区独立成库互不干扰，新工作区自动纳入白名单、开一个记一个。纯本地运行，不联网、不上传，零模型调用。
+>
+> **v0.2.13**：适配 DSHA 分发包；自动配置（首次运行自动生成 config.json）；自动进白名单（新工作区会话自动写入 workspaces 并独立记录）。
+
+**一条命令安装：**
+
+```bash
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/hippocampus-v0.2.13/hippocampus-plugin.tgz
+```
+
+**或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
+
+```
+https://github.com/Jack-kd/dsh-plugins/releases/download/hippocampus-v0.2.13/hippocampus-plugin.tgz
+```
+
+> 装完重启一次 App 生效；之后每次对话自动记录，`~/.dsh/hippocampus/diag.log` 里有 `apply 跑完 · v0.2.13` 即活着。
+> **升级提示**：升级需先卸载再装新版本（记忆数据在 `~/.dsh/hippocampus/`，卸载重装不丢）。
+</details>
+
 <!--
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -351,6 +374,7 @@ dsh-plugins/
     ├── our-free-model/      ← 免费模型（免登录免 Key，第三方收录）
     ├── dsh-plugin-wallpaper-engine/ ← 壁纸引擎（本地 Wallpaper Engine 壁纸，第三方收录）
     ├── dsh-vision-router/   ← 视觉路由（给 Agent 看图，免 Key，第三方收录）
+    ├── hippocampus/         ← 海马体（不靠自觉的记忆系统，自动记/自动进白名单）
     └── dsh-jack-market/     ← 插件市场（本仓库一键安装）
 ```
 
