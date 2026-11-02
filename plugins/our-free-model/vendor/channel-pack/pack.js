@@ -60379,6 +60379,26 @@ function computeClaimSummary(outcomes) {
   }
   return summary;
 }
+// —— 有界并发：把逐账号查询改为受限并发，账号多时不逐个排队、单个挂住不影响整批。
+// 仅用于「只读余额/状态」；签到(claim)刻意保持串行防风控。
+const BALANCE_CONCURRENCY = 6;
+const ACCOUNT_TIMEOUT_MS = 20_000;
+async function runConcurrent(items, limit, worker) {
+  const results = new Array(items.length);
+  let next = 0;
+  async function pump() {
+    while (true) {
+      const i = next++;
+      if (i >= items.length) return;
+      results[i] = await worker(items[i], i);
+    }
+  }
+  const n = Math.min(limit, items.length);
+  const jobs = [];
+  for (let k = 0; k < n; k++) jobs.push(pump());
+  await Promise.all(jobs);
+  return results;
+}
 async function collectCreditsStatus(accounts, product, deps) {
   const fetcher = deps.fetcher ?? fetch;
   const fetchStatus = deps.fetchStatus ?? (async (credential, product2) => fetchCheckinStatus(
@@ -60386,8 +60406,7 @@ async function collectCreditsStatus(accounts, product, deps) {
     product2,
     fetcher
   ));
-  const results = [];
-  for (const entry of accounts) {
+  return await runConcurrent(accounts, BALANCE_CONCURRENCY, async (entry) => {
     let status = null;
     try {
       const resolved = await deps.resolve(credentialRef13(entry.credentialRef));
@@ -60399,9 +60418,8 @@ async function collectCreditsStatus(accounts, product, deps) {
       deps.warn?.(`[channel-pack] credits.status \u8D26\u53F7 ${entry.id} \u5931\u8D25: ${String(error)}`);
       status = null;
     }
-    results.push({ accountId: entry.id, nickname: entry.nickname, status });
-  }
-  return results;
+    return { accountId: entry.id, nickname: entry.nickname, status };
+  });
 }
 async function collectClaimResults(accounts, product, deps) {
   const fetcher = deps.fetcher ?? fetch;
@@ -60460,8 +60478,7 @@ async function collectCreditBalances(accounts, product, deps) {
     fetcher
   ));
   const fetchDetailed = deps.fetchBalanceDetailed;
-  const results = [];
-  for (const entry of accounts) {
+  return await runConcurrent(accounts, BALANCE_CONCURRENCY, async (entry) => {
     let balance = null;
     let error;
     let extra;
@@ -60472,13 +60489,13 @@ async function collectCreditBalances(accounts, product, deps) {
       } else {
         const credential = JSON.parse(resolved.value);
         if (fetchDetailed !== void 0) {
-          const detailed = await fetchDetailed(credential, product);
+          const detailed = await withAccountTimeout(fetchDetailed(credential, product), entry.id);
           balance = detailed.balance;
           error = detailed.error;
           extra = detailed.extra;
           if (balance === null && error === void 0) error = "\u4F59\u989D\u67E5\u8BE2\u5931\u8D25";
         } else {
-          balance = await fetchBalance(credential, product);
+          balance = await withAccountTimeout(fetchBalance(credential, product), entry.id);
           if (balance === null) error = "\u4F59\u989D\u67E5\u8BE2\u5931\u8D25";
         }
       }
@@ -60487,15 +60504,27 @@ async function collectCreditBalances(accounts, product, deps) {
       error = caught instanceof Error ? caught.message : String(caught);
       balance = null;
     }
-    results.push({
+    return {
       accountId: entry.id,
       nickname: entry.nickname,
       balance,
       ...error === void 0 ? {} : { error },
       ...extra === void 0 ? {} : { extra }
-    });
+    };
+  });
+}
+async function withAccountTimeout(promise, accountId) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`查询超时(>${ACCOUNT_TIMEOUT_MS / 1000}s)`)), ACCOUNT_TIMEOUT_MS);
+      })
+    ]);
+  } finally {
+    clearTimeout(timer);
   }
-  return results;
 }
 function llmServiceOf(ctx) {
   const direct = ctx.llm;
