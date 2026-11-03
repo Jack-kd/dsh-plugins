@@ -5,3 +5,4 @@ node_modules/
 # 女仆工坊皮肤：大体积素材（6MB+）不入库，完整包见 Release tgz
 plugins/dsh-client-ui-skin-maid-atelier/assets/
 plugins/dsh-client-ui-skin-maid-atelier/preview/
+vendor/magpie/bin/magpie-win32-x64.exe

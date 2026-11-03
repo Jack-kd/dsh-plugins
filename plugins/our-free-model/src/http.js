@@ -40,6 +40,8 @@ export const CODE = {
   // the whole lane (403 FreeTierError). Not a credential, not a model, not
   // retryable — a refusal this install cannot retry away.
   laneLocked: 'LANE_LOCKED',
+  permission: 'PERMISSION_DENIED',
+  exhausted: 'QUOTA_EXHAUSTED',
   transport: 'TRANSPORT',
   timeout: 'TIMEOUT',
   server: 'SERVER',
@@ -105,7 +107,10 @@ export function classifyFailure(status, payload, retryAfterMs) {
   if (type === 'RegionError' || /not available in your country|region/i.test(flat)) {
     return new UpstreamError(message, CODE.region, { status, type })
   }
-  if (status === 429 || type === 'FreeUsageLimitError' || /usage limit|rate limit/i.test(flat)) {
+  if (type !== 'permission_error' && (type === 'insufficient_quota' || error.code === 'insufficient_quota')) {
+    return new UpstreamError(message, CODE.exhausted, { status, type })
+  }
+  if (type !== 'permission_error' && (status === 429 || type === 'FreeUsageLimitError' || /usage limit|rate limit/i.test(flat))) {
     return new UpstreamError(message, CODE.quota, { status, type, providerRetryAfterMs: retryAfterMs })
   }
   // The gateway rejects a signature only when the bytes it received differ from
@@ -140,6 +145,7 @@ export function classifyFailure(status, payload, retryAfterMs) {
   if (type === 'FreeTierError' || /free tier can only be used from within/i.test(flat)) {
     return new UpstreamError(message, CODE.laneLocked, { status, type })
   }
+  if (type === 'permission_error') return new UpstreamError(message, CODE.permission, { status, type })
   // An HTML page at 401/403 is the front proxy speaking, not the credential
   // store: fall through to the 4xx branch so users are not sent re-logging for
   // a WAF refusal.
@@ -370,8 +376,52 @@ function userAgentWith(_attribution) {
   return CLIENT_UA
 }
 
+/**
+ * Whether a request body carries image parts.
+ *
+ * The free lane's gateway answers a share of image requests with a bare 5xx and
+ * an empty body, so the status says nothing about the cause. The image content
+ * is then the one fact the caller can act on (issue #549).
+ *
+ * Matched on the `type` spelling rather than one dialect's field name, because
+ * the three wires this repo speaks disagree: OpenAI says `image_url`, the
+ * harness says `input_image`, Messages says `image`.
+ */
+export function carriesImageContent(body) {
+  const messages = Array.isArray(body?.messages) ? body.messages : []
+  for (const message of messages) {
+    if (!Array.isArray(message?.content)) continue
+    for (const part of message.content) {
+      if (typeof part?.type === 'string' && part.type.includes('image')) return true
+    }
+  }
+  return false
+}
+
+/**
+ * The failure an empty 5xx body deserves.
+ *
+ * `classifyFailure` turns an empty body into the message `HTTP 502`, which tells
+ * the caller nothing: a gateway hiccup and a refusal of this exact request read
+ * identically, and #549's image requests land here about half the time. Say what
+ * is known — the hop that failed, and that the request carried images — and keep
+ * the retryability a 5xx implies. A 4xx with an empty body keeps going through
+ * `classifyFailure`, which already reads the status correctly.
+ */
+function emptyBodyFailure(status, retryAfterMs, imageContent) {
+  const hint = imageContent
+    ? ' — this request carried image content, and the model behind the gateway may not accept vision input'
+    : ''
+  return new UpstreamError(
+    `the gateway answered HTTP ${status} with an empty body: the failure is upstream of the model, not in this request${hint}`,
+    CODE.server,
+    { status, emptyBody: true, ...(retryAfterMs === undefined ? {} : { providerRetryAfterMs: retryAfterMs }) })
+}
+
 export async function postStreamed({ path, body, session, attributionUserAgent, signal, onData, timeoutMs = 300000 }) {
-  const headers = gatewayHeaders({ session: truncateSession(session), stream: true })
+  // The Messages wire carries the 2.x client's beta header (o2a/headers.js);
+  // the path is the only wire signal this layer sees.
+  const headers = gatewayHeaders({ session: truncateSession(session), stream: true, anthropic: path.includes('/messages') })
   headers['user-agent'] = userAgentWith(attributionUserAgent)
   let response
   try {
@@ -387,6 +437,11 @@ export async function postStreamed({ path, body, session, attributionUserAgent, 
   const setRetry = retryAfter(response.headers.get('retry-after'))
   if (!response.ok) {
     const text = await response.text().catch(() => '')
+    // An empty 5xx body is the case #549 is about: there is no envelope to
+    // classify, and `HTTP 502` is not an answer the caller can act on.
+    if (text.trim() === '' && response.status >= 500) {
+      throw emptyBodyFailure(response.status, setRetry, carriesImageContent(body))
+    }
     let payload
     try { payload = JSON.parse(text) } catch { payload = { error: { message: text.slice(0, 300) || `HTTP ${response.status}` } } }
     throw classifyFailure(response.status, payload, setRetry)
@@ -432,12 +487,23 @@ export async function postStreamed({ path, body, session, attributionUserAgent, 
  */
 export async function readSse(source, onData, signal, timeoutMs = 300000) {
   const reader = typeof source?.getReader === 'function' ? source.getReader() : null
-  const iterator = reader ?? (typeof source?.[Symbol.asyncIterator] === 'function' ? source[Symbol.asyncIterator]() : source)
+  const iterator = reader === null ? (typeof source?.[Symbol.asyncIterator] === 'function' ? source[Symbol.asyncIterator]() : source) : null
   const decoder = new TextDecoder()
   let buffer = ''
+  let data = []
+  let rawJson = ''
   let deadline = Date.now() + timeoutMs
+  // Did this read carry anything a caller would call progress? A keepalive is a
+  // comment line (`: ping`), and SSE defines it as something to ignore — so it
+  // must not wind the idle clock. Before this witness existed, every read reset
+  // `deadline` unconditionally, so a gateway that pings every 10–15s kept a
+  // wedged, token-less turn alive indefinitely: the request never timed out, it
+  // just held a connection until the gateway itself gave up (#460). The witness
+  // is deliberately wider than "onData fired" — a large raw-JSON body or a
+  // multi-line event can spend several reads accumulating before anything is
+  // dispatched, and those reads are real progress.
+  let content = false
   let stopped = false
-  const hasSignal = signal !== undefined && signal !== null
   const stop = () => {
     if (stopped) return
     stopped = true
@@ -452,23 +518,70 @@ export async function readSse(source, onData, signal, timeoutMs = 300000) {
   // abort so a held response cannot keep the adapter waiting.
   const next = async () => {
     if (signal?.aborted) throw new UpstreamError('request aborted', CODE.aborted)
-    let onAbort
+    let onAbort, timer
     const halted = new Promise((_, reject) => {
       onAbort = () => {
         stop()
         reject(new UpstreamError('request aborted', CODE.aborted))
       }
       signal?.addEventListener('abort', onAbort, { once: true })
+      timer = setTimeout(() => {
+        stop()
+        reject(new UpstreamError('our-free-model: upstream stream idle past its deadline', CODE.timeout))
+      }, Math.max(0, deadline - Date.now()))
     })
-    const pending = Promise.resolve().then(() => iterator.next())
+    const pending = Promise.resolve().then(() => reader !== null ? reader.read() : iterator.next())
     try {
-      return hasSignal ? await Promise.race([pending, halted]) : await pending
+      return await Promise.race([pending, halted])
     } finally {
       signal?.removeEventListener('abort', onAbort)
+      clearTimeout(timer)
       // The losing read settles after the source is cancelled; do not let its
       // rejection become an unhandled promise after the caller has returned.
       pending.catch(() => {})
     }
+  }
+  const dispatch = () => {
+    const payload = data.join('\n')
+    data = []
+    if (payload.trim() === '[DONE]') return true
+    if (payload !== '') {
+      onData(payload)
+      content = true
+    }
+    return false
+  }
+  const completeData = () => {
+    if (!data.length) return false
+    if (data.join('\n').trim() === '[DONE]') return true
+    try { JSON.parse(data.join('\n')); return true } catch { return false }
+  }
+  const line = value => {
+    const text = value.replace(/\r$/, '').replace(/^\uFEFF/, '')
+    if (rawJson || text.trimStart().startsWith('{')) {
+      if (!rawJson && dispatch()) return true
+      rawJson += (rawJson ? '\n' : '') + text
+      let payload
+      try { payload = JSON.parse(rawJson) } catch { return false }
+      rawJson = ''
+      if (payload?.error || payload?.type === 'error') throw classifyFailure(undefined, payload)
+      onData(JSON.stringify(payload))
+      content = true
+      return false
+    }
+    if (text === '') return dispatch()
+    if (text.startsWith(':')) return false
+    const colon = text.indexOf(':')
+    const field = colon < 0 ? text : text.slice(0, colon)
+    const valueText = colon < 0 ? '' : text.slice(colon + 1).replace(/^ /, '')
+    if (field === 'data') {
+      // Compatible endpoints may omit blank separators between complete JSON events.
+      if (completeData() && dispatch()) return true
+      if (valueText.trim() === '[DONE]') { dispatch(); return true }
+      if (valueText !== '') content = true
+      data.push(valueText)
+    }
+    return false
   }
   try {
     while (true) {
@@ -478,17 +591,28 @@ export async function readSse(source, onData, signal, timeoutMs = 300000) {
       if (value !== undefined) buffer += decoder.decode(value, { stream: true })
       let newline = buffer.indexOf('\n')
       while (newline !== -1) {
-        const line = buffer.slice(0, newline)
+        const row = buffer.slice(0, newline)
         buffer = buffer.slice(newline + 1)
-        emit(line, onData)
+        if (line(row)) return
         newline = buffer.indexOf('\n')
       }
-      deadline = Date.now() + timeoutMs
+      // A row still waiting for its newline counts as progress unless what has
+      // arrived so far is itself a comment: `: ping` split across two reads must
+      // not wind the clock, while a raw-JSON body or a half-arrived `data:` line
+      // must.
+      const pending = buffer.replace(/^\uFEFF/, '').replace(/\r$/, '')
+      if (pending.trim() !== '' && !pending.trimStart().startsWith(':')) content = true
+      if (content) {
+        content = false
+        deadline = Date.now() + timeoutMs
+      }
     }
     // Flush the decoder so a multi-byte character split over the last two chunks
     // is not silently dropped from the final payload.
     buffer += decoder.decode()
-    emit(buffer, onData)
+    if (buffer && line(buffer)) return
+    if (rawJson) throw new UpstreamError('upstream returned an incomplete JSON document inside its event stream', CODE.transport)
+    dispatch()
   } catch (error) {
     throw classifyStreamFailure(error, signal)
   } finally {
@@ -496,16 +620,6 @@ export async function readSse(source, onData, signal, timeoutMs = 300000) {
     if (reader !== null) {
       try { reader.releaseLock?.() } catch { /* pending read is still unwinding */ }
     }
-  }
-}
-
-function emit(line, onData) {
-  const text = line.trim()
-  if (text === '' || text.startsWith(':')) return
-  if (text.startsWith('data:')) {
-    const payload = text.slice(5).trim()
-    if (payload === '' || payload === '[DONE]') return
-    onData(payload)
   }
 }
 

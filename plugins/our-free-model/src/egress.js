@@ -52,10 +52,13 @@ import fs from 'node:fs'
 import net from 'node:net'
 import tls from 'node:tls'
 import http from 'node:http'
+import os from 'node:os'
 import path from 'node:path'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { lookup } from 'node:dns/promises'
 import { spawn } from 'node:child_process'
+import { bunFetch, findBunExecutable } from './bun-fetch.js'
+import { restrictPermissions } from './open-external.js'
 
 /** The loopback address the relay listens on. Never a routable one. */
 const RELAY_HOST = '127.0.0.1'
@@ -102,15 +105,40 @@ export function egressActive() {
  */
 export async function egressFetch(url, init) {
   const relay = activeRelay
+  const targetUrl = new URL(url instanceof Request ? url.url : String(url))
+  // Only the official OC inference lane uses Bun. Kilo/EAC/catalogs and local
+  // test endpoints keep their existing fetch path. Never retry a failed turn
+  // through a second transport: a prior request may already have spent tokens.
+  const officialFreeLane = targetUrl.protocol === 'https:' && targetUrl.hostname === 'opencode.ai'
+    && (targetUrl.port === '' || targetUrl.port === '443') && targetUrl.pathname.startsWith('/inference/')
+  const transport = process.env.OUR_FREE_MODEL_FREE_TRANSPORT ?? 'auto'
+  if (officialFreeLane && transport !== 'node') {
+    if (transport !== 'auto' && transport !== 'bun') throw new Error('OUR_FREE_MODEL_FREE_TRANSPORT must be auto, bun, or node')
+    const executable = findBunExecutable()
+    if (!executable) throw new Error('OpenCode free inference requires a local Bun executable; install Bun or set OUR_FREE_MODEL_BUN to its executable path (OUR_FREE_MODEL_FREE_TRANSPORT=node restores the legacy transport)')
+    if (relay?.dead) throw new Error('the configured egress relay is not running')
+    const proxy = relay ? `http://ofm:${relay.key}@${RELAY_HOST}:${relay.port}` : undefined
+    if (url instanceof Request) {
+      const request = new Request(url, init)
+      const body = request.body ? new Uint8Array(await request.arrayBuffer()) : undefined
+      return bunFetch(request.url, { ...init, method: request.method, headers: request.headers, body, signal: request.signal, redirect: request.redirect }, { executable, proxy })
+    }
+    return bunFetch(url, init, { executable, proxy })
+  }
   if (relay === null) return fetch(url, init)
-  const target = new URL(String(url))
+  const request = url instanceof Request ? new Request(url, init) : null
+  const target = new URL(request ? request.url : String(url))
   if (target.protocol !== 'http:' && target.protocol !== 'https:') {
     throw new Error(`the egress relay only carries http(s) targets, got "${target.protocol}"`)
   }
-  const headers = new Headers(init?.headers ?? {})
+  const headers = new Headers(request?.headers ?? init?.headers ?? {})
   headers.set(TARGET_HEADER, target.href)
   headers.set(KEY_HEADER, relay.key)
-  return fetch(`http://${RELAY_HOST}:${relay.port}${target.pathname}${target.search}`, { ...init, headers })
+  const outgoing = request ? {
+    ...init, method: request.method, body: request.body, signal: request.signal,
+    redirect: request.redirect, ...(request.body ? { duplex: 'half' } : {}),
+  } : init
+  return fetch(`http://${RELAY_HOST}:${relay.port}${target.pathname}${target.search}`, { ...outgoing, headers })
 }
 
 /**
@@ -159,6 +187,7 @@ export async function startEgressRelay({ config, dataDir, log = () => {}, onDead
       auth: outletAuth,
       logFile: path.join(dir, 'mihomo.log'),
     }), { mode: 0o600 })
+    restrictPermissions(configPath)
     child = spawn(binary, ['-d', dir, '-f', configPath], { windowsHide: true, stdio: 'ignore' })
     let spawnError = null
     let exited = null
@@ -187,6 +216,7 @@ export async function startEgressRelay({ config, dataDir, log = () => {}, onDead
 
   const sockets = new Set()
   const server = http.createServer(relayRequest)
+  server.on('connect', relayConnect)
   server.on('connection', socket => {
     sockets.add(socket)
     socket.on('close', () => sockets.delete(socket))
@@ -328,6 +358,52 @@ function relayRequest(req, res) {
   })
 }
 
+/**
+ * Authenticated TLS passthrough for the Bun worker. The existing HTTP relay
+ * terminates TLS in Node; CONNECT instead preserves Bun's upstream handshake
+ * while retaining the configured HTTP/HTTPS/SOCKS/managed-mihomo outlet.
+ * This intentionally accepts the OC host only, not an arbitrary proxy target.
+ */
+function relayConnect(req, client, head) {
+  const relay = activeRelay
+  const authorization = String(req.headers['proxy-authorization'] ?? '')
+  let credential = ''
+  if (/^Basic /i.test(authorization)) credential = Buffer.from(authorization.slice(6), 'base64').toString('utf8')
+  if (!relay || relay.dead || !sameSecret(credential, `ofm:${relay.key}`)) {
+    client.end('HTTP/1.1 407 Proxy Authentication Required\r\nConnection: close\r\nProxy-Authenticate: Basic realm="ofm"\r\n\r\n')
+    return
+  }
+  if (String(req.url).toLowerCase() !== 'opencode.ai:443') {
+    client.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
+    return
+  }
+  // http: here is deliberate: openTunnel must return raw TCP, not Node TLS.
+  let upstream
+  const close = () => { client.destroy(); upstream?.destroy() }
+  client.on('error', close)
+  client.on('close', () => upstream?.destroy())
+  // CONNECT sockets can remain half-open after the worker sends FIN. Before
+  // piping begins there is no stream handler to finish that half-close.
+  client.once('end', close)
+  // Own the socket from the initial dial, not just after CONNECT/SOCKS/TLS
+  // succeeds: cancellation and relay.close() can happen during any stage.
+  void openTunnel(new URL('http://opencode.ai:443'), relay.outlet, socket => {
+    upstream = socket
+    if (client.destroyed) socket.destroy()
+  }).then(socket => {
+    client.off('end', close)
+    upstream = socket
+    if (client.destroyed) { socket.destroy(); return }
+    socket.on('error', close)
+    socket.on('close', () => client.destroy())
+    client.write('HTTP/1.1 200 Connection Established\r\n\r\n')
+    if (head.length > 0) socket.write(head)
+    client.pipe(socket).pipe(client)
+  }).catch(() => {
+    if (!client.destroyed) client.end('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n')
+  })
+}
+
 /** The outlet the running relay dials; `null` between generations. */
 function activeRelayOutlet() {
   return activeRelay?.outlet ?? null
@@ -351,18 +427,18 @@ function failOnce(res, error) {
  * Connect to `upstream` through `outlet` and return a socket ready for plain
  * http framing — already TLS-wrapped when the target is https.
  */
-async function openTunnel(upstream, outlet) {
+async function openTunnel(upstream, outlet, onSocket) {
   const isTls = upstream.protocol === 'https:'
   const host = upstream.hostname
   const port = Number(upstream.port) || (isTls ? 443 : 80)
   let socket
   if (outlet.kind === 'url') {
     const proxy = outlet.url
-    if (proxy.protocol === 'http:' || proxy.protocol === 'https:') socket = await httpConnect(proxy, host, port)
-    else if (proxy.protocol === 'socks5:' || proxy.protocol === 'socks5h:') socket = await socks5Connect(proxy, host, port, proxy.protocol === 'socks5h:')
+    if (proxy.protocol === 'http:' || proxy.protocol === 'https:') socket = await httpConnect(proxy, host, port, onSocket)
+    else if (proxy.protocol === 'socks5:' || proxy.protocol === 'socks5h:') socket = await socks5Connect(proxy, host, port, proxy.protocol === 'socks5h:', onSocket)
     else throw new Error(`unsupported proxy scheme "${proxy.protocol}"`)
   } else {
-    socket = await netConnect(host, port)
+    socket = await netConnect(host, port, onSocket)
   }
   if (!isTls) return socket
   return await withTimeout(new Promise((resolve, reject) => {
@@ -374,30 +450,33 @@ async function openTunnel(upstream, outlet) {
     })
     secured.once('secureConnect', () => resolve(secured))
     secured.once('error', error => { secured.destroy(); reject(error) })
+    onSocket?.(secured)
   }), DIAL_TIMEOUT_MS, 'target TLS handshake', socket)
 }
 
 /** Plain TCP with the dial budget applied. */
-function netConnect(host, port) {
+function netConnect(host, port, onSocket) {
+  const socket = net.connect({ host, port })
   return withTimeout(new Promise((resolve, reject) => {
-    const socket = net.connect({ host, port })
     socket.once('connect', () => resolve(socket))
     socket.once('error', reject)
-  }), DIAL_TIMEOUT_MS, 'tcp connect')
+    onSocket?.(socket)
+  }), DIAL_TIMEOUT_MS, 'tcp connect', socket)
 }
 
 /**
  * HTTP CONNECT through an http(s) proxy — including the local mixed port a
  * managed mihomo opens, which speaks CONNECT like any other proxy.
  */
-async function httpConnect(proxy, targetHost, targetPort) {
-  let socket = await netConnect(proxy.hostname, Number(proxy.port) || (proxy.protocol === 'https:' ? 443 : 80))
+async function httpConnect(proxy, targetHost, targetPort, onSocket) {
+  let socket = await netConnect(proxy.hostname, Number(proxy.port) || (proxy.protocol === 'https:' ? 443 : 80), onSocket)
   try {
     if (proxy.protocol === 'https:') {
       socket = await withTimeout(new Promise((resolve, reject) => {
         const secured = tls.connect({ socket, servername: net.isIP(proxy.hostname) === 0 ? proxy.hostname : undefined })
         secured.once('secureConnect', () => resolve(secured))
         secured.once('error', error => { secured.destroy(); reject(error) })
+        onSocket?.(secured)
       }), DIAL_TIMEOUT_MS, 'proxy TLS handshake', socket)
     }
     const auth = proxy.username === '' ? '' : `Proxy-Authorization: Basic ${Buffer.from(`${decodeURIComponent(proxy.username)}:${decodeURIComponent(proxy.password)}`).toString('base64')}\r\n`
@@ -426,8 +505,8 @@ async function httpConnect(proxy, targetHost, targetPort) {
  * exit must see the name, not this machine's DNS answer. Plain `socks5`
  * resolves locally first, per the scheme's definition.
  */
-async function socks5Connect(proxy, targetHost, targetPort, resolveAtProxy) {
-  const socket = await netConnect(proxy.hostname, Number(proxy.port) || 1080)
+async function socks5Connect(proxy, targetHost, targetPort, resolveAtProxy, onSocket) {
+  const socket = await netConnect(proxy.hostname, Number(proxy.port) || 1080, onSocket)
   try {
     const withAuth = proxy.username !== ''
     socket.write(Buffer.from(withAuth ? [0x05, 0x02, 0x00, 0x02] : [0x05, 0x01, 0x00]))
@@ -512,6 +591,7 @@ function encodeAddress(resolved) {
  * past the mark so the caller can push them back with `unshift`.
  */
 function readUntil(socket, timeoutMs, what, matcher) {
+  if (socket.destroyed) return Promise.reject(new Error(`the proxy closed during the ${what}`))
   return withTimeout(new Promise((resolve, reject) => {
     const chunks = []
     let size = 0
@@ -556,8 +636,14 @@ function readUntil(socket, timeoutMs, what, matcher) {
 /** Reject after `ms`, tearing the socket down so nothing leaks half-open. */
 function withTimeout(promise, ms, what, socket) {
   let timer
+  let onClose
   return Promise.race([
-    promise.finally(() => clearTimeout(timer)),
+    promise,
+    new Promise((_, reject) => {
+      onClose = () => reject(new Error(`the socket closed during the ${what}`))
+      if (socket?.destroyed) onClose()
+      else socket?.once('close', onClose)
+    }),
     new Promise((_, reject) => {
       timer = setTimeout(() => {
         socket?.destroy?.()
@@ -565,7 +651,10 @@ function withTimeout(promise, ms, what, socket) {
       }, ms)
       timer.unref?.()
     }),
-  ])
+  ]).finally(() => {
+    clearTimeout(timer)
+    socket?.off('close', onClose)
+  })
 }
 
 /** A free loopback port. Small bind/close race is acceptable — a collision surfaces as a clean startup error, not a corrupt state. */
@@ -692,31 +781,79 @@ export function renderMihomoConfig({ subscription, mixedPort, apiPort, secret, a
 export function findMihomoBinary(explicit) {
   const given = String(explicit ?? '').trim()
   if (given !== '') {
-    if (!fs.existsSync(given)) throw new Error(`the mihomo path "${given}" does not exist`)
-    return given
+    const stat = statOrNull(given)
+    if (stat === null) throw new Error(`the mihomo path "${given}" does not exist`)
+    const found = stat.isDirectory()
+      ? scanMihomo([given, path.join(given, 'bin'), path.join(given, 'resources')], mihomoNames())
+      : scanMihomo([path.dirname(given)], [path.basename(given)])
+    if (found === null) throw new Error(`the mihomo path "${given}" holds no mihomo binary`)
+    if (!found.executable) throw notExecutable(found.path)
+    return found.path
   }
-  const windows = process.platform === 'win32'
-  const names = windows
+  const found = scanMihomo(mihomoSearchRoots(), mihomoNames())
+  if (found === null) {
+    throw new Error('no mihomo binary found - set its path in the egress settings (Clash Verge installs one, or get it from MetaCubeX/mihomo)')
+  }
+  if (!found.executable) throw notExecutable(found.path)
+  return found.path
+}
+
+function mihomoNames() {
+  return process.platform === 'win32'
     ? ['mihomo.exe', 'verge-mihomo.exe', 'verge-mihomo-alpha.exe', 'clash-meta.exe', 'clash.exe']
     : ['mihomo', 'clash-meta', 'clash']
-  const dirs = []
+}
+
+function mihomoSearchRoots() {
+  const roots = []
   for (const entry of (process.env.PATH ?? '').split(path.delimiter)) {
-    if (entry.trim() !== '') dirs.push(entry)
+    if (entry.trim() !== '') roots.push(entry)
   }
-  const roots = windows
-    ? [process.env.ProgramFiles, process.env['ProgramFiles(x86)'], path.join(process.env.LOCALAPPDATA ?? '', 'Programs')]
-        .filter(Boolean)
-        .flatMap(root => [path.join(root, 'Clash Verge'), path.join(root, 'clash-verge'), path.join(root, 'mihomo')])
-    : ['/usr/local/bin', '/usr/bin', '/opt/homebrew/bin', path.join(process.env.HOME ?? '', '.local/bin')]
-  for (const dir of [...dirs, ...roots]) {
+  let home = ''
+  try { home = os.homedir() } catch { /* no home in this environment */ }
+  if (typeof home !== 'string' || !path.isAbsolute(home)) home = ''
+  if (process.platform === 'win32') {
+    const local = process.env.LOCALAPPDATA || (home === '' ? '' : path.join(home, 'AppData', 'Local'))
+    const installs = [process.env.ProgramFiles, process.env['ProgramFiles(x86)']]
+    if (local !== '' && path.isAbsolute(local)) installs.push(path.join(local, 'Programs'))
+    for (const root of installs) {
+      if (typeof root !== 'string' || !path.isAbsolute(root)) continue
+      roots.push(path.join(root, 'Clash Verge'), path.join(root, 'clash-verge'), path.join(root, 'mihomo'))
+    }
+    return roots
+  }
+  // Missing home/prefix values must not turn fallback roots into cwd searches.
+  if (home !== '') roots.push(path.join(home, '.local', 'bin'), path.join(home, 'bin'))
+  const prefix = String(process.env.PREFIX ?? '').trim()
+  if (prefix !== '' && path.isAbsolute(prefix)) roots.push(path.join(prefix, 'bin'))
+  roots.push('/usr/local/bin', '/usr/bin', '/opt/homebrew/bin')
+  return roots
+}
+
+/** Keep searching past a non-executable hit, but retain its actionable error. */
+function scanMihomo(dirs, names) {
+  let blocked = null
+  for (const dir of dirs) {
     for (const name of names) {
       const candidate = path.join(dir, name)
+      if (statOrNull(candidate)?.isFile() !== true) continue
       try {
-        if (fs.statSync(candidate).isFile()) return candidate
-      } catch { /* not there; next */ }
+        if (process.platform !== 'win32') fs.accessSync(candidate, fs.constants.X_OK)
+        return { path: candidate, executable: true }
+      } catch {
+        blocked ??= candidate
+      }
     }
   }
-  throw new Error('no mihomo binary found — set its path in the egress settings (Clash Verge installs one, or get it from MetaCubeX/mihomo)')
+  return blocked === null ? null : { path: blocked, executable: false }
+}
+
+function statOrNull(target) {
+  try { return fs.statSync(target) } catch { return null }
+}
+
+function notExecutable(target) {
+  return new Error(`the mihomo at "${target}" is not executable - run: chmod +x "${target}"`)
 }
 
 /** Hostname of a URL, for display: the path of a subscription link is its credential. */

@@ -61,6 +61,19 @@ export function packageCacheKeys(loadCache, packageUrl) {
 }
 
 /**
+ * A host is considered reload-capable only when it exposes entries for this
+ * package in the cache that `purgeCaches` can safely back up and restore.
+ * Guessing via a query-string import bypasses some hosts' module resolvers.
+ */
+export function canSafelyHotReload(loader, packageUrl = packageUrlOf(import.meta.url)) {
+  if (typeof loader?.import !== 'function' || typeof loader?.unwrapExports !== 'function') return false
+  const cache = loader?.internal?.loadCache
+  return cache !== null && cache !== undefined && typeof cache.keys === 'function'
+    && typeof cache.get === 'function' && typeof cache.delete === 'function'
+    && packageCacheKeys(cache, packageUrl).length > 0
+}
+
+/**
  * Back up and remove the package's modules from both module caches.
  *
  * The loadCache is accessed duck-typed on purpose: Node 24.12+ replaced the
@@ -119,7 +132,7 @@ export function restoreCaches(internal, backup) {
  *
  * @param {object} ctx - the context `apply` received
  * @param {{logger?: object, packageUrl?: string, entryUrl?: string, expectedVersion?: string}} [options]
- * @returns {Promise<{ok: true, version: string, fibers: number} | {ok: false, error: string, restored: boolean}>}
+ * @returns {Promise<{ok: true, version: string, fibers: number} | {ok: false, error: string, restored: boolean, restartRequired?: boolean}>}
  */
 export function selfReload(ctx, options = {}) {
   if (inFlight !== null) return inFlight
@@ -141,7 +154,10 @@ export function selfReload(ctx, options = {}) {
     const runtime = registry.get(previous)
     const fibers = [...(runtime?.fibers ?? [])].map(fiber => {
       const entry = fiber.entry?.fiber?.uid === fiber.uid ? fiber.entry : undefined
-      return { fiber, entry, config: entry === undefined ? fiber._config : entry.options.config }
+      const plugin = typeof previous === 'function'
+        ? { apply: previous, inject: { ...fiber.inject }, Config: runtime.Config, name: runtime.name }
+        : previous
+      return { fiber, entry, plugin, config: entry === undefined ? fiber._config : entry.options.config }
     })
     if (fibers.length === 0) {
       return { ok: false, error: 'runtime has no live fibers', restored: false }
@@ -149,30 +165,23 @@ export function selfReload(ctx, options = {}) {
 
     const internal = loader.internal
     const backup = purgeCaches(internal, packageUrl)
-    logger.info?.(`our-free-model: hot reload purging ${backup.esm.size} cached module(s)`)
-    if (backup.esm.size === 0 && internal?.loadCache instanceof Map) {
-      // Diagnostic for kernels whose loadCache keys use a different shape.
-      const sample = [...internal.loadCache.keys()].slice(0, 6).map(key => String(key).slice(-70))
-      globalThis[Symbol.for('our-free-model.purge-sample')] = { packageUrl: packageUrl.slice(-70), sample }
+    if (backup.esm.size === 0) {
+      logger.warn?.('our-free-model: host module cache is unavailable; hot reload requires a host restart')
+      return { ok: false, error: 'safe hot reload is unavailable in this host; restart the host to load installed files', restored: true, restartRequired: true }
     }
+    logger.info?.(`our-free-model: hot reload purging ${backup.esm.size} cached module(s)`)
 
     const importFresh = async url => loader.unwrapExports(await loader.import(url, () => []))
     let replacement
-    let busted = false
     try {
       replacement = await importFresh(entryUrl)
       if (replacement === undefined || typeof replacement.apply !== 'function') {
         throw new Error('reloaded module does not export apply()')
       }
-      if (replacement === previous) {
-        // The cache purge did not take effect on this kernel (the loadCache shape
-        // changed across Node versions). Force a fresh evaluation of the entry
-        // with a one-off query; its relative imports resolve to the purged URLs.
-        replacement = await importFresh(`${entryUrl}?ofm=${Date.now()}`)
-        busted = true
-        if (replacement === undefined || typeof replacement.apply !== 'function') {
-          throw new Error('reloaded module does not export apply()')
-        }
+      if (replacement === previous || replacement.apply === previous
+        || (typeof previous.apply === 'function' && replacement.apply === previous.apply)) {
+        restoreCaches(internal, backup)
+        return { ok: false, error: 'the host returned the cached plugin after cache clearing; restart the host to load installed files', restored: true, restartRequired: true }
       }
       if (options.expectedVersion !== undefined && replacement.version !== options.expectedVersion) {
         throw new Error(`activation version mismatch: expected ${options.expectedVersion}, got ${String(replacement.version ?? '(missing)')}`)
@@ -181,7 +190,7 @@ export function selfReload(ctx, options = {}) {
       restoreCaches(internal, backup)
       return { ok: false, error: `re-import failed, old code still running (${error?.message ?? error})`, restored: true }
     }
-    globalThis[Symbol.for('our-free-model.last-reload')] = { at: Date.now(), purged: backup.esm.size, busted }
+    globalThis[Symbol.for('our-free-model.last-reload')] = { at: Date.now(), purged: backup.esm.size }
 
     try {
       registry.delete(previous)
@@ -215,8 +224,8 @@ export function selfReload(ctx, options = {}) {
       } catch { /* may never have started */ }
       try {
         const restored = []
-        for (const { fiber, entry, config } of fibers) {
-          const registered = fiber.parent.registry.plugin(previous, config)
+        for (const { fiber, entry, plugin, config } of fibers) {
+          const registered = fiber.parent.registry.plugin(plugin, config)
           const fresh = registered.ctx.fiber
           if (entry !== undefined) {
             fresh.entry = entry

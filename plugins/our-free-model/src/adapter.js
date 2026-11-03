@@ -23,15 +23,57 @@ import { CODE, UpstreamError, postStreamed } from './http.js'
 import { postSealedStreamed } from './eac.js'
 import { postKiloStreamed } from './kilo.js'
 import { postAggregateStreamed, isAggregateEntry } from './aggregate.js'
-import { finishReason, readStream, windowTokens } from './stream.js'
+import { finishReason, readStream, sanitizeUsage, windowTokens } from './stream.js'
 import { DEFAULT_LEVEL, MIN_BUDGET, budgetFor, defaultEffortFor, effortPatchFor, effortsFor, hasDeclaredEffortMenu, resolveLevel } from './effort.js'
 import { createChannel } from './channel.js'
 import { recoveryPolicy, canRecover, canRecoverSilentStop, recoveryMessages, continuationMessages, checkpointFits, addUsage, createBlockTracker } from './recovery.js'
 import { isEacEntry, isKiloEntry } from './catalog.js'
 import { isComboEntry, comboChain } from './combos.js'
-import { applyTokenSavers, saverConfig } from './token-saver/index.js'
+import { applyTokenSavers, saverConfig } from './token-saver.js'
 import { classifyFailure, describeVerdict, shouldAdvance } from './route/classify.js'
 import { FALLBACK_IMAGE_PRICING } from './image-pricing.js'
+import { isSubscriptionEntry, subscriptionChunks } from './subscription-adapter.js'
+
+/**
+ * How long a combo candidate may stay silent before the chain counts the try as
+ * failed.
+ *
+ * `runCombo` commits to a candidate only once an answer-bearing chunk arrives,
+ * and a candidate whose upstream accepts the request and then sends nothing —
+ * keepalive comments only, no deltas — never settles `iterator.next()`. With no
+ * deadline that single await blocks the whole chain, so the fallback that exists
+ * for exactly this case never reaches its next link. Availability probes do not
+ * cover the shape either: the gateway answers 200, so the probe reads it as up.
+ *
+ * Only the pre-commit window is bounded. Once an answer delta has been handed
+ * over the answer belongs to the caller and the original unbounded await stays,
+ * so a slow-but-alive model is never cut off mid-stream — a reasoning model that
+ * thinks for a minute while streaming its thoughts keeps resetting the clock.
+ */
+const CHAIN_SILENCE_MS = 25_000
+
+/** Distinguishes "the watchdog fired" from a row the iterator really produced. */
+const SILENT_CANDIDATE = Symbol('ofm-silent-candidate')
+
+/**
+ * Await one iterator step, giving up when the candidate stays silent for `ms`.
+ * A timeout is reported as an advanceable end-of-try, so `runCombo` walks on
+ * exactly as it would after a classified failure.
+ */
+async function nextOrSilence(iterator, ms) {
+  let timer
+  try {
+    const silence = new Promise(resolve => { timer = setTimeout(() => resolve(SILENT_CANDIDATE), ms) })
+    const row = await Promise.race([iterator.next(), silence])
+    if (row !== SILENT_CANDIDATE) return row
+    // Best effort: a pending next() cannot be interrupted, but the generator's
+    // own finally blocks abort its transport once it settles.
+    try { iterator.return?.(undefined) } catch {}
+    return { done: true, value: { advance: true, verdict: null } }
+  } finally {
+    clearTimeout(timer)
+  }
+}
 
 export const ROUTE_MAIN = 'our-free-model'
 export const ROUTE_REGION = 'our-free-model-region'
@@ -44,6 +86,11 @@ export const ROUTE_LABELS = {
 
 const STYLE_FOR_WIRE = { chat: 'chat', responses: 'flat', messages: 'claude' }
 
+// One process-level flag, not per-turn: the first id-less turn that lands on the
+// reserved "global" session is what the user needs to hear about, not every
+// title generation or summary that follows it.
+let globalSessionWarned = false
+
 export class FreeModelAdapter {
   /**
    * @param {object} dependencies
@@ -52,6 +99,7 @@ export class FreeModelAdapter {
    * @param {(record: object) => void} dependencies.recordUsage
    * @param {(record: object) => void} [dependencies.recordTurn]
    * @param {(message: string) => void} [dependencies.warn]
+   * @param {{complete: (request: object, onChunk: Function) => Promise<object>}} [dependencies.subscriptionRuntime]
    */
   constructor(dependencies) {
     this.deps = dependencies
@@ -231,7 +279,7 @@ export class FreeModelAdapter {
       yield { type: 'finish', reason: { kind: 'error', failure: { message: 'our free model is switched off in its settings page', code: 'CONFIG_DISABLED' } } }
       return
     }
-    const candidates = comboChain(entry, snapshot.catalog)
+    const candidates = comboChain(entry, snapshot.catalog, snapshot.routing ?? {})
     if (candidates.length === 0) {
       rejectedTurn(0)
       yield { type: 'finish', reason: { kind: 'error', failure: { message: `the chain "${entry.name}" has no model available on this egress`, code: CODE.server } } }
@@ -250,7 +298,7 @@ export class FreeModelAdapter {
       let result
       const held = []
       while (true) {
-        const row = await iterator.next()
+        const row = committed ? await iterator.next() : await nextOrSilence(iterator, CHAIN_SILENCE_MS)
         if (row.done === true) { result = row.value; break }
         if (committed) { yield row.value; continue }
         held.push(row.value)
@@ -320,6 +368,9 @@ export class FreeModelAdapter {
       yield { type: 'finish', reason: { kind: 'error', failure: { message: `our free model does not serve "${options.model}" on this egress`, code: CODE.server } } }
       return { advance: false, verdict: null, ok: false }
     }
+    if (isSubscriptionEntry(entry)) return yield * this.runSubscription({
+      ...options, maxTokens: Math.min(options.maxTokens ?? settings.defaultMaxTokens ?? entry.maxOutput, entry.maxOutput),
+    }, entry, plan)
 
     const sealed = isEacEntry(entry)
     const kilo = isKiloEntry(entry)
@@ -336,11 +387,49 @@ export class FreeModelAdapter {
     const declared = toToolDefs(options.tools, style)
     const policy = recoveryPolicy(settings.streamRecovery)
     const session = sessionForConversation(options.sessionId)
+    // A turn without a conversation id lands on the reserved "global" session,
+    // shared by every such turn on this machine. Minting a fresh session per
+    // id-less turn is not an option: the free lane accounts quota per session,
+    // so a new id per request would burn the allowance into 429s. The stable
+    // shared session is the price of that quota model — make it visible once
+    // instead of letting concurrent id-less conversations silently share state.
+    if (globalSessionWarned === false && !(typeof options.sessionId === 'string' && options.sessionId.trim() !== '')) {
+      globalSessionWarned = true
+      this.deps.warn?.('our-free-model: a turn arrived without a conversation id; it shares the reserved "global" upstream session with every other id-less turn')
+    }
     const recoveryId = mintRequestId()
     let attemptMessages = messages
     let attemptBudget = budget
     let nextIndex = 0
     let totalUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
+    let rejectedInputUsage = false
+    const trustedOutcome = outcome => {
+      // Only this Kilo router has a confirmed inflated multimodal stamp.
+      // Other lanes may advertise a conservative/fallback window, so exceeding
+      // that metadata alone must not erase their otherwise valid accounting.
+      if (!kilo || entry.id !== 'kilo-auto/free' || outcome?.sawUsage !== true) return outcome
+      const usage = sanitizeUsage(outcome.usage, entry.contextWindow)
+      if (usage === outcome.usage) return outcome
+      rejectedInputUsage = true
+      return usage === undefined
+        ? { ...outcome, sawUsage: false, usage: { inputTokens: 0, outputTokens: 0 } }
+        : { ...outcome, usage }
+    }
+    const collectUsage = outcome => {
+      const trusted = trustedOutcome(outcome)
+      totalUsage = addUsage(totalUsage, trusted?.usage, trusted?.sawUsage)
+      // Once one attempt's input is unknown, no sum of the other attempts can
+      // restore an exact prompt/total. Keep decode counts but let the host use
+      // its local input estimate, including after an honest continuation.
+      if (rejectedInputUsage) {
+        totalUsage = {
+          inputTokens: 0,
+          outputTokens: totalUsage.outputTokens,
+          ...totalUsage.reasoningTokens === undefined ? {} : { reasoningTokens: totalUsage.reasoningTokens },
+        }
+      }
+      return trusted
+    }
     const blocks = createBlockTracker()
     let turnRecorded = false
     const finishTurn = (ok, recovered = false, attempts = 1) => {
@@ -432,6 +521,7 @@ export class FreeModelAdapter {
               providerId: entry.providerId,
               modelId: entry.modelId,
               body: payload,
+              session,
               signal: controller.signal,
               onData: value => channel.push(value),
             })
@@ -498,7 +588,7 @@ export class FreeModelAdapter {
       const advanceVerdict = (code, message, status) => {
         if (plan.allowAdvance !== true || options.signal?.aborted === true || sawAnswer) return { advance: false, verdict: null }
         const verdict = classifyFailure({ status, code, message })
-        return { advance: shouldAdvance(verdict), verdict }
+        return { advance: shouldAdvance(verdict) || code === CODE.client || code === CODE.region, verdict }
       }
       try {
         const reader = readStream(channel.read(), wire, renameMap, () => Date.now(), {
@@ -528,7 +618,7 @@ export class FreeModelAdapter {
           await reader.return()
         }
         nextIndex = outcome.nextIndex
-        totalUsage = addUsage(totalUsage, outcome.usage, outcome.sawUsage)
+        outcome = collectUsage(outcome)
         usageAdded = true
         if (options.signal?.aborted === true) {
           record(false, outcome, { aborted: true })
@@ -601,20 +691,26 @@ export class FreeModelAdapter {
         record(true, outcome, recovering ? { recovered: reason.kind === 'stop' } : {})
         finishTurn(true, recovering && reason.kind === 'stop', attempt + 1)
         yield { type: 'usage', usage: totalUsage }
-        yield { type: 'finish', reason }
+        // Keep the provider token when the harness fallback maps an abnormal
+        // ending to stop. Strict consumers (manual tests) must not certify it.
+        yield { type: 'finish', reason, ...(reason.kind === 'stop' && !normalEnding ? { upstreamFinish: outcome.finish } : {}) }
         if (warnings.length > 0) this.deps.warn?.(`our-free-model: dropped unsupported content for ${entry.id}: ${warnings.join(', ')}`)
         return { advance: false, verdict: null, ok: true, recovered: recovering && reason.kind === 'stop' }
       } catch (error) {
         if (error?.code === CODE.region) this.deps.onRegionBlocked?.(entry.id)
         const aborted = options.signal?.aborted === true
         let failure = toFailure(error)
+        if (sealed && failure.code === CODE.server) failure = { ...failure, code: 'EAC_UPSTREAM_FAILED' }
+        if ((delivered || partialOutcome?.sawToolCall === true) && this.providerRetryPolicy().retryableCodes.includes(failure.code)) {
+          failure = { ...failure, code: 'STREAM_CUT' }
+        }
         if (!aborted && (recovering || expired)) {
           failure = { ...failure, code: recovering || delivered || partialOutcome?.sawToolCall === true ? 'STREAM_CUT' : CODE.timeout,
             message: expired
               ? `our free model reached its ${Math.round(timeoutMs / 1000)}s time limit before its finish token${recovering ? ', during the continuation from its checkpoint' : ''}`
               : `our free model continuation failed: ${failure.message}` }
         }
-        if (!usageAdded) totalUsage = addUsage(totalUsage, partialOutcome?.usage, partialOutcome?.sawUsage)
+        if (!usageAdded) partialOutcome = collectUsage(partialOutcome)
         record(false, partialOutcome, { ...(recovering || expired) ? { truncated: true } : {}, ...aborted ? { aborted: true } : {} })
         finishTurn(false, false, attempt + 1)
         for (const chunk of blocks.close()) yield chunk
@@ -631,11 +727,90 @@ export class FreeModelAdapter {
         options.signal?.removeEventListener('abort', onAbort)
         controller.abort()
         await request
-        if (!recorded) record(false, partialOutcome, { aborted: true })
+        if (!recorded) record(false, trustedOutcome(partialOutcome), { aborted: true })
         if (!continuationScheduled && !turnRecorded) finishTurn(false, false, attempt + 1)
       }
     }
   }
+
+  /** The subscription helper owns physical usage; the caller owns the turn. */
+  async * runSubscription(options, entry, plan) {
+    let answered = false
+    let terminal = false
+    let ending
+    let stream
+    const blocks = createBlockTracker()
+    try {
+      const request = {
+        ...options, model: entry.id,
+        resolveImage: this.deps.resolveImage,
+        toolChoice: subscriptionToolChoice(options.toolChoice, options.tools),
+        maxTokens: Math.min(options.maxTokens ?? entry.maxOutput, entry.maxOutput),
+        messages: repairToolPairing(options.messages ?? []),
+        // A combo chain records one logical turn for the whole chain; letting
+        // the member record its own would count that turn twice.
+        recordTurn: plan.recordTurn !== false,
+      }
+      stream = subscriptionChunks(this.deps.subscriptionRuntime, request)
+      while (true) {
+        const row = await stream.next()
+        if (row.done) {
+          if (row.value?.error) throw Object.assign(new Error(row.value.error), row.value.failure)
+          break
+        }
+        const chunk = row.value
+        if (chunk.type === 'finish') {
+          // Wait for complete() to settle before certifying a successful turn.
+          ending = chunk
+          terminal = true
+          continue
+        }
+        if (commitsAnswer(chunk)) answered = true
+        blocks.accept(chunk)
+        yield chunk
+      }
+      if (!terminal) throw new UpstreamError('Subscription stream ended before completion', CODE.transport)
+      if (ending.reason?.kind === 'error' || ending.reason?.kind === 'aborted') {
+        throw Object.assign(new Error(ending.reason.failure?.message ?? 'Subscription completion failed'), ending.reason.failure, {
+          code: ending.reason.kind === 'aborted' ? CODE.aborted : ending.reason.failure?.code,
+        })
+      }
+      yield ending
+      return { advance: false, verdict: null, ok: true, recovered: false }
+    } catch (error) {
+      const aborted = options.signal?.aborted === true || error?.code === CODE.aborted
+      const failure = toFailure({
+        message: error?.message ?? 'Subscription completion failed',
+        code: error?.code,
+        status: error?.status ?? error?.statusCode,
+      })
+      const verdict = aborted ? null : classifyFailure(failure)
+      for (const chunk of blocks.close()) yield chunk
+      yield { type: 'finish', reason: { kind: aborted ? 'aborted' : 'error', failure } }
+      return {
+        ok: false,
+        advance: plan.allowAdvance === true && !aborted && !answered
+          && (shouldAdvance(verdict) || ['DISABLED', 'NOT_FOUND'].includes(failure.code)),
+        verdict,
+      }
+    } finally {
+      await stream?.return()
+    }
+  }
+}
+
+/** Validate subscription-only restrictions before account resolution or dispatch. */
+function subscriptionToolChoice(value, tools) {
+  if (value === undefined) return undefined
+  const names = new Set((Array.isArray(tools) ? tools : []).map(tool => tool?.name ?? tool?.function?.name).filter(name => typeof name === 'string'))
+  const named = value !== null && typeof value === 'object' && !Array.isArray(value)
+    && ((value.type === 'function' && (value.function?.name ?? value.name)) || (value.type === 'tool' && value.name)
+      || (value.type === undefined && value.name))
+  const validName = typeof named === 'string' && named.length > 0 && names.has(named)
+  if (value === 'auto' || value === 'none') return value
+  if ((value === 'required' || value === 'any') && names.size > 0) return value
+  if (validName) return { type: 'function', function: { name: named } }
+  throw new UpstreamError('Invalid subscription tool choice', 'INVALID_INPUT', { status: 400 })
 }
 
 /** The co-paid reasoning models can burn minutes in the thinking channel on
@@ -740,6 +915,7 @@ function toFailure(error) {
  * free lane splits its endpoints per model id.
  */
 function wireOf(entry) {
+  if (isSubscriptionEntry(entry)) return entry.wire ?? 'chat'
   if (isAggregateEntry(entry)) return entry.wire ?? 'chat'
   if (isEacEntry(entry) || isKiloEntry(entry)) return 'chat'
   return wireFor(entry.id)
