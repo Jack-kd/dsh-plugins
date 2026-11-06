@@ -33,6 +33,7 @@ const ENV_DEFAULTS = {
   GHIDRA_INSTALL_DIR: PATHS.ghidraDir,
   JAVA_HOME: PATHS.javaHome,
   REA_JADX_MCP_JAR: PATHS.jadxJar,
+  REA_APKTOOL_JAR: PATHS.apktoolJar,
 }
 
 function reaEnv() {
@@ -226,6 +227,34 @@ export function apply(ctx) {
       },
       timeoutMs: 600000,
     }),
+  // rea_apktool_run —— 直接调用随 REA 一并内置的 apktool（java -jar）。
+    // 与 reaTool(...) 不同：这不走 `rea` 命令行，而是直接 exec java 调 apktool jar，
+    // 所以单独定义、单独判断 apktool 是否已装。用途：解包(d)/回编(b)/view 明文 XML 等。
+    defineTool({
+      name: 'rea_apktool_run',
+      description: '调用内置 apktool 对 APK 进行操作（解包 d / 回编 b / 查看资源）。'
+        + 'apktool 由 REA 安装时一并内置，适合：解包出明文 XML/资源、改完再回编、看 smali。'
+        + '纯代码逻辑反编译请用 rea_inspect_apk_method（JADX，更可读）。',
+      parameters: {
+        args: { type: 'string', required: true, description: 'apktool 参数，如 "d 目标.apk -o out_dir" 或 "b out_dir -o new.apk"' },
+      },
+      output: {
+        schema: { type: 'string' },
+        render: (_args, value) => [{ type: 'text', text: String(value) }],
+      },
+      async execute(args) {
+        const jar = process.env.REA_APKTOOL_JAR || PATHS.apktoolJar
+        if (!fs.existsSync(jar)) {
+          throw new Error(`apktool 未安装（${jar} 不存在）。请先调用 rea_install 安装环境（apktool 会一并就绪）。`)
+        }
+        // 把 args.args 按 shell 词法拆成数组；空串容错
+        const argv = (args.args || '').trim()
+          ? String(args.args).match(/'[^']*'|"[^"]*"|\S+/g).map((t) => t.replace(/^['"]|['"]$/g, ''))
+          : []
+        const out = await run('java', ['-jar', jar, ...argv], { timeoutMs: 600000 })
+        return stripProgress(out)
+      },
+    }),
   ]
 
   // 逐个注册，并把结果写成自检文件（"装上了" ≠ "真的注册成功"，留个可读证据）
@@ -343,7 +372,8 @@ export function apply(ctx) {
   // 事件驱动：任一个 rea_* 工具被调用 → 置「REA 逆向中」，返回后清除
   // （与 gh-accel 同一套投影机制，由框架投喂 tool/call、tool/result 事件）
   const REA_TOOLS = ['rea_install', 'rea_doctor', 'rea_analyze', 'rea_function',
-    'rea_inspect_apk', 'rea_inspect_apk_class', 'rea_inspect_apk_method', 'rea_status']
+    'rea_inspect_apk', 'rea_inspect_apk_class', 'rea_inspect_apk_method',
+    'rea_apktool_run', 'rea_status']
 
   // 工具名 → 胶囊上的中文操作描述
   const REA_LABELS = {
@@ -354,6 +384,7 @@ export function apply(ctx) {
     rea_inspect_apk: '分析 APK',
     rea_inspect_apk_class: '分析 APK 类',
     rea_inspect_apk_method: '反编译 APK 方法',
+    rea_apktool_run: 'apktool 解包/回编',
     rea_status: '环境状态',
   }
 
@@ -724,7 +755,9 @@ export function apply(ctx) {
           '先判断文件类型——APK（.apk）用 rea_inspect_apk 系列（包名/权限/类/方法，静态不运行）；' +
           '原生二进制（.so / ELF / 可执行文件）用 rea_analyze（整体概览）或 rea_function（指定函数反编译）。' +
           '调用前先确认文件确实存在且路径正确（用户上传的文件通常在可访问的磁盘路径）；' +
-          '若 rea 环境未装，提示用户先调 rea_install 或用设置页安装。不要用通用文本工具当逆向工具用。',
+          '若 rea 环境未装，提示用户先调 rea_install 或用设置页安装。不要用通用文本工具当逆向工具用。' +
+          'apktool 已随 REA 一并内置（环境变量 REA_APKTOOL_JAR 指向 jar 路径）：当需要解包/改资源/回编 APK、' +
+          '或查看明文 XML（布局/清单）时用 apktool（java -jar $REA_APKTOOL_JAR ...）；反编译类代码逻辑仍用 rea_inspect_apk 系列。',
       }))
     })
   } catch (e) {

@@ -1,6 +1,12 @@
 # @local/rea-tools —— REA 逆向工具链插件
 
-把 **REA + Ghidra + JADX** 的逆向能力变成 DSH 原生工具：一键安装 + 原生二进制/APK 逆向。
+把 **REA + Ghidra + JADX + apktool** 的逆向能力变成 DSH 原生工具：一键安装 + 原生二进制/APK 逆向。
+
+**v0.2.11**：**内置 apktool，与 REA 配合使用**——安装时同步拉取
+`apktool_2.9.3.jar`（约 23MB，来自本仓库 Release asset，镜像优先 + SHA256 校验），装完即就绪。
+新增 `rea_apktool_run` 工具（`d` 解包、`b` 回编、看明文 XML/资源）；环境变量 `REA_APKTOOL_JAR`
+指向 jar 路径。分工：**代码逻辑反编译**用 `rea_inspect_apk_method`（JADX 更可读），**解包/改资源/回编**
+用 apktool。
 
 **v0.2.10**：**深度复查修复——消除选项状态泄漏 + 补全进度阶段覆盖**（全面重读了 install-manager.js / index.js / client.js / install-rea-ghidra.sh）：
 
@@ -86,6 +92,7 @@
 | `rea_inspect_apk` | APK 包信息/权限/Manifest |
 | `rea_inspect_apk_class` | APK 类成员清单 |
 | `rea_inspect_apk_method` | APK 方法反编译 |
+| `rea_apktool_run` | 调用内置 apktool：解包 / 改资源 / 回编 / 看明文 XML |
 | `rea_status` | 查询环境状态 / 进度 / 是否已装 |
 
 ## 原理

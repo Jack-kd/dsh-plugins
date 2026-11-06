@@ -23,6 +23,7 @@ export const VERSIONS = {
   ghidra: '12.1.4',
   ghidraBuild: '20260921',   // Ghidra release zip 的构建日期后缀
   jadx: '0.7.1',
+  apktool: '2.9.3',
   rea: '6.5.0',
 }
 
@@ -33,6 +34,7 @@ export const PATHS = {
   ghidraMarker: `${GHIDRA_DIR}/Ghidra/application.properties`,
   javaHome: '/usr/lib/jvm/java-21-openjdk-arm64',
   jadxJar: `/opt/rea-install-kit/jadx-headless-mcp-${VERSIONS.jadx}-all.jar`,
+  apktoolJar: `/opt/rea-install-kit/apktool_${VERSIONS.apktool}.jar`,
   zipCache: `/var/cache/rea-install/ghidra_${VERSIONS.ghidra}_PUBLIC_${VERSIONS.ghidraBuild}.zip`,
   decompiler: `${GHIDRA_DIR}/Ghidra/Features/Decompiler/os/linux_arm_64/decompile`,
 }
@@ -42,6 +44,7 @@ export const SIZES = {
   jdk: 148,
   rea: 50,
   jadx: 41,
+  apktool: 23,
   ghidra: 543,
   decompiler: 2,
 }
@@ -56,6 +59,7 @@ export const SIZES = {
 const STAGE_FILES = {
   ghidra: PATHS.zipCache,
   jadx: PATHS.jadxJar,
+  apktool: PATHS.apktoolJar,
 }
 
 /** 状态文件：记录用户选择、目标环境、安装阶段。放在插件目录下，随插件走。 */
@@ -73,6 +77,7 @@ export function probeComponents() {
     jdk: exists(PATHS.javaHome),
     rea: exists('/usr/local/bin/rea'),
     jadx: exists(PATHS.jadxJar),
+    apktool: exists(PATHS.apktoolJar),
     ghidra: exists(PATHS.ghidraMarker),
   }
 }
@@ -86,13 +91,13 @@ export function probeComponents() {
  */
 export function detectState(pluginDir) {
   const c = probeComponents()
-  const baseReady = c.jdk && c.rea && c.jadx
+  const baseReady = c.jdk && c.rea && c.jadx && c.apktool
   const ghidraReady = c.ghidra && exists(PATHS.decompiler)
 
   let tier = 'none'
   if (baseReady && ghidraReady) tier = 'full'
   else if (baseReady) tier = 'basic'
-  else if (c.jdk || c.rea || c.jadx || c.ghidra) tier = 'partial'
+  else if (c.jdk || c.rea || c.jadx || c.apktool || c.ghidra) tier = 'partial'
 
   let saved = {}
   try { saved = JSON.parse(fs.readFileSync(statePath(pluginDir), 'utf8')) } catch { /* 无状态文件 */ }
@@ -172,6 +177,7 @@ function parseLine(line, state) {
 
   if (/下载 Ghidra|检测到已存在的 Ghidra/.test(line)) setStage('ghidra', 'Ghidra 12.1.4', SIZES.ghidra)
   else if (/下载 JADX|JADX 桥接已存在|JADX 桥接就绪/.test(line)) setStage('jadx', 'JADX 桥接', SIZES.jadx)
+  else if (/下载 apktool|apktool 已存在|apktool 就绪/.test(line)) setStage('apktool', `apktool ${VERSIONS.apktool}`, SIZES.apktool)
   else if (/尝试从仓库拉取|使用预编译反编译器|反编译器已存在|反编译器编译完成/.test(line)) setStage('decompiler', 'arm64 反编译器', SIZES.decompiler)
   else if (/x86_64 发布包自带反编译器/.test(line)) setStage('decompiler', 'x86_64 反编译器（自带）', SIZES.decompiler)
   else if (/apt 安装 openjdk|未找到 JDK|检测到 Java/.test(line)) setStage('jdk', 'JDK 21', SIZES.jdk)
@@ -181,8 +187,10 @@ function parseLine(line, state) {
   if (/跳过 Ghidra/.test(line)) markDone('ghidra')
   if (/跳过反编译器/.test(line)) markDone('decompiler')
   if (/跳过 JADX/.test(line)) markDone('jadx')
+  if (/跳过 apktool/.test(line)) markDone('apktool')
   if (/检测到已存在的 Ghidra/.test(line)) markDone('ghidra')
   if (/JADX 桥接已存在且校验通过/.test(line)) markDone('jadx')
+  if (/apktool 已存在且校验通过/.test(line)) markDone('apktool')
   if (/反编译器已存在且可执行/.test(line)) markDone('decompiler')
   if (/x86_64 发布包自带反编译器/.test(line)) markDone('decompiler')  // 自带无需下载，直接算完成
   if (/检测到 Java 21/.test(line)) markDone('jdk')
@@ -200,7 +208,7 @@ function parseLine(line, state) {
   if (/安装完成/.test(line)) {
     s.done = true
     s.percent = 100
-    for (const k of ['jdk', 'rea', 'jadx', 'ghidra', 'decompiler']) markDone(k)
+    for (const k of ['jdk', 'rea', 'jadx', 'apktool', 'ghidra', 'decompiler']) markDone(k)
     s.stageDone = stageDone
   }
 
@@ -215,11 +223,11 @@ function computePercent(state, targetTier) {
   // v0.2.6：ghidra-only 也会装 JDK（脚本 `--skip-rea` 只跳过 rea-agents，JDK 仍要装），
   // 旧版只算 [ghidra, decompiler] → 进度分母偏小、百分比虚高。
   const order = targetTier === 'full'
-    ? ['jdk', 'rea', 'jadx', 'ghidra', 'decompiler']
+    ? ['jdk', 'rea', 'jadx', 'apktool', 'ghidra', 'decompiler']
     : targetTier === 'ghidra-only'
       ? ['jdk', 'ghidra', 'decompiler']
-      : ['jdk', 'rea', 'jadx']
-  const sizeOf = { jdk: SIZES.jdk, rea: SIZES.rea, jadx: SIZES.jadx, ghidra: SIZES.ghidra, decompiler: SIZES.decompiler }
+      : ['jdk', 'rea', 'jadx', 'apktool']
+  const sizeOf = { jdk: SIZES.jdk, rea: SIZES.rea, jadx: SIZES.jadx, apktool: SIZES.apktool, ghidra: SIZES.ghidra, decompiler: SIZES.decompiler }
 
   const total = order.reduce((a, k) => a + sizeOf[k], 0)
   let done = 0

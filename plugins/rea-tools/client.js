@@ -159,15 +159,16 @@
         // ---------------- 组件清单定义（数据驱动，便于联动） ----------------
         // 体积/版本从宿主 `/rea-tools/state` 的 sizes/versions 读取（单一来源），
         // 缺失时用下面的兜底值，避免前端与 install-manager.js 的 SIZES/VERSIONS 各写一套。
-        const DEFAULT_SIZES = { jdk: 148, rea: 50, jadx: 41, ghidra: 543 }
-        const DEFAULT_VERSIONS = { rea: '6.5.0', jadx: '0.7.1', ghidra: '12.1.4' }
+        const DEFAULT_SIZES = { jdk: 148, rea: 50, jadx: 41, apktool: 23, ghidra: 543 }
+        const DEFAULT_VERSIONS = { rea: '6.5.0', jadx: '0.7.1', apktool: '2.9.3', ghidra: '12.1.4' }
         const itemDefs = (sizes, versions) => [
           { key: 'jdk', name: 'JDK 21 (headless)', mb: sizes.jdk, desc: 'Java 运行环境，JADX 与 rea 的运行前置' },
-          { key: 'rea', name: 'rea-agents', mb: sizes.rea, desc: '提供 rea 命令与 7 个分析工具' },
+          { key: 'rea', name: 'rea-agents', mb: sizes.rea, desc: '提供 rea 命令与分析工具' },
           { key: 'jadx', name: `JADX 桥接 ${versions.jadx}`, mb: sizes.jadx, desc: 'APK 反编译引擎（DEX → Java）' },
+          { key: 'apktool', name: `apktool ${versions.apktool}`, mb: sizes.apktool, desc: 'APK 解包/回编/明文资源——与 JADX 配合：分析用 REA，改包用 apktool' },
           { key: 'ghidra', name: `Ghidra ${versions.ghidra}`, mb: sizes.ghidra, desc: '可选增强：伪代码反编译 / 汇编分析 / 调用关系；含 arm64 反编译器 1.8 MB（配套件，自动带上）' },
         ]
-        const BASIC_KEYS = ['jdk', 'rea', 'jadx']
+        const BASIC_KEYS = ['jdk', 'rea', 'jadx', 'apktool']
         const fmt = (mb) => (mb >= 1024 ? (mb / 1024).toFixed(2) + ' GB' : mb + ' MB')
 
         // ================= 宿主状态源（HTTP，不依赖会话） =================
@@ -264,7 +265,7 @@
           const versions = (state && state.versions) || DEFAULT_VERSIONS
           const ITEMS = React.useMemo(() => itemDefs(sizes, versions), [sizes, versions])
           // 视图状态：初级/升级；真实数据源是 4 个 checkbox
-          const [picked, setPicked] = React.useState(() => ({ jdk: true, rea: true, jadx: true, ghidra: false }))
+          const [picked, setPicked] = React.useState(() => ({ jdk: true, rea: true, jadx: true, apktool: true, ghidra: false }))
           const [remember, setRemember] = React.useState(true)
 
           const basicAll = BASIC_KEYS.every((k) => picked[k])
@@ -277,8 +278,8 @@
           const midState = anyBasic && !basicAll
 
           const toggleChild = (k) => setPicked((p) => ({ ...p, [k]: !p[k] }))
-          const pickBasic = () => setPicked({ jdk: true, rea: true, jadx: true, ghidra: false })
-          const pickFull = () => setPicked({ jdk: true, rea: true, jadx: true, ghidra: true })
+          const pickBasic = () => setPicked({ jdk: true, rea: true, jadx: true, apktool: true, ghidra: false })
+          const pickFull = () => setPicked({ jdk: true, rea: true, jadx: true, apktool: true, ghidra: true })
 
           const chosen = ITEMS.filter((i) => picked[i.key])
           const totalMB = chosen.reduce((a, i) => a + i.mb, 0)
@@ -345,7 +346,7 @@
                 // 中间态明确说明（初级三项是固定组合，不能只选一部分）
                 midState ? h('div', {
                   style: { fontSize: '12px', lineHeight: '18px', marginTop: '6px', color: 'var(--dsw-alias-state-warning-primary,#d98a00)' },
-                }, '初级版本的三项（JDK / rea-agents / JADX）是固定组合，不能只选其中一部分；请整组勾选，或点上面「初级版本」自动补齐。') : null,
+                }, '初级版本的组件（JDK / rea-agents / JADX / apktool）是固定组合，不能只选其中一部分；请整组勾选，或点上面「初级版本」自动补齐。') : null,
 
                 // v0.2.8：动作失败必须让用户看见（旧版失败被 catch 吞掉，等于没反应）
                 error ? h('div', { className: S.err }, error) : null),
@@ -374,7 +375,7 @@
           const stages = [
             ...(onlyGhidra ? [] : [
               { key: 'jdk', name: 'JDK 21' }, { key: 'rea', name: 'rea-agents' },
-              { key: 'jadx', name: 'JADX 桥接' },
+              { key: 'jadx', name: 'JADX 桥接' }, { key: 'apktool', name: 'apktool ' + ((state.versions && state.versions.apktool) || DEFAULT_VERSIONS.apktool) },
             ]),
             ...(withGhidra ? [{ key: 'ghidra', name: 'Ghidra ' + ((state.versions && state.versions.ghidra) || DEFAULT_VERSIONS.ghidra) }, { key: 'decompiler', name: 'arm64 反编译器' }] : []),
           ]
@@ -485,8 +486,8 @@
           const doneStages = Array.isArray(state && state.doneStages) ? state.doneStages : []
           const tierKey = (state && state.targetTier) || 'basic'
           const TIER_KEYS = {
-            basic: ['jdk', 'rea', 'jadx'],
-            full: ['jdk', 'rea', 'jadx', 'ghidra', 'decompiler'],
+            basic: ['jdk', 'rea', 'jadx', 'apktool'],
+            full: ['jdk', 'rea', 'jadx', 'apktool', 'ghidra', 'decompiler'],
             'ghidra-only': ['jdk', 'ghidra', 'decompiler'],
           }
           const tierTools = TIER_KEYS[tierKey] || TIER_KEYS.basic
@@ -529,7 +530,7 @@
         function SettingsRow({ state, onOpenDialog, onOpenDetail, onInstallFull, onInstallBasic }) {
           const tier = (state && state.tier) || 'none'
           const sizes = (state && state.sizes) || DEFAULT_SIZES
-          const basicMB = (sizes.jdk || 0) + (sizes.rea || 0) + (sizes.jadx || 0)
+          const basicMB = (sizes.jdk || 0) + (sizes.rea || 0) + (sizes.jadx || 0) + (sizes.apktool || 0)
           const fullMB = basicMB + (sizes.ghidra || 0)
           const installing = !!(state && state.installing)
           let status, desc, action = null

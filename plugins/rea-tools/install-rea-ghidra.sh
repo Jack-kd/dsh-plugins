@@ -55,6 +55,12 @@ JADX_SHA256="6e5eacf500b64292bfb73c49797c1958f6ee44646e43e868039ae7feb573ff75"
 JADX_URL="https://github.com/1013503897/jadx-headless-mcp/releases/download/v${JADX_VERSION}/${JADX_JAR_NAME}"
 JADX_INSTALL_DIR="${JADX_INSTALL_DIR:-/opt/rea-install-kit}"
 
+# apktool 2.9.3 —— 由 rea-tools 插件从本仓库 Release asset 拉取（镜像优先），SHA256 校验
+APKTOOL_VERSION="2.9.3"
+APKTOOL_JAR_NAME="apktool_${APKTOOL_VERSION}.jar"
+APKTOOL_SHA256="7956eb04194300ce0d0a84ad18771eebc94b89fb8d1ddcce8ea4c056818646f4"
+APKTOOL_URL="https://github.com/Jack-kd/dsh-plugins/releases/download/apktool-v${APKTOOL_VERSION}/${APKTOOL_JAR_NAME}"
+
 OFFICIAL_URL="https://github.com/NationalSecurityAgency/ghidra/releases/download/${GHIDRA_RELEASE_TAG}/${GHIDRA_ZIP_NAME}"
 REPO_RELEASE_URL="https://github.com/${GITHUB_REPO}/releases/download/${RELEASE_TAG}/${GHIDRA_ZIP_NAME}"
 REPO_RAW_BASE="https://raw.githubusercontent.com/${GITHUB_REPO}/${REPO_BRANCH}"
@@ -77,6 +83,12 @@ JADX_MIRRORS=(
   "https://ghproxy.net/${JADX_URL}"                         # ghproxy 加速
   "https://gh-proxy.com/${JADX_URL}"                        # gh-proxy 加速
   "${JADX_URL}"                                             # GitHub 官方源（兜底）
+)
+APKTOOL_MIRRORS=(
+  "https://ghfast.top/${APKTOOL_URL}"                       # ghfast 加速（国内首选）
+  "https://ghproxy.net/${APKTOOL_URL}"                      # ghproxy 加速
+  "https://gh-proxy.com/${APKTOOL_URL}"                     # gh-proxy 加速
+  "${APKTOOL_URL}"                                          # GitHub 官方源（兜底）
 )
 if [[ -n "${GHIDRA_MIRRORS_EXTRA:-}" ]]; then
   read -r -a GHIDRA_MIRRORS_EXTRA_ARR <<< "${GHIDRA_MIRRORS_EXTRA}"
@@ -332,6 +344,34 @@ else
   log "JADX 桥接就绪: ${JADX_JAR_PATH}"
 fi
 
+# ---------- 4.6 apktool（REA 配合资源的解包/回编，与小包共用 JADX 桥接组件目录）----------
+# apktool 是独立于 JADX 的配套工具：JADX 反编译 dex→Java，apktool 用于解包/改资源/回编，
+# 两者配合使用（分析用 REA/JADX，改包用 apktool）。安装脚本在此一并备好，避免新用户
+# 用到时再去单独下载。与 JADX 同一套「镜像优先 + 断点续传 + SHA256 校验」管线。
+APKTOOL_JAR_PATH="${JADX_INSTALL_DIR}/${APKTOOL_JAR_NAME}"
+if [[ "${SKIP_REA}" -eq 1 ]]; then
+  log "跳过 apktool（--skip-rea）"
+elif [[ -f "${APKTOOL_JAR_PATH}" ]] && echo "${APKTOOL_SHA256}  ${APKTOOL_JAR_PATH}" | sha256sum -c - >/dev/null 2>&1; then
+  log "apktool 已存在且校验通过: ${APKTOOL_JAR_PATH}"
+else
+  log "下载 apktool（配合 REA 解包/回编，23MB，断点续传）..."
+  mkdir -p "${JADX_INSTALL_DIR}"
+  ok=0
+  for url in "${APKTOOL_MIRRORS[@]}"; do
+    log "  尝试: ${url}"
+    if download_resume "${url}" "${APKTOOL_JAR_PATH}"; then
+      if echo "${APKTOOL_SHA256}  ${APKTOOL_JAR_PATH}" | sha256sum -c - >/dev/null 2>&1; then
+        ok=1; break
+      else
+        warn "apktool 下载完成但校验失败，清理后换下一个源"
+        rm -f "${APKTOOL_JAR_PATH}"
+      fi
+    fi
+  done
+  [[ "${ok}" -eq 1 ]] || die "apktool 下载失败（残留文件在 ${APKTOOL_JAR_PATH}，可断点重跑）"
+  log "apktool 就绪: ${APKTOOL_JAR_PATH}"
+fi
+
 # ---------- 5. 反编译器（decompile + sleigh）----------
 DECOMPILER_DIR="${INSTALL_DIR}/Ghidra/Features/Decompiler/os/${GHIDRA_OSDIR}"
 
@@ -422,6 +462,7 @@ if [[ "${SKIP_REA}" -eq 0 ]]; then
 ${GHIDRA_EXPORT_LINE}
 export JAVA_HOME="\${JAVA_HOME:-${JAVA_HOME_DEFAULT}}"
 export REA_JADX_MCP_JAR="\${REA_JADX_MCP_JAR:-${JADX_JAR_PATH}}"
+export REA_APKTOOL_JAR="\${REA_APKTOOL_JAR:-${APKTOOL_JAR_PATH}}"
 exec /usr/bin/env node "${REA_SCRIPT}" "\$@"
 WRAPPER
       chmod +x "${REA_BIN}"
@@ -441,6 +482,7 @@ rea doctor 2>&1 | grep -E "healthy:|  - name: (ghidra|ghidra-native_decompiler|g
 log "===================================================="
 if [[ "${SKIP_GHIDRA}" -eq 1 ]]; then
   log " 安装完成！（初级版本：仅 APK 逆向）"
+  log "   apktool:   ${APKTOOL_JAR_PATH}"
   log "   JADX 桥接:  ${JADX_JAR_PATH}"
   log "   rea:       $(rea_version || echo '(未安装 rea)')"
   log "   注意:      未安装 Ghidra，原生二进制分析（rea_analyze / rea_function）不可用"
@@ -449,6 +491,7 @@ if [[ "${SKIP_GHIDRA}" -eq 1 ]]; then
   log "   APK:    rea inspect-android-package <apk>; rea inspect-android-class <apk> <类名>"
 else
   log " 安装完成！（升级版本：APK + 原生二进制）"
+  log "   apktool:    ${APKTOOL_JAR_PATH}"
   log "   Ghidra:     ${INSTALL_DIR}"
   log "   反编译器:  ${DECOMPILER_DIR}/decompile"
   log "   JADX 桥接:  ${JADX_JAR_PATH}"

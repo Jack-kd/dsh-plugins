@@ -1,9 +1,9 @@
 {
   "name": "@local/rea-tools",
-  "version": "0.2.10",
+  "version": "0.2.11",
   "private": true,
   "type": "module",
-  "description": "REA 逆向工具链（REA + Ghidra + JADX）一键安装 + 原生二进制 / APK 逆向工具",
+  "description": "REA 逆向工具链（REA + Ghidra + JADX + apktool）一键安装 + 原生二进制 / APK 逆向工具",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
