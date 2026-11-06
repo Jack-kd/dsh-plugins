@@ -59,7 +59,7 @@ JADX_INSTALL_DIR="${JADX_INSTALL_DIR:-/opt/rea-install-kit}"
 APKTOOL_VERSION="2.9.3"
 APKTOOL_JAR_NAME="apktool_${APKTOOL_VERSION}.jar"
 APKTOOL_SHA256="7956eb04194300ce0d0a84ad18771eebc94b89fb8d1ddcce8ea4c056818646f4"
-APKTOOL_URL="https://github.com/Jack-kd/dsh-plugins/releases/download/apktool-v${APKTOOL_VERSION}/${APKTOOL_JAR_NAME}"
+APKTOOL_URL="https://github.com/Jack-kd/dsh-plugins/releases/download/rea-tools-v0.2.11/${APKTOOL_JAR_NAME}"
 
 OFFICIAL_URL="https://github.com/NationalSecurityAgency/ghidra/releases/download/${GHIDRA_RELEASE_TAG}/${GHIDRA_ZIP_NAME}"
 REPO_RELEASE_URL="https://github.com/${GITHUB_REPO}/releases/download/${RELEASE_TAG}/${GHIDRA_ZIP_NAME}"

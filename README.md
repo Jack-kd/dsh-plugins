@@ -115,9 +115,11 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.10.0/gh-acc
 </details>
 
 <details>
-<summary><b>▶ rea-tools · REA 逆向工具链（一键安装 + 原生/APK 逆向）</b>　<code>v0.2.10</code></summary>
+<summary><b>▶ rea-tools · REA 逆向工具链（一键安装 + 原生/APK 逆向）</b>　<code>v0.2.11</code></summary>
 
-> 一键安装 **REA + Ghidra + JADX**（arm64 反编译器免编译、断点续传、zip 缓存、幂等），并提供 7 个逆向工具：`rea_install`（安装）、`rea_doctor`（就绪检查）、`rea_analyze`（二进制概览）、`rea_function`（函数伪代码，Ghidra）、`rea_inspect_apk` / `rea_inspect_apk_class` / `rea_inspect_apk_method`（APK 静态逆向，不运行目标代码）。已在 arm64 实测：NewPipe APK 7096 类，Manifest/类成员/方法反编译全部正常。
+> 一键安装 **REA + Ghidra + JADX + apktool**（arm64 反编译器免编译、断点续传、zip 缓存、幂等），并提供 8 个逆向工具：`rea_install`（安装）、`rea_doctor`（就绪检查）、`rea_analyze`（二进制概览）、`rea_function`（函数伪代码，Ghidra）、`rea_inspect_apk` / `rea_inspect_apk_class` / `rea_inspect_apk_method`（APK 静态逆向，不运行目标代码）、`rea_apktool_run`（apktool 解包/回编/看明文资源）。已在 arm64 实测：NewPipe APK 7096 类，Manifest/类成员/方法反编译全部正常。
+>
+> **v0.2.11**：**内置 apktool，与 REA 配合使用**——安装时同步拉取 `apktool_2.9.3.jar`（约 23MB，来自本仓库 `rea-tools` Release asset，镜像优先 + SHA256 校验，放 `/opt/rea-install-kit/apktool_2.9.3.jar`），装完即就绪；新增 `rea_apktool_run` 工具（`rea_apktool_run{"args":"d 目标.apk -o out"}`），并通过环境变量 `REA_APKTOOL_JAR` 暴露 jar 路径。分工：**代码逻辑反编译**用 `rea_inspect_apk_method`（JADX，可读性更好），**解包/改资源/回编/看明文 XML**用 apktool——两者配合使用，免去新用户另行下载 apktool。
 >
 > **v0.2.10**：**深度复查修复——消除选项状态泄漏 + 补全进度阶段覆盖**：① `rea_install` 的 `--compile` / `--install-dir` 选项此前写进全局 `process.env` 且不清除（进程级单例），用户某次用 `--compile` 装过后，之后再跑裸 `rea_install()` 仍被残留值污染——静默改走源码编译/改安装目录；`--skip-rea` 写的 `REA_SKIP_REA` 还是死代码。现改为把这三个选项作为显式 `opts` 参数传给 `startInstall`，完全不碰全局环境变量，零残留。② x86_64 反编译器阶段漏标记（进度卡 99%）——补上对 `x86_64…自带反编译器` 的识别，既正确设阶段又直接标记完成。③ `rea-agents` 版本号硬编码误导（脚本装最新版却显示 6.5.0）——不再显示具体版本号。
 >
@@ -146,13 +148,13 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.10.0/gh-acc
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/rea-tools-v0.2.10/rea-tools-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/rea-tools-v0.2.11/rea-tools-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/rea-tools-v0.2.10/rea-tools-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/rea-tools-v0.2.11/rea-tools-plugin.tgz
 ```
 
 > 首次打开自动弹窗选择版本后台安装；或在设置 → 通用 → REA 逆向环境 里安装；也可调 `rea_install` 工具。升级需先卸载再装新版本。
