@@ -1,0 +1,43 @@
+{
+  "name": "@local/rea-craft-mix",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "REA-Craft Anything 融合：REA(JADX+Ghidra) 深度反编译 × Craft Anything(321 工具) 全格式逆向，统一引擎探测、路径注入、就绪状态",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "install-manager.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-settings-general"
+      ]
+    }
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "rea",
+    "craft-anything",
+    "reverse-engineering",
+    "ghidra",
+    "jadx"
+  ],
+  "license": "MIT"
+}
