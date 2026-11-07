@@ -330,12 +330,13 @@
                     ? '可查看当前 REA / Craft Anything 状态；如需更换组件，勾选后点「重新安装/更换」即可（已装的会覆盖）。'
                     : 'REA 负责安装包 / 原生二进制逆向，Craft Anything（可选）补充 321 个跨格式逆向工具。可后台下载，不影响继续对话。')),
               h('div', { className: S.body },
-                (mode === 'manage' ? h('div', { className: S.pillCard, style: { margin: '4px 0 8px', padding: '8px 10px' } },
-              h('div', { style: { fontSize: '12px', color: '#8ab4a8', marginBottom: '4px', fontWeight: 600 } }, '当前已装环境'),
-              h('div', { style: { fontSize: '13px', lineHeight: 1.6 }, role: 'status' },
-                'REA：' + ({ full: '升级版本（含 Ghidra）', basic: '初级版本', partial: '安装未完成', none: '未安装', installing: '安装中' })[(state && state.tier) || 'none'] +
-                (craftSt.installed ? '   Craft Anything 已就绪' + (craftSt.version ? ' · ' + craftSt.version : '')
-                  : (craftSt.installing ? '   Craft Anything 安装中' : '   Craft Anything 未安装')))) : null),
+                (mode === 'manage' ? h('div', { style: { margin: '4px 0 8px', padding: '8px 10px', display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '2px' } },
+              h('div', { style: { fontSize: '12px', color: '#8ab4a8', marginBottom: '1px', fontWeight: 600 } }, '当前已装环境'),
+              h('div', { style: { fontSize: '13px', lineHeight: 1.6, wordBreak: 'break-word' }, role: 'status' },
+                '· REA：' + ({ full: '升级版本（含 Ghidra）', basic: '初级版本', partial: '安装未完成', none: '未安装', installing: '安装中' })[(state && state.tier) || 'none']),
+              h('div', { style: { fontSize: '13px', lineHeight: 1.6, wordBreak: 'break-word', color: 'var(--dsw-alias-label-secondary)' }, role: 'status' },
+                '· Craft：' + (craftSt.installed ? '已就绪' + (craftSt.version ? ' · v' + craftSt.version : '')
+                  : (craftSt.installing ? '安装中' : '未安装')))) : null),
 h('div', { style: { fontSize: '13px', fontWeight: 600, margin: '4px 0 0' } }, '请选择需要下载的环境'),
 
                 // 初级版本
@@ -358,9 +359,6 @@ h('div', { style: { fontSize: '13px', fontWeight: 600, margin: '4px 0 0' } }, '�
                   children: [childRow(ITEMS.find((i) => i.key === 'ghidra'))],
                 }),
 
-                h('div', { className: S.remember, onClick: () => setRemember((v) => !v) },
-                  h('div', { className: S.check + (remember ? ' ' + S.checkOn : '') }, remember ? '✓' : ''),
-                  h('span', null, '记住我的选择，以后不再询问')),
 
                 // ── Craft Anything 板块（可选，勾选后 REA 装完自动装）──
                 craftSt.installed
@@ -381,6 +379,9 @@ h('div', { style: { fontSize: '13px', fontWeight: 600, margin: '4px 0 0' } }, '�
                           h('div', { className: S.groupDesc },
                             craftSt.installing ? '正在安装…' : '可选：321 个跨格式工具（APK/原生/固件/抓包/数据库/游戏/JS）')),
                         h('div', { className: S.size }, craftSt.installing ? '……' : (withCraft ? '+' + fmt(CRAFT_MB) + 'MB' : '+0MB')))),
+                h('div', { className: S.remember, onClick: () => setRemember((v) => !v) },
+                  h('div', { className: S.check + (remember ? ' ' + S.checkOn : '') }, remember ? '✓' : ''),
+                  h('span', null, '记住我的选择，以后不再询问')),
 
                 // 中间态明确说明（初级三项是固定组合，不能只选一部分）
                 midState ? h('div', {
