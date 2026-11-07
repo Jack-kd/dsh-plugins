@@ -63,6 +63,12 @@ const PROBE_BUDGET_MS = 3500;      // 每个探测最多 3.5 秒
 const PROBE_MAX = 512 * 1024;      // 每个探测最多读 512KB
 const SEGMENT_MIN = 4 * 1024 * 1024; // 小于此值不切片
 const CONNECT_TIMEOUT = 12_000;
+// 分片停滞看门狗：pipeline 传输期间若连续 STALL_TIMEOUT_MS 没有新数据字节产出，
+// 判定该分片在镜像端 stalled（Range 请求被憋住不再传数据），销毁底层 socket、
+// 让 pipeline 抛错走 retry/失败，从而根治「多线程慢速大文件卡死在某一进度无限重试」
+// 的问题。见 downloadRange 的实现。
+const STALL_TIMEOUT_MS = 15_000; // 分片连续无数据阈值（15s）。过大则仍会慢吞吞卡住，过小则慢网误杀。
+const STALL_POLL_MS = 500;       // 看门狗轮询间隔（检查是否已超时）。
 
 // ── 下载优先策略（prefer）───────────────────────────────────────────────
 // 'mirror'：镜像优先 —— 只要任一镜像测速达标就用镜像，直连仅作兜底（门槛很高）。
@@ -525,13 +531,37 @@ async function downloadRange(url, start, end, dest, { retries = 2, signal, onByt
         if (status >= 400 && status < 500) return false;
         throw new Error(`HTTP ${status}`);
       }
-      // 无进度回调时保持原行为（纯管线直写）
-      if (typeof onBytes !== 'function') {
-        await pipeline(stream, fs.createWriteStream(dest));
+      // ── 停滞看门狗 ────────────────────────────────────────────────
+      // 根治「多线程慢速大文件卡死」：分片连接一旦建立，镜像端的 Range 大分片
+      // 请求可能被憋住、数据流不再前进。此前 `await pipeline(stream,…)` 对这种
+      // stalled 连接没有任何超时判断 → 该分片永久挂起 → mapLimit 等它收尾 → 整体
+      // 无限重试、进度卡死（ACCEL_PROGRESS 同一数值）。
+      // 方案：传输期间周期性检查「距离最后一块数据」是否超时，超了就把底层
+      // stream destroy 掉，pipeline 随之抛错 → 进 catch → 重试下一个候选/分片。
+      let lastActivity = Date.now();
+      const onData = () => { lastActivity = Date.now(); };
+      stream.on('data', onData);
+      const poll = setInterval(() => {
+        if (Date.now() - lastActivity > STALL_TIMEOUT_MS) {
+          // 判定 stalled：销毁底层 socket，使正在进行的 pipeline 抛错。
+          try { stream.destroy(new Error(`分片停滞（>${STALL_TIMEOUT_MS}ms 无数据）：${url}`)); } catch { /* no-op */ }
+        }
+      }, STALL_POLL_MS);
+      const finish = async () => { clearInterval(poll); try { stream.removeListener('data', onData); } catch { /* no-op */ } };
+      try {
+        // 无进度回调时保持原行为（纯管线直写）
+        if (typeof onBytes !== 'function') {
+          await pipeline(stream, fs.createWriteStream(dest));
+          await finish();
+          return true;
+        }
+        await pipeline(stream, countingStream(onBytes), fs.createWriteStream(dest));
+        await finish();
         return true;
+      } catch (e) {
+        await finish();
+        throw e; // 交给外层 catch 统一重试/失败
       }
-      await pipeline(stream, countingStream(onBytes), fs.createWriteStream(dest));
-      return true;
     } catch {
       // 外部 signal 已中断：立即放弃（不重试、不等待），让上层尽快感知取消。
       if (signal && signal.aborted) return false;
