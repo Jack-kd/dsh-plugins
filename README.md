@@ -75,11 +75,13 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.10.0/gh-acc
 </details>
 
 <details>
-<summary><b>▶ super-re · 超级逆向（REA 环境 + Craft Anything 统一安装入口）</b>　<code>v0.1.4</code></summary>
+<summary><b>▶ super-re · 超级逆向（REA 环境 + Craft Anything 统一安装入口）</b>　<code>v0.1.5</code></summary>
 
 > **统一环境安装入口**——一个弹窗装齐 REA 逆向环境（JADX + Ghidra + apktool），**可选**勾选 Craft Anything（321 个跨格式工具）。针对「新用户装环境太麻烦」重做：本身自带**环境配置弹窗**（REA 板块 + Craft 板块），REA 板块与 rea-tools 一致（初级/升级 radio + 子组件勾选 + 断点续传 + 幂等）；Craft 板块独立 checkbox，勾选后 REA 装完**串行**自动接 craft 安装。后台下载不阻塞对话，进度胶囊实时显示。安装地址：
 >
-> `dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/super-re-v0.1.4/super-re-plugin.tgz`
+> `dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/super-re-v0.1.5/super-re-plugin.tgz`
+>
+> **v0.1.5**：胶囊容错——工具工作胶囊的标题按工具来源动态显示 `REA` / `Craft`（不再硬编码 `REA ·`）。活动收集器同时识别 rea_* 与 cad_*/mix_*/craft 类工具并标记引擎，`craft` 工具会显示为「Craft · 操作名…」，避免将来接入 craft 工具时仍被误标成 REA。
 >
 > **v0.1.4**：「复刻 / 模仿」类诉求也自动触发逆向——系统提示词强化为：遇到「复刻某 App/APK 的功能、或照着做一个同类软件」时，先逆向挖出对应功能的真实实现（`rea_inspect_apk_method` / `rea_function` / apktool），再基于逆向到的逻辑写实现，不凭空猜；并对「复制整个软件」明确提醒不承诺一键全自动复制，而是逆向提取核心逻辑交给用户决定。
 >

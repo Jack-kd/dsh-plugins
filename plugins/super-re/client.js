@@ -508,11 +508,12 @@ h('div', { style: { fontSize: '13px', fontWeight: 600, margin: '4px 0 0' } }, '�
             // 工具执行中的胶囊：第一行操作名 + 光点，第二行目标文件名
             const label = activity.activeLabel || '逆向分析'
             const target = activity.activeTarget || null
+            const engineLabel = activity.activeEngine === 'craft' ? 'Craft' : 'REA'
             return h('div', { className: S.pill },
-              h('div', { className: S.pillCard, role: 'status', 'aria-live': 'polite', title: 'REA 逆向工具正在工作: ' + (label || '') + (target ? ' · ' + target : '') },
+              h('div', { className: S.pillCard, role: 'status', 'aria-live': 'polite', title: engineLabel + ' 逆向工具正在工作: ' + (label || '') + (target ? ' · ' + target : '') },
                 h('span', { className: S.dot }),
                 h('div', { className: S.pillBody },
-                  h('div', { className: S.pillMainRow }, 'REA · ' + label + '…'),
+                  h('div', { className: S.pillMainRow }, engineLabel + ' · ' + label + '…'),
                   (target ? h('div', { className: S.pillTarget }, target) : null))))
           }
           const pct = Math.max(0, Math.min(100, (state && state.percent) || 0))

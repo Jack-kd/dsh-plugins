@@ -468,6 +468,15 @@ export function apply(ctx) {
     rea_status: '环境状态',
   }
 
+  // craft 类工具（cad_*/mix_*）的胶囊中文描述；未命中时兜底用原名。
+  const CRAFT_LABELS = {
+    cad_install: '安装 Craft',
+    cad_analyze: 'Craft 分析',
+    mix_doctor: '引擎探测',
+    mix_inject: '引擎注入',
+    mix_rebuild: 'Craft 回编',
+  }
+
   const projection = {
     key: 'rea',
     stateVersion: 4,
@@ -476,7 +485,13 @@ export function apply(ctx) {
     apply(state, event) {
       if (event.type === 'tool/call') {
         const { callId, name, arguments: argsRaw } = event.data || {}
-        if (!REA_TOOLS.includes(name) || !callId) return state
+        if (!callId) return state
+        // 识别工具归属引擎：REA 的 rea_*/super_setup → 'rea'；其他 craft 类工具（cad_*/mix_*/craft_*）→ 'craft'。
+        // 只收集这两类，其余（普通工具）不进胶囊。
+        let engine = null
+        if (REA_TOOLS.includes(name)) engine = 'rea'
+        else if (/^(cad_|mix_|craft)/.test(name || '')) engine = 'craft'
+        if (!engine) return state
         const exists = Array.isArray(state.calls) && state.calls.some((c) => (typeof c === 'object' && c !== null) ? c.callId === callId : c === callId)
         if (exists) return state
         // 从参数里取文件路径（apk / path）→ basename，作为胶囊上的目标文件名
@@ -489,7 +504,7 @@ export function apply(ctx) {
             target = p.split(/[\\/]/).pop() || p
           }
         } catch { /* 参数解析失败不影响胶囊 */ }
-        const entry = { callId, name, target }
+        const entry = { callId, name, target, engine }
         return { calls: Array.isArray(state.calls) ? [...state.calls, entry] : [entry] }
       }
       if (event.type === 'tool/result') {
@@ -508,7 +523,11 @@ export function apply(ctx) {
         const active = calls.length > 0
         // 取最近一个正在执行的 rea 工具的中文操作描述
         const last = calls.length ? calls[calls.length - 1] : null
-        const activeLabel = last ? (REA_LABELS[last.name] || last.name) : null
+        // 胶囊引擎来源 + 中文操作描述：REA 工具用 REA_LABELS，craft 工具用 CRAFT_LABELS
+        const lastEngine = last ? (last.engine || (last.name && REA_TOOLS.includes(last.name) ? 'rea' : 'craft')) : null
+        const activeLabel = last
+          ? (lastEngine === 'craft' ? (CRAFT_LABELS[last.name] || last.name) : (REA_LABELS[last.name] || last.name))
+          : null
         const activeTarget = (last && last.target) || null
         return {
           tier: ui.tier,
@@ -536,6 +555,7 @@ export function apply(ctx) {
           active,
           activeLabel,
           activeTarget,
+          activeEngine: lastEngine,
           sizes: SIZES,
           versions: VERSIONS,
         }
