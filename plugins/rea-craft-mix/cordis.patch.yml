@@ -1,7 +1,0 @@
-# rea-craft-mix 插件的配置层。id 必须与 index.js 的 `export const name` 一致（都是 rea-craft-mix）。
-- insert:
-    - id: rea-craft-mix
-      name: "@local/rea-craft-mix"
-      inject:
-        - tools
-      config: {}
