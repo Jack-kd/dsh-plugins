@@ -2,6 +2,16 @@
 
 **gh-accel 与 dl-accel 合二为一**：一个插件同时负责 GitHub 与任意站点的下载/上传加速。
 
+## v2.10.8 · 修复大文件下载卡死（40MB+ 多线程分片）+ 镜像池实测重建
+
+**卡死的 6 个叠加根因**：① `AbortSignal.timeout(12s)` 绑在整个响应体上 → 慢但健康的分片必然失败（实测失败耗时精确 12000ms）；② 镜像按 IP 限并发，8 worker 齐上时超限连接 0 字节、12s abort；③ `pumpStream` 出错只 `ws.end()` 不 destroy → 写入流永久悬挂、worker 永不返回；④ 无停滞看门狗 → 分片 stalled 无限死等；⑤ 任一分片失败就整表重下；⑥ 不创建目标父目录 → 进度走满后才报 ENOENT（「进度满了却卡住」）。
+
+**镜像池实测重建**（筛查 github.akams.cn 的 57 个候选，三轮筛选）：剔除对 Ghidra 返回 403 的 `ghfast.top`、死链 `ghproxy.net` / `github.mxw.qzz.io`，以及一批**不支持 Range**（对大文件回 200，会让每个线程各下一遍完整文件）的节点；新增 `gh.monlor.com`、`gh.07150721.xyz`。新增 **Range 支持安全阀**。
+
+实测：62MB 包 6 轮下载 sha256 全部一致。
+
+---
+
 ## v2.10.0 · 修复胶囊实时速度 / 进度显示（进度不再卡 / 跳 / 闪完成）
 
 修复胶囊「进度要么卡着不动、要么一下跳一大节、要么卡一会直接显示完成」的根因——问题不在渲染端，而在**进度数据的取值方式**：
@@ -82,7 +92,7 @@
 
 > 安装：
 > ```bash
-> dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.10.0/gh-accel-plugin.tgz
+> dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.10.8/gh-accel-plugin.tgz
 > ```
 
 ## v2.6.1 · 胶囊刷新更顺滑
@@ -96,7 +106,7 @@
 
 > 安装：
 > ```bash
-> dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.10.0/gh-accel-plugin.tgz
+> dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.10.8/gh-accel-plugin.tgz
 > ```
 
 ## v2.6.0 · 胶囊实时速度 / 进度显示（方案 A）
@@ -112,7 +122,7 @@
 
 > 安装：
 > ```bash
-> dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.10.0/gh-accel-plugin.tgz
+> dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.10.8/gh-accel-plugin.tgz
 > ```
 
 ## v2.5.2 · 修复系统提示从未注入 + 补全 HF/npm 全局镜像
@@ -252,7 +262,7 @@ https://registry.npmmirror.comhttps://registry.npmjs.org/typescript/...
 ## 安装
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.10.0/gh-accel-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.10.8/gh-accel-plugin.tgz
 ```
 
 或「插件管理 → 添加插件」粘贴同一地址。
