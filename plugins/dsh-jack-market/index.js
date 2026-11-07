@@ -16,6 +16,7 @@
 import { spawn } from 'node:child_process';
 import nodeHttps from 'node:https';
 import nodeHttp from 'node:http';
+import nodePath from 'node:path';
 
 const OWNER = 'Jack-kd';
 const REPO = 'dsh-plugins';
@@ -183,13 +184,81 @@ const apiCache = new Map();
 const API_FRESH_MS = 15 * 60 * 1000;        // 15 分钟内直接用
 const API_STALE_MS = 24 * 60 * 60 * 1000;   // 24 小时内可先返回旧值并后台刷新
 
+// ── 缓存持久化到磁盘（v0.7.6）─────────────────────────────────────────
+// 问题：apiCache 是内存 Map，DSH 一重启就清空 → 每次重启后首次打开市场
+// 必然冷启动，实测要等 3 个 GitHub API 请求，每个 TTFB 5.6~6.7s（约 6.5s
+// 并行 + 解析渲染 ≈ 8~12s）。这是用户感受最痛的场景（打开就转圈十几秒）。
+// 做法：把缓存写到 profile 下的 .dsh-market/api-cache.json，启动时读回。
+// 这样重启后首次打开立即命中（陈旧也能先返回旧值、后台静默刷新），
+// 网络慢只在「后台」发生，用户几乎零等待。
+// 注意：只缓存文本响应（目录列表 / releases / README），不缓存任何凭证。
+let _cacheFile = null;      // 由 ensureDiskCache(profileDir) 设定
+let _cacheDirty = false;
+let _cacheTimer = null;
+
+function ensureDiskCache(profileDir) {
+  if (_cacheFile || !profileDir) return;
+  _cacheFile = nodePath.join(profileDir, '.dsh-market', 'api-cache.json');
+  loadDiskCache();
+}
+
+async function loadDiskCache() {
+  if (!_cacheFile) return;
+  try {
+    const fsp = (await import('node:fs/promises')).default;
+    const raw = await fsp.readFile(_cacheFile, 'utf8');
+    const obj = JSON.parse(raw);
+    const now = Date.now();
+    let loaded = 0;
+    for (const [url, rec] of Object.entries(obj || {})) {
+      // 只接受 24 小时内的记录，过期太久（数据可能已变）就不要了
+      if (!rec || typeof rec.at !== 'number' || now - rec.at > API_STALE_MS) continue;
+      apiCache.set(url, { at: rec.at, value: rec.value });
+      loaded++;
+    }
+    // 载入成功（静默；该文件无 debug 工具）
+  } catch { /* 无缓存文件 / 解析失败：当作没有，走网络 */ }
+}
+
+function scheduleCacheSave() {
+  if (!_cacheFile) return;
+  _cacheDirty = true;
+  if (_cacheTimer) return;
+  // 合并写入：5 秒内的多次变更只落盘一次，避免频繁 IO
+  _cacheTimer = setTimeout(async () => {
+    _cacheTimer = null;
+    if (!_cacheDirty || !_cacheFile) return;
+    _cacheDirty = false;
+    try {
+      const fsp = (await import('node:fs/promises')).default;
+      await fsp.mkdir(nodePath.dirname(_cacheFile), { recursive: true });
+      const obj = {};
+      const now = Date.now();
+      for (const [url, rec] of apiCache) {
+        if (!rec || typeof rec.at !== 'number') continue;
+        if (now - rec.at > API_STALE_MS) continue;   // 过旧的不写盘
+        obj[url] = { at: rec.at, value: rec.value };
+      }
+      // 原子写：先写临时文件再 rename，避免写一半被进程杀掉留下坏 JSON
+      const tmp = `${_cacheFile}.tmp`;
+      await fsp.writeFile(tmp, JSON.stringify(obj));
+      await fsp.rename(tmp, _cacheFile);
+    } catch { /* 落盘失败不影响功能，下次变更再试 */ }
+  }, 5000);
+  // 不阻止进程退出
+  if (_cacheTimer.unref) _cacheTimer.unref();
+}
+
 /** 后台静默刷新（不阻塞调用方，失败也不影响已返回的旧值）。 */
 function backgroundRefresh(url) {
   const hit = apiCache.get(url);
   if (hit && hit.refreshing) return;
   if (hit) hit.refreshing = true;
   ghJson(url)
-    .then((value) => { apiCache.set(url, { at: Date.now(), value, refreshing: false }); })
+    .then((value) => {
+      apiCache.set(url, { at: Date.now(), value, refreshing: false });
+      scheduleCacheSave();
+    })
     .catch(() => { if (hit) hit.refreshing = false; });
 }
 
@@ -209,6 +278,7 @@ async function cachedGhJson(url, controller) {
   // 无缓存或过期太久：必须等网络
   const value = await ghJson(url, controller);
   apiCache.set(url, { at: Date.now(), value });
+  scheduleCacheSave();
   return value;
 }
 
@@ -221,7 +291,10 @@ export function warmApiCache() {
     const hit = apiCache.get(url);
     if (hit && now - hit.at < API_FRESH_MS) continue;
     ghJson(url)
-      .then((value) => { apiCache.set(url, { at: Date.now(), value }); })
+      .then((value) => {
+        apiCache.set(url, { at: Date.now(), value });
+        scheduleCacheSave();
+      })
       .catch(() => { /* 预热失败无所谓，用户打开时会自己拉 */ });
   }
 }
@@ -1135,14 +1208,6 @@ export const name = 'dsh-jack-market';
 export const inject = ['webServer'];
 
 export function apply(ctx, config) {
-  // v0.7.4：插件加载后延迟预热列表缓存，让用户首次打开市场时多半已命中。
-  // 延迟 3 秒，避免和启动时的其它插件抢网络/CPU。
-  try {
-    const t = setTimeout(() => { try { warmApiCache() } catch { /* 预热失败不影响功能 */ } }, 3000);
-    if (typeof t.unref === 'function') t.unref();
-    ctx.effect(() => () => clearTimeout(t), 'dsh-jack-market: warm api cache');
-  } catch { /* ctx 无 effect 时跳过预热 */ }
-
   ctx.inject(['webServer'], (host) => {
     const profileName = resolveProfileName(ctx, config);
     const profileCtx = typeof ctx.get === 'function' ? ctx.get('profileContext') : undefined;
@@ -1152,6 +1217,24 @@ export function apply(ctx, config) {
     if (!profileDir && profileName) {
       profileDir = [process.env.DSH_HOME || '/root/.dsh', 'profiles', profileName].join('/');
     }
+
+    // v0.7.6：先把磁盘缓存读回内存（异步、失败无副作用），再做预热。
+    // 有了它，DSH 重启后首次打开市场不用再等 3 个 GitHub API 请求
+    // （每个 TTFB 5.6~6.7s，冷启动约 8~12s），直接命中上次的缓存。
+    if (profileDir) {
+      try {
+        ensureDiskCache(profileDir);
+      } catch { /* 无缓存文件/无权限都不影响功能 */ }
+    }
+
+    // 预热列表缓存：等磁盘缓存读完再发请求，避免重复拉同一份数据。
+    // 延迟 3 秒，避免和启动时的其它插件抢网络/CPU。
+    try {
+      const t = setTimeout(() => { try { warmApiCache() } catch { /* 预热失败不影响功能 */ } }, 3000);
+      if (typeof t.unref === 'function') t.unref();
+      ctx.effect(() => () => clearTimeout(t), 'dsh-jack-market: warm api cache');
+    } catch { /* ctx 无 effect 时跳过预热 */ }
+
     const disposers = [];
 
     disposers.push(host.webServer.register({

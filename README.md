@@ -225,9 +225,11 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-vision-router-v3.0.
 </details>
 
 <details>
-<summary><b>▶ dsh-jack-market · 插件市场（本仓库一键装）</b>　<code>v0.7.5</code></summary>
+<summary><b>▶ dsh-jack-market · 插件市场（本仓库一键装）</b>　<code>v0.7.6</code></summary>
 
 > 直接在 DSH 里浏览并一键安装本仓库的所有插件（类似内置的「插件市场」）。自动识别已安装状态与可更新版本，点「安装/更新」即后台下载安装并显示实时进度；每个插件卡片带简介、版本与更新时间，失败会显示具体原因。
+>
+> **v0.7.6**：**插件列表加载加速——API 缓存持久化到磁盘**。此前缓存是内存 Map，DSH 一重启就清空，导致每次重启后首次打开市场都要冷启动：实测 3 个 GitHub API 请求（plugins 目录 5.65s / README 5.91s / releases 6.66s，已并行）约 6.5s，加解析渲染约 8~12s。现在缓存写到 `<profile>/.dsh-market/api-cache.json`（原子写、5 秒合并落盘、24 小时过期），启动时读回内存——重启后首次打开立即命中，网络慢只在后台静默刷新时发生。
 >
 > **v0.7.5**：修复**插件列表加载失败 / HTTP 502**（v0.7.4 引入的回归）。根因：Node 的 `fetch`（undici）在本网络下拉 148KB 的 `releases` JSON 会 **`TypeError: fetch failed`**（10.5 秒后崩），而同一请求用 curl / 原生 `https` 都成功 —— 这是 undici 连接复用在弱网/代理环境下的兼容问题。改用原生 `https` + **`connection: close`**（实测同一请求：复用连接 6622ms → 关闭连接 **255ms**）。同时 `per_page` 100 → **30**（本仓库 32 条 release 但只有 9~10 个插件，30 条已覆盖全部最新版，省一半流量）。
 >
@@ -281,13 +283,13 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-vision-router-v3.0.
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.5/dsh-jack-market-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.6/dsh-jack-market-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.5/dsh-jack-market-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.6/dsh-jack-market-plugin.tgz
 ```
 
 > 装完重启一次 App（让设置页入口出现）；之后打开 **设置 → Jack 插件市场** 即可浏览和安装本仓库的插件。
