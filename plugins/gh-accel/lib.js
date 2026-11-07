@@ -669,6 +669,15 @@ export async function runDownload(url, {
 } = {}) {
   const t0 = Date.now();
   const pref = normalizePrefer(prefer);
+  // 目标路径的父目录必须存在，否则「分片全部下完、进度走满」之后，
+  // 写最终文件时才会抛 ENOENT（实测表现为「进度条走完却卡住/报错」）。
+  // 这里在开始下载前就把父目录建好。
+  if (out) {
+    try {
+      const dir = path.dirname(out);
+      if (dir && dir !== '.') await fsp.mkdir(dir, { recursive: true });
+    } catch { /* 建目录失败留给后续写文件时报出更明确的错误 */ }
+  }
   // 已下载字节累计（多线程分片并发时各分片 onBytes 并发回调，用闭包共享计数）
   let done = 0;
   let lastEmit = 0;
