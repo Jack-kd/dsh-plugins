@@ -115,6 +115,17 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.10.0/gh-acc
 </details>
 
 <details>
+<summary><b>▶ super-re · 超级逆向（REA 环境 + Craft Anything 统一安装入口）</b>　<code>v0.1.0</code></summary>
+
+> **统一环境安装入口**——一个弹窗装齐 REA 逆向环境（JADX + Ghidra + apktool），**可选**勾选 Craft Anything（321 个跨格式工具）。针对「新用户装环境太麻烦」重做：本身自带**环境配置弹窗**（REA 板块 + Craft 板块），REA 板块与 rea-tools 一致（初级/升级 radio + 子组件勾选 + 断点续传 + 幂等）；Craft 板块独立 checkbox，勾选后 REA 装完**串行**自动接 craft 安装。后台下载不阻塞对话，进度胶囊实时显示。安装地址：
+>
+> `dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/super-re-v0.1.0/super-re-plugin.tgz`
+>
+> **v0.1.0**：独立插件接管 REA 安装入口（rea-tools 退居，二者勿同装）；REA 复用 rea-tools 安装机制（install-rea-ghidra.sh 原样继承）；新增 `install-craft.sh`（官方 GitHub Release，aarch64/x86_64 自适应，SHA256 校验，装到 /opt/craft-anything + /usr/local/bin 软链，幂等）；弹窗 = REA 板块 + Craft 板块；HTTP 端点 `/super-re/state` + `/super-re/action`（支持 `withCraft` 串行）。Craft 官方源：`storytold/craft-anything` v0.4.0。
+
+</details>
+
+<details>
 <summary><b>▶ rea-tools · REA 逆向工具链（一键安装 + 原生/APK 逆向）</b>　<code>v0.2.11</code></summary>
 
 > 一键安装 **REA + Ghidra + JADX + apktool**（arm64 反编译器免编译、断点续传、zip 缓存、幂等），并提供 8 个逆向工具：`rea_install`（安装）、`rea_doctor`（就绪检查）、`rea_analyze`（二进制概览）、`rea_function`（函数伪代码，Ghidra）、`rea_inspect_apk` / `rea_inspect_apk_class` / `rea_inspect_apk_method`（APK 静态逆向，不运行目标代码）、`rea_apktool_run`（apktool 解包/回编/看明文资源）。已在 arm64 实测：NewPipe APK 7096 类，Manifest/类成员/方法反编译全部正常。

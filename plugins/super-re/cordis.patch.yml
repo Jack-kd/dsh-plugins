@@ -1,0 +1,7 @@
+# super-re 插件的配置层。id 必须与 index.js 的 `export const name` 一致（都是 super-re）。
+- insert:
+    - id: super-re
+      name: "@local/super-re"
+      inject:
+        - tools
+      config: {}
