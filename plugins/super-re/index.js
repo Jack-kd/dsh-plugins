@@ -310,8 +310,12 @@ export function apply(ctx) {
     }, null, 2))
   } catch { /* 自检文件写不了不影响插件功能 */ }
 
+  // v0.1.1 修复：同名工具注册失败（多因与 rea-tools/rea-craft-mix 同装重名冲突）
+  // **不中断插件启动**。冲突的工具跳过，其余能力（super_setup / 设置入口 / 环境管理弹窗 /
+  // HTTP 端点）照常可用——工具冲突可接受，但 UI 与 super_setup 不该被一起拖垮。
+  // 冲突详情已写入 .rea-plugin-selfcheck.json 的 failed 字段。
   if (failed.length > 0) {
-    throw new Error(`rea-tools 部分工具注册失败: ${failed.join('; ')}`)
+    console.warn(`[super-re] ${failed.length} 个工具因重名未注册（可能与其他插件重名，冲突不影响 UI 与 super_setup）: ${failed.join('; ')}`)
   }
 
   // ========================================================================
