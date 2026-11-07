@@ -558,18 +558,31 @@ function pumpStream(src, onBytes, dest, wsOpts) {
   return new Promise((resolve, reject) => {
     const ws = fs.createWriteStream(dest, wsOpts);
     let settled = false;
-    const okDone = () => { if (settled) return; settled = true; resolve(); };
-    const failDone = (err) => {
+    // 出错收尾必须**显式销毁写入流**：只 end() 的话，若源流已被看门狗
+    // destroy，pipe 不会再推数据也不会触发 finish，ws 会一直挂着，
+    // 这个 worker 就永久卡死（实测表现为「有一片永远停着不动」）。
+    // 这里一律 destroy，保证 fd 释放、Promise 一定 settle。
+    const fail = (err) => {
       if (settled) return;
       settled = true;
-      try { ws.end(() => reject(err)); } catch { reject(err); }
+      try { ws.destroy(); } catch { /* no-op */ }
+      try { src.destroy(); } catch { /* no-op */ }
+      reject(err);
     };
-    ws.on('error', failDone);
-    src.on('error', failDone);
-    ws.on('finish', okDone);
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    ws.on('error', fail);
+    src.on('error', fail);
+    ws.on('finish', done);
+    // 双保险：源流自然结束后，若 ws 因缓冲未 finish，也要等到 flush 完成。
+    // （pipe 默认会 end() 目标，正常路径靠 finish 收尾；显式兜底防止悬挂。）
+    ws.on('close', () => { if (!settled) done(); });
     try {
       (onBytes ? src.pipe(countingStream(onBytes)) : src).pipe(ws);
-    } catch (e) { failDone(e); }
+    } catch (e) { fail(e); }
   });
 }
 
