@@ -171,22 +171,23 @@ function buildCraftTools() {
         argJson: { type: 'string', description: '该工具的 JSON 参数串（可为空串；如 {"path":"/x.wasm"}）' },
       },
       async execute(args) {
-        if (!craftAvailable()) throw new Error(CRAFT_NOT_INSTALLED)
-        const toolName = (args && typeof args.tool === 'string' && args.tool.trim()) ? args.tool.trim() : ''
-        let toolArgs = {}
-        const raw = (args && typeof args.argJson === 'string') ? args.argJson.trim() : ''
-        if (raw) {
-          try { toolArgs = JSON.parse(raw) } catch (e) { throw new Error('argJson 不是合法 JSON：' + raw + '（' + e.message + '）') }
-          if (!toolArgs || typeof toolArgs !== 'object' || Array.isArray(toolArgs)) toolArgs = {}
+        const dump = 'RECEIVED_ARGS=' + JSON.stringify(args) + ' KEYS=' + (args ? Object.keys(args).join(',') : 'null')
+        try {
+          if (!craftAvailable()) throw new Error(CRAFT_NOT_INSTALLED)
+          const toolName = (args && typeof args.tool === 'string' && args.tool.trim()) ? args.tool.trim() : ''
+          let toolArgs = {}
+          const raw = (args && typeof args.argJson === 'string') ? args.argJson.trim() : ''
+          if (raw) {
+            try { toolArgs = JSON.parse(raw) } catch (e) { throw new Error('argJson 不是合法 JSON：' + raw) }
+            if (!toolArgs || typeof toolArgs !== 'object' || Array.isArray(toolArgs)) toolArgs = {}
+          }
+          const isUndef = /^(undefined|none|null)$/.test(toolName)
+          if (!toolName || isUndef) throw new Error('无法解析出有效 craft 工具名')
+          const out = await runCraft([toolName, ...craftArgsJson(toolArgs)])
+          return dump + '\n===CRAFT_OUT===\n' + out
+        } catch (e) {
+          return dump + '\n===CRAFT_ERR===\n' + String((e && e.message) || e)
         }
-        const isUndef = /^(undefined|none|null)$/.test(toolName)
-        if (!toolName || isUndef) {
-          throw new Error('无法解析出有效 craft 工具名。收到 tool=' + JSON.stringify(args && args.tool)
-            + ' [诊断全貌] args=' + JSON.stringify(args) + ' keys=' + (args ? Object.keys(args).join(',') : 'null')
-            + ' typeof_tool=' + (typeof (args && args.tool)))
-        }
-        const out = await runCraft([toolName, ...craftArgsJson(toolArgs)])
-        return out
       },
     }),
   ]
