@@ -163,21 +163,24 @@ function buildCraftTools() {
       kwargs: (args) => ({ target: args.target || '', request: args.request || '' }),
     }),
     makeTool('craft_call', 'Craft Anything 通用桥：调用任意一个 Craft 工具（321 个跨格式逆向工具）。'
-      + '用法：参数 params 是一个对象，形如 {"tool":"工具名","args":{...工具参数}}——tool 传 craft 工具名（如 native-functions-list / formats-wasm-module-show / web-site-capture / database-schema-show 等，连字符式），'
-      + 'args 传该工具的 JSON 参数对象（可为空）。先 `craft_commands` 查工具名和参数。输出为该工具返回的 JSON 文本。'
+      + '用法定参数：tool=craft 工具名（连字符式，如 native-functions-list / formats-wasm-module-show / web-site-capture / database-schema-show）；'
+      + 'argJson=该工具的 JSON 参数串（可为空串。如 {"path":"/x.wasm"}）。先 `craft_commands` 查工具名和参数。输出为该工具返回的 JSON 文本。'
       + 'APK 逆向请优先走 REA（rea_inspect_apk_*），craft 对现代 APK 有 ZIP 解析 bug；craft 常用于 REA 没有的跨格式/重建。', {
       parameters: {
-        params: { type: 'object', properties: { tool: { type: 'string' }, args: { type: 'object', additionalProperties: true } }, additionalProperties: false, description: '调用参数：{"tool":"craft工具名", "args":{该工具参数}}' },
+        tool: { type: 'string', description: 'Craft 工具名（连字符式，如 native-functions-list）' },
+        argJson: { type: 'string', description: '该工具的 JSON 参数串（可为空串；如 {"path":"/x.wasm"}）' },
       },
       async execute(args) {
         if (!craftAvailable()) throw new Error(CRAFT_NOT_INSTALLED)
-        const src = (args && typeof args.params === 'object' && args.params !== null) ? args.params : (args || {})
-        // 兼容多种入参形态：params.tool / 顶层 tool
-        const toolName = typeof src.tool === 'string' && src.tool.trim() ? src.tool.trim() : ''
-        const toolArgs = (src && typeof src.args === 'object' && src.args !== null) ? src.args : {}
-        // 诊断注入：调用者想 dump（tool='doctor' 前或未配 tool）
+        const toolName = (args && typeof args.tool === 'string' && args.tool.trim()) ? args.tool.trim() : ''
+        let toolArgs = {}
+        const raw = (args && typeof args.argJson === 'string') ? args.argJson.trim() : ''
+        if (raw) {
+          try { toolArgs = JSON.parse(raw) } catch (e) { throw new Error('argJson 不是合法 JSON：' + raw + '（' + e.message + '）') }
+          if (!toolArgs || typeof toolArgs !== 'object' || Array.isArray(toolArgs)) toolArgs = {}
+        }
         if (!toolName) {
-          throw new Error('请提供 craft 工具名（params.tool 或顶层 tool）。先用 craft_commands 查看可用工具。'
+          throw new Error('请提供参数 tool（Craft 工具名）。先用 craft_commands 查看可用工具。'
             + ' [诊断] args=' + JSON.stringify(args) + ' keys=' + (args ? Object.keys(args).join(',') : 'null'))
         }
         const out = await runCraft([toolName, ...craftArgsJson(toolArgs)])
