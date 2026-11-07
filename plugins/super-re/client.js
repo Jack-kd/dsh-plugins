@@ -131,6 +131,7 @@
   font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;line-height:16px;
   color:var(--dsw-alias-label-secondary);max-height:132px;overflow:auto;white-space:pre-wrap;word-break:break-all}
 .reaSettingRow{display:flex;align-items:center;gap:12px;padding:12px 0}
+    .reaRowBtns{display:flex;align-items:center;gap:6px;flex-shrink:0;margin-left:auto}
 .reaSettingText{flex:1;min-width:0}
 .reaSettingName{font-size:14px;line-height:20px;font-weight:500}
 .reaSettingDesc{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary);margin-top:2px}
@@ -149,7 +150,7 @@
           pillBody: 'reaPillBody', pillMainRow: 'reaPillMainRow', pillTarget: 'reaPillTarget',
           stage: 'reaStage', stageDone: 'reaStageDone', stageIco: 'reaStageIco', stageName: 'reaStageName',
           stageMeta: 'reaStageMeta', log: 'reaLog', settingRow: 'reaSettingRow', settingText: 'reaSettingText',
-          settingName: 'reaSettingName', settingDesc: 'reaSettingDesc', ok: 'reaOk',
+          settingName: 'reaSettingName', settingDesc: 'reaSettingDesc', ok: 'reaOk', rowBtns: 'reaRowBtns',
           pillTitleRow: 'reaPillTitleRow', pillStageName: 'reaPillStageName', pillBarRow: 'reaPillBarRow',
           pillBarInner: 'reaPillBarInner', pillBarTotal: 'reaPillBarTotal', pillBarStage: 'reaPillBarStage',
           pillBarIn: 'reaPillBarIn', pillPct: 'reaPillPct', pillMeta: 'reaPillMeta',
@@ -260,7 +261,7 @@
         }
 
         // ================= 安装弹窗 =================
-        function InstallDialog({ state, busy, error, onInstall, onDismiss }) {
+        function InstallDialog({ state, busy, error, onInstall, onDismiss, mode = 'setup' }) {
           const sizes = (state && state.sizes) || DEFAULT_SIZES
           const versions = (state && state.versions) || DEFAULT_VERSIONS
           const ITEMS = React.useMemo(() => itemDefs(sizes, versions), [sizes, versions])
@@ -268,6 +269,11 @@
           const [picked, setPicked] = React.useState(() => ({ jdk: true, rea: true, jadx: true, apktool: true, ghidra: false }))
           const [remember, setRemember] = React.useState(true)
           const [withCraft, setWithCraft] = React.useState(true)
+          // 需求1：勾选 Craft Anything → 自动勾选 Ghidra（切到升级版本）。
+          // effect 保证：无论先勾还是后勾、初始即勾，Craft 勾选态始终同步 Ghidra。
+          React.useEffect(() => {
+            if (withCraft) setPicked((p) => (p.ghidra ? p : { ...p, ghidra: true }))
+          }, [withCraft])
           // 从宿主快照读 craft 是否已装/在装
           const craftSt = (state && state.craft) || {}
           const CRAFT_MB = 65
@@ -282,7 +288,7 @@
           const midState = anyBasic && !basicAll
 
           const toggleChild = (k) => setPicked((p) => ({ ...p, [k]: !p[k] }))
-          const pickBasic = () => setPicked({ jdk: true, rea: true, jadx: true, apktool: true, ghidra: false })
+          const pickBasic = () => setPicked({ jdk: true, rea: true, jadx: true, apktool: true, ghidra: withCraft })
           const pickFull = () => setPicked({ jdk: true, rea: true, jadx: true, apktool: true, ghidra: true })
 
           const chosen = ITEMS.filter((i) => picked[i.key])
@@ -318,11 +324,19 @@
             { className: S.overlay, role: 'dialog', 'aria-modal': 'true', onClick: onDismiss },
             h('div', { className: S.dialog, onClick: (e) => e.stopPropagation() },
               h('div', { className: S.head },
-                h('h2', { className: S.title }, '⚙ 超级逆向环境需要准备'),
+                h('h2', { className: S.title }, mode === 'manage' ? '⚙ 超级逆向 · 环境管理' : '⚙ 超级逆向环境需要准备'),
                 h('p', { className: S.sub },
-                  'REA 负责安装包 / 原生二进制逆向，Craft Anything（可选）补充 321 个跨格式逆向工具。可后台下载，不影响继续对话。')),
+                  mode === 'manage'
+                    ? '可查看当前 REA / Craft Anything 状态；如需更换组件，勾选后点「重新安装/更换」即可（已装的会覆盖）。'
+                    : 'REA 负责安装包 / 原生二进制逆向，Craft Anything（可选）补充 321 个跨格式逆向工具。可后台下载，不影响继续对话。')),
               h('div', { className: S.body },
-                h('div', { style: { fontSize: '13px', fontWeight: 600, margin: '4px 0 0' } }, '请选择需要下载的环境'),
+                (mode === 'manage' ? h('div', { className: S.pillCard, style: { margin: '4px 0 8px', padding: '8px 10px' } },
+              h('div', { style: { fontSize: '12px', color: '#8ab4a8', marginBottom: '4px', fontWeight: 600 } }, '当前已装环境'),
+              h('div', { style: { fontSize: '13px', lineHeight: 1.6 }, role: 'status' },
+                'REA：' + ({ full: '升级版本（含 Ghidra）', basic: '初级版本', partial: '安装未完成', none: '未安装', installing: '安装中' })[(state && state.tier) || 'none'] +
+                (craftSt.installed ? '   Craft Anything 已就绪' + (craftSt.version ? ' · ' + craftSt.version : '')
+                  : (craftSt.installing ? '   Craft Anything 安装中' : '   Craft Anything 未安装')))) : null),
+h('div', { style: { fontSize: '13px', fontWeight: 600, margin: '4px 0 0' } }, '请选择需要下载的环境'),
 
                 // 初级版本
                 group({
@@ -381,12 +395,14 @@
                   className: S.btn + ' ' + S.btnPrimary,
                   disabled: (!tier && !craftIncluded) || busy || (!tier && !craftIncluded),
                   onClick: () => onInstall(tier, craftIncluded, remember),
-                }, busy ? '正在启动…' : (tier || craftIncluded ? '后台安装（' + fmt(totalMB) + '）' : '后台安装')),
+                }, busy ? '正在启动…' : (mode === 'manage'
+                  ? (tier || craftIncluded ? '重新安装 / 更换(' + fmt(totalMB) + ')' : '重新安装')
+                  : (tier || craftIncluded ? '后台安装（' + fmt(totalMB) + '）' : '后台安装'))),
                 h('button', {
                   className: S.btn + ' ' + S.btnGhost,
                   disabled: busy,
                   onClick: onDismiss,
-                }, '稍后再说'))))
+                }, mode === 'manage' ? '关闭' : '稍后再说'))))
         }
 
         // ================= 进度详情面板 =================
@@ -558,36 +574,48 @@
           const basicMB = (sizes.jdk || 0) + (sizes.rea || 0) + (sizes.jadx || 0) + (sizes.apktool || 0)
           const fullMB = basicMB + (sizes.ghidra || 0)
           const installing = !!(state && state.installing)
-          let status, desc, action = null
+          const craftSt = (state && state.craft) || {}
+          const craftTxt = craftSt.installed
+            ? 'Craft Anything 已就绪' + (craftSt.version ? ' · ' + craftSt.version : '')
+            : (craftSt.installing ? 'Craft Anything 安装中' : 'Craft Anything 未安装')
+          let status, desc, primary = null
           if (installing) {
             status = '安装中 ' + ((state && state.percent) || 0) + '%'
             desc = (state && state.stageLabel) ? '正在下载 ' + state.stageLabel : '正在准备…'
-            action = h('button', { className: S.btn + ' ' + S.btnGhost, onClick: onOpenDetail }, '查看进度')
+            primary = h('button', { className: S.btn + ' ' + S.btnGhost, onClick: onOpenDetail }, '查看进度')
           } else if (tier === 'full') {
             status = '已就绪'
-            desc = '当前版本：APK 逆向 + 原生二进制逆向'
+            desc = 'REA：APK 逆向 + 原生二进制逆向'
           } else if (tier === 'basic') {
             status = '初级版本'
-            desc = '仅 APK 逆向。如需原生二进制逆向，可升级安装 Ghidra（+' + (sizes.ghidra || 543) + ' MB）'
-            action = h('button', { className: S.btn + ' ' + S.btnPrimary, onClick: onInstallFull }, '升级到升级版本')
+            desc = 'REA：仅 APK 逆向。勾选 Craft 会自动补全 Ghidra 升级'
+            primary = h('button', { className: S.btn + ' ' + S.btnPrimary, onClick: onInstallFull }, '升级')
           } else if (tier === 'partial') {
             status = '未完成'
             desc = '上次安装未完成，可继续（已下载部分会复用）'
-            action = h('button', { className: S.btn + ' ' + S.btnPrimary, onClick: onInstallBasic }, '继续安装')
+            primary = h('button', { className: S.btn + ' ' + S.btnPrimary, onClick: onInstallBasic }, '继续安装')
           } else {
             status = '未安装'
-            desc = '初级版本约 ' + basicMB + ' MB（APK 逆向）；升级版本约 ' + fullMB + ' MB（增加原生二进制逆向）'
-            action = h('button', { className: S.btn + ' ' + S.btnPrimary, onClick: onOpenDialog }, '安装环境')
+            desc = 'REA 约 ' + basicMB + ' MB（APK）/ ' + fullMB + ' MB（+原生）'
+            primary = h('button', { className: S.btn + ' ' + S.btnPrimary, onClick: onOpenDialog }, '安装环境')
           }
+          // 需求2：环境**无论是否装好**，都始终能点开按径查看详情/重新安装。
+          //「查看环境」恒在；只有安装中才退化为「查看进度」。
+          const viewBtn = h('button', {
+            className: S.btn + ' ' + S.btnGhost,
+            onClick: installing ? onOpenDetail : onOpenDialog,
+          }, installing ? '查看进度' : '查看环境')
           return h('div', { className: S.settingRow },
             h('div', { className: S.settingText },
-              h('div', { className: S.settingName }, 'REA 逆向环境'),
+              h('div', { className: S.settingName }, '超级逆向 · SUPER-RE'),
               h('div', { className: S.settingDesc }, desc),
               h('div', {
                 className: tier === 'full' && !installing ? S.ok : S.settingDesc,
                 style: { marginTop: '2px' },
-              }, '当前状态：' + status)),
-            action)
+              }, '当前状态：' + status + ' · ' + craftTxt)),
+              h('div', { className: S.rowBtns },
+                viewBtn,
+                primary ? h('span', null, primary) : null))
         }
 
         // ================= 插件主体 =================
@@ -607,7 +635,7 @@
 
           // 跨插槽 UI 开关：浮层（shell.overlay）与设置页共享「详情面板是否展开」。
           // 这个 store 是 root 级（不按 session 分），因为两个入口都是 root 作用域。
-          let uiState = { detail: false, dialog: false, error: null, busy: false }
+          let uiState = { detail: false, dialog: false, error: null, busy: false, manage: false }
           const uiSubs = new Set()
           const push = (patch) => {
             uiState = { ...uiState, ...patch }
@@ -648,9 +676,12 @@
           // 「稍后再说」/ 点遮罩关闭：立即同步把 UI 关掉（不依赖网络往返，保证弹窗
           // 必消失、不会因 HTTP 失败而卡住），再在后台通知服务端，不阻塞 UI。
           const dismiss = () => {
-            push({ dialog: false, detail: false })
+            push({ dialog: false, detail: false, manage: false })
             postAction({ action: 'dismiss' }).catch(() => {})
           }
+          // 管理态关闭：只收 UI，不写 dismissed（环境已装的用户可能只是进来查看，
+          // 不应把「已读/忽略」写进后端，避免影响下次"未装才自动弹"的判定）。
+          const closeDialog = () => push({ dialog: false, detail: false, manage: false })
           const cancelKeep = () => runAction({ action: 'cancel' }, null, { noBusy: true })
           const cancelClean = () => runAction({ action: 'cancel-clean' }, null, { noBusy: true })
 
@@ -682,7 +713,7 @@
                 // 同步关闭弹窗，不依赖异步 HTTP —— 弹窗必须「立即」从屏幕上消失。
                 // （dismiss 走 HTTP，若等它回来再关会有可见延迟；且这里仅需关掉 UI。）
 
-                push({ detail: false, dialog: false })
+                push({ detail: false, dialog: false, manage: false })
                 // 后台通知服务端「弹窗已被关闭」，不阻塞 UI，失败忽略。
                 postAction({ action: 'dismiss' }).catch(() => {})
               }
@@ -710,8 +741,9 @@
                   state,
                   busy: ui.busy,
                   error: ui.error,
+                  mode: ui.manage ? 'manage' : 'setup',
                   onInstall: (tier, withCraft, remember) => install(tier, remember, withCraft),
-                  onDismiss: dismiss,
+                  onDismiss: ui.manage ? closeDialog : dismiss,
                 })
               }
             }
@@ -755,7 +787,7 @@
             const state = useSource(source)
             return h(SettingsRow, {
               state: state || {},
-              onOpenDialog: () => push({ dialog: true, error: null }),
+              onOpenDialog: () => push({ dialog: true, error: null, manage: true }),
               onOpenDetail: () => push({ detail: true }),
               // 初级 → 升级：直接装 full（保留 remember=true，与设置页语义一致）
               onInstallFull: () => install('full', true, false),
