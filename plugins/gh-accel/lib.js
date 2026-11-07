@@ -519,7 +519,30 @@ function countingStream(onBytes) {
   });
 }
 
-async function downloadRange(url, start, end, dest, { retries = 2, signal, onBytes }) {
+// 把响应流写入文件；被看门狗打断时**尽量保住已收到的字节**（分片级续传依赖它）。
+// 不用 pipeline：它会在出错时连带 destroy 目标写入流，把已缓冲的数据一起丢掉，
+// 导致「续传起点」永远是 0、换路线只能从头下。这里手动 pipe，出错时优雅 end()
+// 让已写字节落盘，上层从文件实际大小处接着 Range 续传。
+function pumpStream(src, onBytes, dest, wsOpts) {
+  return new Promise((resolve, reject) => {
+    const ws = fs.createWriteStream(dest, wsOpts);
+    let settled = false;
+    const okDone = () => { if (settled) return; settled = true; resolve(); };
+    const failDone = (err) => {
+      if (settled) return;
+      settled = true;
+      try { ws.end(() => reject(err)); } catch { reject(err); }
+    };
+    ws.on('error', failDone);
+    src.on('error', failDone);
+    ws.on('finish', okDone);
+    try {
+      (onBytes ? src.pipe(countingStream(onBytes)) : src).pipe(ws);
+    } catch (e) { failDone(e); }
+  });
+}
+
+async function downloadRange(url, start, end, dest, { retries = 2, signal, onBytes, append = false }) {
   for (let i = 0; i <= retries; i++) {
     try {
       const headers = end == null ? {} : { Range: `bytes=${start}-${end}` };
@@ -530,6 +553,12 @@ async function downloadRange(url, start, end, dest, { retries = 2, signal, onByt
         // 重试毫无意义，立即失败让上层切换到下一候选/通道，而不是反复等重试。
         if (status >= 400 && status < 500) return false;
         throw new Error(`HTTP ${status}`);
+      }
+      // 续传安全阀：append 模式下若服务器无视 Range 直接回 200 全量，
+      // 把它 append 进已有分片会污染数据 —— 此时宁可判失败换路线。
+      if (append && status === 200 && start > 0) {
+        stream.resume();
+        return false;
       }
       // ── 停滞看门狗 ────────────────────────────────────────────────
       // 根治「多线程慢速大文件卡死」：分片连接一旦建立，镜像端的 Range 大分片
@@ -548,19 +577,15 @@ async function downloadRange(url, start, end, dest, { retries = 2, signal, onByt
         }
       }, STALL_POLL_MS);
       const finish = async () => { clearInterval(poll); try { stream.removeListener('data', onData); } catch { /* no-op */ } };
+      // append=true 时以追加方式写入，实现「分片级断点续传」（stall 后换路线接着下）
+      const wsOpts = append ? { flags: 'a' } : undefined;
       try {
-        // 无进度回调时保持原行为（纯管线直写）
-        if (typeof onBytes !== 'function') {
-          await pipeline(stream, fs.createWriteStream(dest));
-          await finish();
-          return true;
-        }
-        await pipeline(stream, countingStream(onBytes), fs.createWriteStream(dest));
+        await pumpStream(stream, typeof onBytes === 'function' ? onBytes : null, dest, wsOpts);
         await finish();
         return true;
       } catch (e) {
         await finish();
-        throw e; // 交给外层 catch 统一重试/失败
+        throw e; // 交给外层 catch 统一重试/失败（已收字节已落盘，上层可续传）
       }
     } catch {
       // 外部 signal 已中断：立即放弃（不重试、不等待），让上层尽快感知取消。
@@ -700,45 +725,72 @@ export async function runDownload(url, {
   for (let s = 0; s < size; s += seg) ranges.push([s, Math.min(s + seg - 1, size - 1)]);
   const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'ghaccel-'));
   const parts = ranges.map((_, i) => path.join(tmp, `seg-${i}`));
-  let okFlags = await mapLimit(ranges, threads, (r, i) =>
-    downloadRange(picked.u, r[0], r[1], parts[i], { signal, onBytes: sumBytes }));
 
-  // 失败降级：分片有失败时，把整个任务切到「下一个候选镜像」重试一次。
-  // （部分镜像对 Range 多线程支持不完整，换路线常能恢复。）
-  if (okFlags.some((f) => !f)) {
-    const next = candidates.find((x) => x !== picked.u);
-    if (next) {
-      await fsp.rm(tmp, { recursive: true, force: true });
-      const tmp2 = await fsp.mkdtemp(path.join(os.tmpdir(), 'ghaccel-'));
-      const parts2 = ranges.map((_, i) => path.join(tmp2, `seg-${i}`));
-      okFlags = await mapLimit(ranges, threads, (r, i) =>
-        downloadRange(next, r[0], r[1], parts2[i], { signal, onBytes: sumBytes }));
-      if (okFlags.some((f) => !f)) {
-        stopReporter();
-        await fsp.rm(tmp2, { recursive: true, force: true });
-        throw new Error('部分分片下载失败（含降级后重试）');
-      }
-      // 合并降级路线产物
-      await fsp.rm(tmp, { recursive: true, force: true });
-      try {
-        await pipeline(
-          (async function* merge() {
-            for (const p of parts2) yield* fs.createReadStream(p);
-          })(),
-          fs.createWriteStream(out),
-        );
-      } finally {
-        await fsp.rm(tmp2, { recursive: true, force: true });
-      }
-      const got = (await fsp.stat(out)).size;
-      if (size && got !== size) throw new Error(`大小不一致: 预期 ${size} 实际 ${got}`);
-      stopReporter();
-      if (typeof onProgress === 'function') onProgress({ doneB: size, totalB: size, kbPerSec: 0 });
-      return summarize(out, next === url ? 'direct' : next, size, t0, rule);
+  // ── 逐分片多路线回退 + 断点续传（v2.10.2 重写）─────────────────────
+  // v2.10.1 的看门狗解决了「无限死等」，但降级仍是「任一分片失败 → 整表从头
+  // 换一个镜像重下，再失败就整体报错」。实测镜像对**某些特定 Range** 持续
+  // stalled 时，这种策略注定再失败（用户看到的「下到 32MB 然后 ACCEL_FAIL」）。
+  // 现在改为按片独立处理：
+  //   1. 每个分片按 candidates 顺序逐条路线重试（不整表重下）；
+  //   2. 失败留下的半截分片**续传**（Range 从已有字节处继续），不浪费已下流量；
+  //   3. 一片在多条路线都失败才整体失败，错误里带上失败片数便于诊断；
+  //   4. 进度按「已定格片字节 + 在飞片字节」统计，换路线续传时不会虚高或倒退。
+  const routeList = [...new Set([picked.u, ...candidates].filter(Boolean))];
+  const doneBySeg = new Array(ranges.length).fill(0);
+  const inflight = new Array(ranges.length).fill(0);
+  const liveBytes = () => {
+    let total = 0;
+    for (let i = 0; i < ranges.length; i++) total += doneBySeg[i] + inflight[i];
+    return total;
+  };
+  const fetchSegment = async (i) => {
+    const [s0, e0] = ranges[i];
+    const want = e0 - s0 + 1;
+    let have = 0;
+    try { have = (await fsp.stat(parts[i])).size; } catch { have = 0; }
+    if (have > want) { // 脏分片（上一轮残留/超长）→ 丢弃重来
+      try { await fsp.rm(parts[i], { force: true }); } catch { /* no-op */ }
+      have = 0;
     }
+    for (const route of routeList) {
+      if (signal && signal.aborted) return false;
+      if (have >= want) break;
+      inflight[i] = have;
+      done = liveBytes();
+      const ok = await downloadRange(route, s0 + have, e0, parts[i], {
+        retries: 0, signal, append: have > 0,
+        onBytes: (n) => { inflight[i] += n; done = liveBytes(); },
+      });
+      if (ok) {
+        let got = 0;
+        try { got = (await fsp.stat(parts[i])).size; } catch { got = 0; }
+        if (got === want) {
+          doneBySeg[i] = want;
+          inflight[i] = 0;
+          done = liveBytes();
+          return true;
+        }
+        // 长度不符（镜像返回错长度/截断）：保留已下部分，下条路线续传补齐
+        have = got > want ? 0 : got;
+        if (have === 0) { try { await fsp.rm(parts[i], { force: true }); } catch { /* no-op */ } }
+      } else {
+        // 失败：把这次已收到的字节计入续传起点
+        try { have = (await fsp.stat(parts[i])).size; } catch { have = 0; }
+        if (have > want) { have = 0; try { await fsp.rm(parts[i], { force: true }); } catch { /* no-op */ } }
+      }
+      inflight[i] = 0;
+      done = liveBytes();
+    }
+    inflight[i] = 0;
+    return false;
+  };
+  const okFlags = await mapLimit(ranges, threads, (_r, i) => fetchSegment(i));
+
+  if (okFlags.some((f) => !f)) {
     stopReporter();
     await fsp.rm(tmp, { recursive: true, force: true });
-    throw new Error('部分分片下载失败');
+    const failed = okFlags.filter((f) => !f).length;
+    throw new Error(`部分分片下载失败（${failed}/${ranges.length} 片在全部 ${routeList.length} 条路线上均失败）`);
   }
   // 分片下载阶段已完成（done ≈ size），进合并前上报 100%
   stopReporter();
