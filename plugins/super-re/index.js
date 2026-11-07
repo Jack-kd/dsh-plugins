@@ -162,34 +162,6 @@ function buildCraftTools() {
       parameters: { target: { type: 'string', description: '目标：URL / 绝对路径（可空）' }, request: { type: 'string', description: '重建的诉求描述' } },
       kwargs: (args) => ({ target: args.target || '', request: args.request || '' }),
     }),
-    makeTool('craft_call', 'Craft Anything 通用桥：调用任意一个 Craft 工具（321 个跨格式逆向工具）。'
-      + '用法定参数：tool=craft 工具名（连字符式，如 native-functions-list / formats-wasm-module-show / web-site-capture / database-schema-show）；'
-      + 'argJson=该工具的 JSON 参数串（可为空串。如 {"path":"/x.wasm"}）。先 `craft_commands` 查工具名和参数。输出为该工具返回的 JSON 文本。'
-      + 'APK 逆向请优先走 REA（rea_inspect_apk_*），craft 对现代 APK 有 ZIP 解析 bug；craft 常用于 REA 没有的跨格式/重建。', {
-      parameters: {
-        tool: { type: 'string', description: 'Craft 工具名（连字符式，如 native-functions-list）' },
-        argJson: { type: 'string', description: '该工具的 JSON 参数串（可为空串；如 {"path":"/x.wasm"}）' },
-      },
-      async execute(args) {
-        const dump = 'RECEIVED_ARGS=' + JSON.stringify(args) + ' KEYS=' + (args ? Object.keys(args).join(',') : 'null')
-        try {
-          if (!craftAvailable()) throw new Error(CRAFT_NOT_INSTALLED)
-          const toolName = (args && typeof args.tool === 'string' && args.tool.trim()) ? args.tool.trim() : ''
-          let toolArgs = {}
-          const raw = (args && typeof args.argJson === 'string') ? args.argJson.trim() : ''
-          if (raw) {
-            try { toolArgs = JSON.parse(raw) } catch (e) { throw new Error('argJson 不是合法 JSON：' + raw) }
-            if (!toolArgs || typeof toolArgs !== 'object' || Array.isArray(toolArgs)) toolArgs = {}
-          }
-          const isUndef = /^(undefined|none|null)$/.test(toolName)
-          if (!toolName || isUndef) throw new Error('无法解析出有效 craft 工具名')
-          const out = await runCraft([toolName, ...craftArgsJson(toolArgs)])
-          return dump + '\n===CRAFT_OUT===\n' + out
-        } catch (e) {
-          return dump + '\n===CRAFT_ERR===\n' + String((e && e.message) || e)
-        }
-      },
-    }),
   ]
 }
 
@@ -978,6 +950,40 @@ export function apply(ctx) {
     }))
   } catch (e) {
     console.warn('[rea-tools] rea_status 注册失败:', e && e.message ? e.message : e)
+  }
+
+  // ---- craft_call 通用桥：独立注册（与 rea_status 同路径，v0.1.8）----
+  // 实测：craft 桥挂 buildCraftTools() 数组（makeTool 闭包 name）时，DSH 会把 name
+  // 解析成 undefined → `craft-anything-cli --deep` 。改独立注册后可避免。
+  try {
+    ctx.tools.register(defineTool({
+      name: 'craft_call',
+      description: 'Craft Anything 通用桥：调用任意一个 Craft 工具（321 个跨格式逆向工具）。'
+        + '用法定参数：tool=craft 工具名（连字符式，如 native-functions-list / formats-wasm-module-show / web-site-capture / database-schema-show）；'
+        + 'argJson=该工具的 JSON 参数串（可为空串。如 {"path":"/x.wasm"}）。先 craft_commands 查工具名和参数。'
+        + 'APK 逆向请优先走 REA（rea_inspect_apk_*），craft 对现代 APK 有 ZIP 解析 bug；craft 常用于 REA 没有的跨格式/重建。',
+      parameters: {
+        tool: { type: 'string', description: 'Craft 工具名（连字符式，如 native-functions-list）' },
+        argJson: { type: 'string', description: '该工具的 JSON 参数串（可为空串；如 {"path":"/x.wasm"}）' },
+      },
+      output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: String(v) }] },
+      async execute(args) {
+        if (!craftAvailable()) throw new Error(CRAFT_NOT_INSTALLED)
+        const toolName = (args && typeof args.tool === 'string' && args.tool.trim()) ? args.tool.trim() : ''
+        let toolArgs = {}
+        const raw = (args && typeof args.argJson === 'string') ? args.argJson.trim() : ''
+        if (raw) {
+          try { toolArgs = JSON.parse(raw) } catch (e) { toolArgs = {} }
+          if (!toolArgs || typeof toolArgs !== 'object' || Array.isArray(toolArgs)) toolArgs = {}
+        }
+        const isUndef = /^(undefined|none|null)$/.test(toolName)
+        if (!toolName || isUndef) throw new Error('无法解析出有效 craft 工具名，请传入 tool=craft工具名；先 craft_call(commands) 查可用工具')
+        const out = await runCraft([toolName, ...craftArgsJson(toolArgs)])
+        return out
+      },
+    }))
+  } catch (e) {
+    console.warn('[rea-tools] craft_call 注册失败:', e && e.message ? e.message : e)
   }
 
   // ---- 系统提示：逆向分析优选规则（v0.2.7）----
