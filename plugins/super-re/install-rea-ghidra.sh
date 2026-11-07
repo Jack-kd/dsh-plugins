@@ -68,26 +68,48 @@ REPO_RAW_BASE="https://raw.githubusercontent.com/${GITHUB_REPO}/${REPO_BRANCH}"
 #
 # v0.1.1 关键修复：镜像排在官方源**之前**。
 # 官方源（github.com / raw.githubusercontent.com）在国内通常极慢（实测 ~10 KB/s，
-# 甚至完全超时），而 ghfast.top 等镜像可达 400-3000 KB/s。旧顺序把官方源放第一，
+# 甚至完全超时），镜像可达数百 KB/s 以上。旧顺序把官方源放第一，
 # 配合 download_resume 的"能连上就不回退"行为，会把安装拖到十几小时。
 # 官方源仍保留在末尾兜底：万一镜像全部失效、而本机恰好能直连 GitHub，仍可装上。
+# ── 镜像列表（2026-11 实测重建）─────────────────────────────────────────
+# 这些是**回退用**的镜像（真正首选是 installer/accel-download.mjs 的并发竞速选路）。
+# 已剔除的差镜像：
+#   · ghproxy.net —— HTTP 000 已死链，旧版每次安装都白等一次超时
+#   · ghfast.top  —— **对 Ghidra 543MB 直接返回 403**，而旧版把它放在列表第一位，
+#                    导致每次装 Ghidra 都先撞 403 再切换（白等）；小文件虽能下
+#                    (124~136KB/s)，但三资产通吃才是基本要求，故整体剔除
+# 保留的镜像实测（单连接采样，越小越好）：
+#   gh.acmsz.top   Ghidra 93KB/s | jadx 206 | apktool 206
+#   gh-proxy.com   Ghidra 87KB/s | jadx 88KB/s | apktool 140KB/s
+#   ghgo.de5.net   Ghidra 63KB/s | jadx 206 | apktool 206
+# 说明：顺序仅作启发，多线程 + 竞速选路会自动选当前最快的。
 GHIDRA_MIRRORS=(
-  "https://ghfast.top/${OFFICIAL_URL}"                      # ghfast 加速（国内首选）
-  "https://ghproxy.net/${OFFICIAL_URL}"                     # ghproxy 加速
-  "https://gh-proxy.com/${OFFICIAL_URL}"                    # gh-proxy 加速
+  "https://gh.acmsz.top/${OFFICIAL_URL}"                    # 实测 Ghidra 93KB/s（当前最快）
+  "https://gh-proxy.com/${OFFICIAL_URL}"                    # 实测 Ghidra 87KB/s
+  "https://ghgo.de5.net/${OFFICIAL_URL}"                    # 实测 Ghidra 63KB/s
+  "https://gh.jjj.gv.uy/${OFFICIAL_URL}"                    # TTFB 最快 5.63s
+  "https://github.chenc.dev/${OFFICIAL_URL}"                # TTFB 5.82s
   "${REPO_RELEASE_URL}"                                     # 本仓库 Release（若日后上传了该包会自动命中）
   "${OFFICIAL_URL}"                                         # GitHub 官方源（兜底）
 )
 JADX_MIRRORS=(
-  "https://ghfast.top/${JADX_URL}"                          # ghfast 加速（国内首选）
-  "https://ghproxy.net/${JADX_URL}"                         # ghproxy 加速
-  "https://gh-proxy.com/${JADX_URL}"                        # gh-proxy 加速
+  "https://gh.acmsz.top/${JADX_URL}"
+  "https://gh-proxy.com/${JADX_URL}"
+  "https://ghgo.de5.net/${JADX_URL}"
+  "https://gh.jjj.gv.uy/${JADX_URL}"
+  "https://github.chenc.dev/${JADX_URL}"
+  "https://cfgh.ikgy.top/${JADX_URL}"
+  "https://ghproxy.icu/${JADX_URL}"
   "${JADX_URL}"                                             # GitHub 官方源（兜底）
 )
 APKTOOL_MIRRORS=(
-  "https://ghfast.top/${APKTOOL_URL}"                       # ghfast 加速（国内首选）
-  "https://ghproxy.net/${APKTOOL_URL}"                      # ghproxy 加速
-  "https://gh-proxy.com/${APKTOOL_URL}"                     # gh-proxy 加速
+  "https://gh.acmsz.top/${APKTOOL_URL}"
+  "https://gh-proxy.com/${APKTOOL_URL}"
+  "https://ghgo.de5.net/${APKTOOL_URL}"
+  "https://gh.jjj.gv.uy/${APKTOOL_URL}"
+  "https://github.chenc.dev/${APKTOOL_URL}"
+  "https://cfgh.ikgy.top/${APKTOOL_URL}"
+  "https://ghproxy.icu/${APKTOOL_URL}"
   "${APKTOOL_URL}"                                          # GitHub 官方源（兜底）
 )
 if [[ -n "${GHIDRA_MIRRORS_EXTRA:-}" ]]; then
@@ -435,8 +457,15 @@ else
     log "未在本目录找到 ${TGZ_NAME}，尝试从仓库拉取..."
     TGZ_TMP="$(mktemp -d)"
     ok=0
-    # v0.1.1：镜像排前、raw 官方源兜底（与 GHIDRA_MIRRORS 同样的理由）
-    for base in "https://ghfast.top/${REPO_RAW_BASE}" "https://ghproxy.net/${REPO_RAW_BASE}" "${REPO_RAW_BASE}"; do
+    # 镜像排前、raw 官方源兜底。镜像列表与 GHIDRA_MIRRORS 保持一致（2026-11 实测）：
+    # 已剔除 ghfast.top（对 Ghidra 403）与 ghproxy.net（死链）。
+    for base in \
+      "https://gh.acmsz.top/${REPO_RAW_BASE}" \
+      "https://gh-proxy.com/${REPO_RAW_BASE}" \
+      "https://ghgo.de5.net/${REPO_RAW_BASE}" \
+      "https://gh.jjj.gv.uy/${REPO_RAW_BASE}" \
+      "https://github.chenc.dev/${REPO_RAW_BASE}" \
+      "${REPO_RAW_BASE}"; do
       log "  尝试: ${base}/${TGZ_NAME}"
       if download_resume "${base}/${TGZ_NAME}" "${TGZ_TMP}/${TGZ_NAME}"; then ok=1; break; fi
     done
