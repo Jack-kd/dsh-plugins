@@ -128,6 +128,13 @@ function buildCraftTools() {
     async execute(args) {
       if (!craftAvailable()) throw new Error(CRAFT_NOT_INSTALLED)
       const cmd = CRAFT_TOOL_CMD[name]
+      // 位置参数风格的工具（如 triage）不接受 --json，直接把参数值按顺序拼在命令后；
+      // 其余工具走 --json 选项参数。
+      if (spec && spec.positional) {
+        const vals = spec.positional.map((k) => (args && args[k] != null ? String(args[k]) : '')).filter(Boolean)
+        const out = await runCraft([cmd, ...vals])
+        return out
+      }
       const kwargs = (spec && spec.kwargs) ? spec.kwargs(args) : {}
       const out = await runCraft([cmd, ...craftArgsJson(kwargs)])
       return out
@@ -142,13 +149,13 @@ function buildCraftTools() {
       parameters: { path: { type: 'string', description: '目标绝对路径或 URL' } },
       kwargs: (args) => ({ path: args.path }),
     }),
-    makeTool('craft_target_close', '关闭一个已打开的 Craft 目标（按 id）。', {
-      parameters: { id: { type: 'string', description: '目标 id' } },
-      kwargs: (args) => ({ id: args.id }),
+    makeTool('craft_target_close', '关闭一个已打开的 Craft 目标。', {
+      parameters: { id: { type: 'string', description: '目标 id（以位置参数传入 core-target-close）' } },
+      positional: ['id'],
     }),
     makeTool('craft_triage', '打开一个文件并快速做第一轮审视（无需先 open target），返回概览与初步发现。轻量、适合"这是什么"的快速判断。', {
       parameters: { path: { type: 'string', description: '文件绝对路径' } },
-      kwargs: (args) => ({ path: args.path }),
+      positional: ['path'],
     }),
     makeTool('craft_rebuild_start', '启动一个重建工程：给定一个目标（网站 URL / 文件路径 / 或空）+ 一句诉求，craft 在后台研究该目标并照它的样子在项目文件夹里重建新工程。会写代码、建工程，需确认。'
       + '⚠️ 前置：craft 需先配置 AI backend（当前多为 null）。可先 `craft_call` 调 `ai list` 看是否已配；未配则提示用户用 `craft-anything-cli ai add` 接入（如 openai_compatible + DeepSeek key）。', {
@@ -156,17 +163,17 @@ function buildCraftTools() {
       kwargs: (args) => ({ target: args.target || '', request: args.request || '' }),
     }),
     makeTool('craft_call', 'Craft Anything 通用桥：调用任意一个 Craft 工具（321 个跨格式逆向工具）。'
-      + '用法：tool 传 craft 工具名（如 native-functions-list / formats-wasm-module-show / web-site-capture / database-schema-show 等），'
-      + 'args 传该工具的 JSON 参数。先 `craft_commands` 查工具名和参数。输出为该工具返回的 JSON 文本。'
+      + '用法：参数 params 是一个对象，形如 {"tool":"工具名","args":{...工具参数}}——tool 传 craft 工具名（如 native-functions-list / formats-wasm-module-show / web-site-capture / database-schema-show 等，连字符式），'
+      + 'args 传该工具的 JSON 参数对象（可为空）。先 `craft_commands` 查工具名和参数。输出为该工具返回的 JSON 文本。'
       + 'APK 逆向请优先走 REA（rea_inspect_apk_*），craft 对现代 APK 有 ZIP 解析 bug；craft 常用于 REA 没有的跨格式/重建。', {
       parameters: {
-        tool: { type: 'string', description: 'Craft 工具名（连字符式，如 native-functions-list）' },
-        args: { type: 'object', additionalProperties: true, description: '该工具的 JSON 参数（视工具而定）' },
+        params: { type: 'object', properties: { tool: { type: 'string' }, args: { type: 'object', additionalProperties: true } }, additionalProperties: false, description: '调用参数：{"tool":"craft工具名", "args":{该工具参数}}' },
       },
       async execute(args) {
         if (!craftAvailable()) throw new Error(CRAFT_NOT_INSTALLED)
-        if (!args || !args.tool) throw new Error('请提供 tool 参数（Craft 工具名）。先用 craft_commands 查看可用工具。')
-        const out = await runCraft([args.tool, ...craftArgsJson(args.args || {})])
+        const p = (args && typeof args.params === 'object' && args.params !== null) ? args.params : (args || {})
+        if (!p.tool) throw new Error('请提供 params.tool（Craft 工具名）。先用 craft_commands 查看可用工具。')
+        const out = await runCraft([p.tool, ...craftArgsJson(p.args || {})])
         return out
       },
     }),
