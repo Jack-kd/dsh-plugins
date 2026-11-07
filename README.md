@@ -115,11 +115,13 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.10.0/gh-acc
 </details>
 
 <details>
-<summary><b>▶ super-re · 超级逆向（REA 环境 + Craft Anything 统一安装入口）</b>　<code>v0.1.2</code></summary>
+<summary><b>▶ super-re · 超级逆向（REA 环境 + Craft Anything 统一安装入口）</b>　<code>v0.1.3</code></summary>
 
 > **统一环境安装入口**——一个弹窗装齐 REA 逆向环境（JADX + Ghidra + apktool），**可选**勾选 Craft Anything（321 个跨格式工具）。针对「新用户装环境太麻烦」重做：本身自带**环境配置弹窗**（REA 板块 + Craft 板块），REA 板块与 rea-tools 一致（初级/升级 radio + 子组件勾选 + 断点续传 + 幂等）；Craft 板块独立 checkbox，勾选后 REA 装完**串行**自动接 craft 安装。后台下载不阻塞对话，进度胶囊实时显示。安装地址：
 >
-> `dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/super-re-v0.1.2/super-re-plugin.tgz`
+> `dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/super-re-v0.1.3/super-re-plugin.tgz`
+>
+> **v0.1.3**：环境管理弹窗手机 UI 优化——「当前已装环境」从单行 nowrap（手机窄屏会截断）改为自适应换行，REA / Craft 分两行完整显示；「记住我的选择，以后不再询问」勾选移到 Craft Anything 板块下方。
 >
 > **v0.1.2**：修复与 rea-tools 同装时的启动崩溃——同名 `rea_*` 工具注册冲突不再抛异常中断插件，冲突工具跳过，`super_setup` / 通用设置入口 / 环境管理弹窗 / HTTP 端点照常可用；package.json `files` 补上 `install-craft.sh`。
 >

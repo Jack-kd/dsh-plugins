@@ -1,6 +1,6 @@
 {
   "name": "@local/super-re",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "type": "module",
   "description": "超级逆向：REA 逆向环境（JADX + Ghidra + apktool）一键安装 + Craft Anything（321 工具）可选勾选安装，统一环境配置弹窗",
