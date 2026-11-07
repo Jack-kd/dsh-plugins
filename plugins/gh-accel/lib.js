@@ -63,6 +63,14 @@ const PROBE_BUDGET_MS = 3500;      // 每个探测最多 3.5 秒
 const PROBE_MAX = 512 * 1024;      // 每个探测最多读 512KB
 const SEGMENT_MIN = 4 * 1024 * 1024; // 小于此值不切片
 const CONNECT_TIMEOUT = 12_000;
+// 下载分片的「连接 + 拿到响应头」上限。比探测用的 CONNECT_TIMEOUT 宽得多：
+// 镜像常对同一 IP 限制并发连接，排队中的请求可能十几秒才吐响应头。
+// 分片实际传输不受此限（由 headersOnlyTimeout + 停滞看门狗负责）。
+const DOWNLOAD_HEADERS_TIMEOUT = 30_000;
+// 同一镜像同时最多允许几个分片请求。实测镜像按 IP 限并发：8 个 worker 齐上时
+// 超出限额的连接连响应头都等不到（实测精确 12s 后 abort、0 字节落地），
+// 表现为「下到一半就卡住，只剩某几片反复失败」。
+const HOST_CONCURRENCY = 3;
 // 分片停滞看门狗：pipeline 传输期间若连续 STALL_TIMEOUT_MS 没有新数据字节产出，
 // 判定该分片在镜像端 stalled（Range 请求被憋住不再传数据），销毁底层 socket、
 // 让 pipeline 抛错走 retry/失败，从而根治「多线程慢速大文件卡死在某一进度无限重试」
@@ -171,35 +179,58 @@ export function matchRule(url, rules) {
   return null;
 }
 
-function httpGet(url, { headers = {}, followRedirects = 5, signal, timeoutMs = CONNECT_TIMEOUT } = {}) {
+function httpGet(url, { headers = {}, followRedirects = 5, signal, timeoutMs = CONNECT_TIMEOUT, headersOnlyTimeout = false } = {}) {
   return new Promise((resolve, reject) => {
     const mod = url.startsWith('https:') ? https : http;
     // v2.9.0：不再用 req.setTimeout / 手动 setTimeout（本环境 setTimeout 定时不准、
     // 会在 ~5s 提前触发杀掉连接，而 TTFB 要 5.4s+，导致候选被误判超时/选路全挂）。
     // 统一用 AbortSignal.timeout（market 实测它可靠），并合并外部 signal。
-    const ownTimeout = AbortSignal.timeout(timeoutMs);
-    const ac = signal ? AbortSignal.any([ownTimeout, signal]) : ownTimeout;
+    //
+    // v2.10.2 关键修复 headersOnlyTimeout：Node 的 http request 会把传入的 signal
+    // **绑定到整个响应体**——`AbortSignal.timeout(12s)` 会在 12 秒时把还在正常
+    // 传输的响应流一起砍掉。对「下载分片」这种可能远超 12s 的长传输（2MB 片在
+    // 170KB/s 以下就要 >12s），这会导致**所有慢但健康的下载必然失败**
+    // （实测失败耗时精确等于 12000ms、成功都 <10s）。
+    // 因此下载路径改用 headersOnlyTimeout：定时器只覆盖「连接 + 拿到响应头」，
+    // 响应头一到立刻解除；响应体传输由 downloadRange 的分片停滞看门狗负责。
+    let timer = null;
+    let ctrl = null;
+    let ac;
+    if (headersOnlyTimeout) {
+      ctrl = new AbortController();
+      timer = setTimeout(() => {
+        try { ctrl.abort(new Error(`连接/首字节超时（${timeoutMs}ms）`)); } catch { /* no-op */ }
+      }, timeoutMs);
+      ac = signal ? AbortSignal.any([ctrl.signal, signal]) : ctrl.signal;
+    } else {
+      const ownTimeout = AbortSignal.timeout(timeoutMs);
+      ac = signal ? AbortSignal.any([ownTimeout, signal]) : ownTimeout;
+    }
+    const releaseTimer = () => { if (timer) { clearTimeout(timer); timer = null; } };
     let req;
     try {
       req = mod.get(url, {
         headers: { 'User-Agent': UA, Accept: '*/*', ...headers },
         signal: ac,
       }, (res) => {
+        // 响应头已到：解除「连接/首字节」定时器，之后的响应体不再受它约束
+        releaseTimer();
         const status = res.statusCode || 0;
         const loc = res.headers.location;
         if (followRedirects > 0 && status >= 300 && status < 400 && loc) {
           res.resume();
-          httpGet(new URL(loc, url).toString(), { headers, followRedirects: followRedirects - 1, signal, timeoutMs })
+          httpGet(new URL(loc, url).toString(), { headers, followRedirects: followRedirects - 1, signal, timeoutMs, headersOnlyTimeout })
             .then(resolve, reject);
           return;
         }
         resolve({ status, headers: res.headers, stream: res });
       });
     } catch (e) {
+      releaseTimer();
       reject(e);
       return;
     }
-    req.on('error', reject);
+    req.on('error', (e) => { releaseTimer(); reject(e); });
   });
 }
 
@@ -546,7 +577,10 @@ async function downloadRange(url, start, end, dest, { retries = 2, signal, onByt
   for (let i = 0; i <= retries; i++) {
     try {
       const headers = end == null ? {} : { Range: `bytes=${start}-${end}` };
-      const { status, stream } = await httpGet(url, { headers, followRedirects: 5, signal });
+      const { status, stream } = await httpGet(url, {
+        headers, followRedirects: 5, signal,
+        headersOnlyTimeout: true, timeoutMs: DOWNLOAD_HEADERS_TIMEOUT,
+      });
       if (status !== 200 && status !== 206) {
         stream.resume();
         // 4xx 属于资源级错误（404 不存在 / 403 拒绝等）：该 URL 确定性不可用，
@@ -736,6 +770,24 @@ export async function runDownload(url, {
   //   3. 一片在多条路线都失败才整体失败，错误里带上失败片数便于诊断；
   //   4. 进度按「已定格片字节 + 在飞片字节」统计，换路线续传时不会虚高或倒退。
   const routeList = [...new Set([picked.u, ...candidates].filter(Boolean))];
+  // ── 按 host 的并发闸门 ──────────────────────────────────────────────
+  // 镜像普遍按 IP 限制并发连接。不限制的话 8 个 worker 同时打开 8 条连接到同一
+  // 镜像，超限的那几条会一直等不到响应头（实测 12s 被 abort、0 字节），
+  // 于是「最后几片永远下不下来」。这里对每个 host 限 3 条并发，其余排队。
+  const hostSlots = new Map();
+  const acquireSlot = (host) => {
+    let st = hostSlots.get(host);
+    if (!st) { st = { active: 0, waiters: [] }; hostSlots.set(host, st); }
+    if (st.active < HOST_CONCURRENCY) { st.active++; return Promise.resolve(); }
+    return new Promise((resolve) => st.waiters.push(() => { st.active++; resolve(); }));
+  };
+  const releaseSlot = (host) => {
+    const st = hostSlots.get(host);
+    if (!st) return;
+    st.active = Math.max(0, st.active - 1);
+    const next = st.waiters.shift();
+    if (next) next();
+  };
   const doneBySeg = new Array(ranges.length).fill(0);
   const inflight = new Array(ranges.length).fill(0);
   const liveBytes = () => {
@@ -757,10 +809,18 @@ export async function runDownload(url, {
       if (have >= want) break;
       inflight[i] = have;
       done = liveBytes();
-      const ok = await downloadRange(route, s0 + have, e0, parts[i], {
-        retries: 0, signal, append: have > 0,
-        onBytes: (n) => { inflight[i] += n; done = liveBytes(); },
-      });
+      let host = '';
+      try { host = new URL(route).host; } catch { host = String(route).slice(0, 24); }
+      await acquireSlot(host);
+      let ok = false;
+      try {
+        ok = await downloadRange(route, s0 + have, e0, parts[i], {
+          retries: 0, signal, append: have > 0,
+          onBytes: (n) => { inflight[i] += n; done = liveBytes(); },
+        });
+      } finally {
+        releaseSlot(host);
+      }
       if (ok) {
         let got = 0;
         try { got = (await fsp.stat(parts[i])).size; } catch { got = 0; }
