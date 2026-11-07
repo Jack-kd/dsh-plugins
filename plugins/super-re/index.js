@@ -171,9 +171,16 @@ function buildCraftTools() {
       },
       async execute(args) {
         if (!craftAvailable()) throw new Error(CRAFT_NOT_INSTALLED)
-        const p = (args && typeof args.params === 'object' && args.params !== null) ? args.params : (args || {})
-        if (!p.tool) throw new Error('请提供 params.tool（Craft 工具名）。先用 craft_commands 查看可用工具。')
-        const out = await runCraft([p.tool, ...craftArgsJson(p.args || {})])
+        const src = (args && typeof args.params === 'object' && args.params !== null) ? args.params : (args || {})
+        // 兼容多种入参形态：params.tool / 顶层 tool
+        const toolName = typeof src.tool === 'string' && src.tool.trim() ? src.tool.trim() : ''
+        const toolArgs = (src && typeof src.args === 'object' && src.args !== null) ? src.args : {}
+        // 诊断注入：调用者想 dump（tool='doctor' 前或未配 tool）
+        if (!toolName) {
+          throw new Error('请提供 craft 工具名（params.tool 或顶层 tool）。先用 craft_commands 查看可用工具。'
+            + ' [诊断] args=' + JSON.stringify(args) + ' keys=' + (args ? Object.keys(args).join(',') : 'null'))
+        }
+        const out = await runCraft([toolName, ...craftArgsJson(toolArgs)])
         return out
       },
     }),
