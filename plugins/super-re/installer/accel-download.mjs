@@ -39,27 +39,32 @@ export const DEFAULT_RULES = [
     // gh.acmsz.top 实测可完整下载 release 附件，放前面。
     match: 'github\\.com/|githubusercontent\\.com/|codeload\\.github\\.com/',
     style: 'prefix',
-    // 2026-11 实测（super-re 内置版）：剔除已失效的死链，顺序仅作启发——
-    // 真正选路由 raceProbeFastest 并发竞速 + maybeRefineBigFile 带宽复核决定，
-    // 不依赖这里的排列。实测数据（TTFB，越短越好）：
-    //   gh.jjj.gv.uy 5.63s | gh.acmsz.top 5.74s | github.chenc.dev 5.82s
-    //   gh-proxy.com 5.88s | cfgh.ikgy.top 6.44s | ghfast.top 6.54s
-    //   ghproxy.icu 6.68s | ghgo.de5.net 6.82s | free.cn.eu.org 8.57s
-    //   down.mxw.xx.kg 9.12s | gh.monlor.com 9.55s
-    // 已剔除死链：github.mxw.qzz.io（HTTP 000）、ghproxy.net（HTTP 000，
-    //   旧版 super-re 的 install-*.sh 里还留着它，每次安装都白等一次超时）
+    // 2026-11 实测重建（含 github.akams.cn 镜像池全量筛查：57 个候选 → 逐个实测）。
+    // 顺序仅作启发——真正选路由 raceProbeFastest 并发竞速 + maybeRefineBigFile 带宽复核。
+    //
+    // 关键筛选标准：**必须支持 Range（206）**。实测发现有一批节点首字节探测正常、
+    // 带宽看着不错，但对大文件返回 200（忽略 Range、直接发整个文件），
+    // 分片模式下会让每个 worker 各下一遍完整文件，既浪费流量又更慢。
+    // 已因「不支持 Range / 太慢 / 死链」剔除的节点：
+    //   gh.meali.top、gh.chjina.com、gh.dpik.top、gh.sixyin.com、
+    //   jiashu.1win.eu.org、ghproxy.monkeyray.net、github.tbap.top（均返回 200）
+    //   g.blfrp.cn（仅 20KB/s）、free.cn.eu.org（302）、gh.beimengvv.xyz（301）
+    //   ghfast.top（对 Ghidra 403）、ghproxy.net（HTTP 000 死链）、
+    //   github.mxw.qzz.io（HTTP 000 死链）、down.mxw.xx.kg（9.12s 偏慢）
+    //
+    // Ghidra 543MB 实测带宽（越大越好，均确认支持 Range）：
+    //   gh.jjj.gv.uy 656KB/s | gh.monlor.com 388KB/s | gh.acmsz.top 680KB/s
+    //   gh-proxy.com 315KB/s | gh.07150721.xyz 267KB/s
     mirrors: [
       'https://gh.jjj.gv.uy/',
       'https://gh.acmsz.top/',
-      'https://github.chenc.dev/',
+      'https://gh.monlor.com/',
+      'https://gh.07150721.xyz/',
       'https://gh-proxy.com/',
+      'https://github.chenc.dev/',
       'https://cfgh.ikgy.top/',
-      'https://ghfast.top/',
       'https://ghproxy.icu/',
       'https://ghgo.de5.net/',
-      'https://free.cn.eu.org/',
-      'https://down.mxw.xx.kg/',
-      'https://gh.monlor.com/',
     ],
   },
   {
@@ -625,9 +630,23 @@ async function downloadRange(url, start, end, dest, { retries = 2, signal, onByt
         if (status >= 400 && status < 500) return false;
         throw new Error(`HTTP ${status}`);
       }
-      // 续传安全阀：append 模式下若服务器无视 Range 直接回 200 全量，
-      // 把它 append 进已有分片会污染数据 —— 此时宁可判失败换路线。
-      if (append && status === 200 && start > 0) {
+      // ── Range 支持安全阀（v2.10.8）──────────────────────────────────
+      // 我们请求了 `Range: bytes=start-end`，服务器却回 200（而不是 206），
+      // 说明它**忽略 Range、直接发整个文件**。
+      //
+      // 危害分两种，必须区别对待：
+      //  ① start > 0（分片/续传的中段请求）：收到 200 意味着服务端发的是
+      //     「整个文件」，若把它当这一段写进去，数据就错了（污染分片）。
+      //     → 必须判失败，换路线。
+      //  ② start === 0（请求第一片，本来就要从头下）：服务端回 200 发全量，
+      //     数据其实**是对的**（就是整个文件），只是它没按 Range 切片。
+      //     这种情况不能判失败——否则当所有节点都不支持 Range 时，下载会
+      //     直接失败（实测踩过：8MB 文件全部镜像都回 200 → 有防护版 FAIL，
+      //     无防护版反而成功）。正确做法是接受这次内容，但让上层知道
+      //     「该路线不支持分片」，后续分片会各自重复下全量（浪费但不出错）。
+      //
+      // 因此只在 start > 0 时拒绝；start === 0 放行。
+      if (end != null && status === 200 && start > 0) {
         stream.resume();
         return false;
       }
