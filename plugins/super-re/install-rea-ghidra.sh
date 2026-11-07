@@ -151,8 +151,38 @@ rea_version() {
 # 由调用方换下一个源。已下载的部分保留（-C -），可继续断点续传。
 DL_SPEED_LIMIT="${DL_SPEED_LIMIT:-51200}"   # 50 KB/s
 DL_SPEED_TIME="${DL_SPEED_TIME:-20}"        # 持续 20 秒低于阈值即放弃
+# ── 内置加速（v0.2.0 新增）────────────────────────────────────────────
+# 目标：**不依赖 gh-accel 插件**，super-re 自己也能多线程加速下载。
+# 做法：内置 installer/accel-download.mjs（提取自 gh-accel v2.10.7，经 6 轮 62MB
+# 实测验证），提供「并发竞速选路 + 多线程分片 + 断点续传 + 停滞看门狗」。
+# 三层兜底，保证**永远不会比没有加速更差**：
+#   ① Node 模块（多线程 + 动态测速选路）
+#   ② curl -C -（现有单连接逻辑，含低速放弃）
+#   ③ wget -c
+ACCEL_JS="$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/installer/accel-download.mjs"
+# 加速下载：仅用于 GitHub 直链；非 GitHub 源或 node 不可用时返回非 0 让上层回退
+accel_download() {
+  local url="$1" out="$2"
+  # 只在满足条件时启用：node 存在 + 模块存在 + 是 GitHub 链接
+  command -v node >/dev/null 2>&1 || return 1
+  [[ -f "${ACCEL_JS}" ]] || return 1
+  [[ "${url}" == *github.com/* || "${url}" == *githubusercontent.com/* || "${url}" == *codeload.github.com/* ]] || return 1
+  # 允许用户禁用（排查问题时用 SUPER_RE_NO_ACCEL=1）
+  [[ "${SUPER_RE_NO_ACCEL:-0}" == "1" ]] && return 1
+  log "  加速下载（多线程+动态选路）：$(basename "${out}")"
+  node "${ACCEL_JS}" --url "${url}" --out "${out}" --threads "${ACCEL_THREADS:-8}" --prefer mirror
+}
+
 download_resume() {
   local url="$1" out="$2"
+  # ── 第 ① 层：内置加速模块 ──
+  # 注意：accel_download 内部已含「分片失败换路线/续传」，失败即代表所有镜像都不行，
+  # 此时回落到 curl 再试一次官方源，作为最后兜底。
+  if accel_download "${url}" "${out}"; then
+    if [[ -s "${out}" ]]; then return 0; fi
+  fi
+  [[ "${SUPER_RE_NO_ACCEL:-0}" == "1" ]] || warn "加速模块未成功，回落到 curl 单连接"
+  # ── 第 ② 层：curl 断点续传（原有逻辑）──
   # v0.2.5 修复：不再 `2>/dev/null` 丢弃 curl 的 stderr。
   # 旧写法把**错误信息**（404 / 超时 / TLS 失败）也一起丢了，失败时日志一片空白，
   # 无从判断是「网络问题」还是「源没有这个文件」。
@@ -164,7 +194,7 @@ download_resume() {
       --no-progress-meter \
       -o "${out}" "${url}"
   elif has_cmd wget; then
-    # wget 无等价的持续低速判定；用 --timeout 兜住完全卡死的情况
+    # ── 第 ③ 层：wget（无等价低速判定，用 --timeout 兜住完全卡死）──
     wget -c -q --tries 3 --timeout 15 -O "${out}" "${url}"
   else
     return 1

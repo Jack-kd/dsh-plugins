@@ -23,10 +23,17 @@ ASSET="craft-anything-${CRAFT_VER}-${CRAFT_ARCH}.tar.gz"
 URL="https://github.com/storytold/craft-anything/releases/download/v${CRAFT_VER}/${ASSET}"
 
 # 镜像列表（github 加速）
+# 2026-11 实测：剔除死链 ghproxy.net（HTTP 000，旧版每次安装都白等一次超时）。
+# 顺序仅作启发；真正的选路由下方「内置加速模块」的并发竞速决定。
 MIRRORS=(
-  "https://ghfast.top/${URL}"
-  "https://ghproxy.net/${URL}"
+  "https://gh.jjj.gv.uy/${URL}"
+  "https://gh.acmsz.top/${URL}"
+  "https://github.chenc.dev/${URL}"
   "https://gh-proxy.com/${URL}"
+  "https://cfgh.ikgy.top/${URL}"
+  "https://ghfast.top/${URL}"
+  "https://ghproxy.icu/${URL}"
+  "https://ghgo.de5.net/${URL}"
   "${URL}"
 )
 
@@ -39,20 +46,40 @@ if [ -x "${CRAFT_DEST}/bin/craft-anything-cli" ] && [ -x /usr/local/bin/craft-an
   exit 0
 fi
 
-# ---- 下载（多镜像回退）----
+# ---- 下载（① 内置加速模块 → ② 多镜像 curl 回退）----
 mkdir -p "${CRAFT_DEST}"
 echo "下载 Craft Anything"
+
+ACCEL_JS="$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/installer/accel-download.mjs"
 ok=0
-for u in "${MIRRORS[@]}"; do
-  echo "尝试: $u"
+# ① 内置加速模块（不依赖 gh-accel 插件）：多线程分片 + 并发竞速选路 + 断点续传
+#    模块失败不影响后续：会自动回落到下面的 curl 多镜像逻辑。
+if command -v node >/dev/null 2>&1 && [ -f "${ACCEL_JS}" ] && [ "${SUPER_RE_NO_ACCEL:-0}" != "1" ]; then
+  echo "加速下载（多线程 + 动态选路）"
   set +e
-  curl -fL --retry 2 --connect-timeout 20 --speed-time 60 --speed-limit 10240 \
-    -o "${TARBALL}" "$u" 2>/dev/null
+  node "${ACCEL_JS}" --url "${URL}" --out "${TARBALL}" --threads "${ACCEL_THREADS:-8}" --prefer mirror
   rc=$?
   set -e
-  if [ $rc -eq 0 ] && [ -s "${TARBALL}" ]; then ok=1; break; fi
-  echo "镜像失败，换下一个"
-done
+  if [ $rc -eq 0 ] && [ -s "${TARBALL}" ]; then ok=1; fi
+  [ "$ok" -eq 1 ] || echo "加速模块未成功，回落到 curl 多镜像"
+fi
+
+# ② curl 多镜像回退（原逻辑，补两点：失败时删掉半截文件、加 -C - 断点续传）
+if [ "$ok" -ne 1 ]; then
+  for u in "${MIRRORS[@]}"; do
+    echo "尝试: $u"
+    set +e
+    # -C - 断点续传：镜像换路线时能利用已下载部分，不必从 0 重来
+    curl -fL -C - --retry 2 --connect-timeout 20 --speed-time 60 --speed-limit 10240 \
+      -o "${TARBALL}" "$u" 2>/dev/null
+    rc=$?
+    set -e
+    if [ $rc -eq 0 ] && [ -s "${TARBALL}" ]; then ok=1; break; fi
+    echo "镜像失败，换下一个"
+    # 失败时清掉半截文件，避免下一个镜像「续传」到一段不属于它的垃圾数据
+    rm -f "${TARBALL}" 2>/dev/null || true
+  done
+fi
 if [ "$ok" -ne 1 ]; then echo "所有镜像下载失败"; exit 1; fi
 
 # ---- SHA256 校验 ----
