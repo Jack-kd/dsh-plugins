@@ -179,9 +179,11 @@ function buildCraftTools() {
           try { toolArgs = JSON.parse(raw) } catch (e) { throw new Error('argJson 不是合法 JSON：' + raw + '（' + e.message + '）') }
           if (!toolArgs || typeof toolArgs !== 'object' || Array.isArray(toolArgs)) toolArgs = {}
         }
-        if (!toolName) {
-          throw new Error('请提供参数 tool（Craft 工具名）。先用 craft_commands 查看可用工具。'
-            + ' [诊断] args=' + JSON.stringify(args) + ' keys=' + (args ? Object.keys(args).join(',') : 'null'))
+        const isUndef = /^(undefined|none|null)$/.test(toolName)
+        if (!toolName || isUndef) {
+          throw new Error('无法解析出有效 craft 工具名。收到 tool=' + JSON.stringify(args && args.tool)
+            + ' [诊断全貌] args=' + JSON.stringify(args) + ' keys=' + (args ? Object.keys(args).join(',') : 'null')
+            + ' typeof_tool=' + (typeof (args && args.tool)))
         }
         const out = await runCraft([toolName, ...craftArgsJson(toolArgs)])
         return out
