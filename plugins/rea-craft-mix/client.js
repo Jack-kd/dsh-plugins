@@ -31,16 +31,17 @@
 .mixRow{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--dsw-alias-border-l4);font-size:13px}
 .mixRow:last-child{border-bottom:none}
 .mixDot{flex:none;width:9px;height:9px;border-radius:50%}
-.mixDotOn{background:var(--dsw-alias-state-success,var(--dsw-alias-state-business-primary))}
-.mixDotOff{background:var(--dsw-alias-state-danger,var(--dsw-alias-state-critical,#e5484d))}
+.mixDotOn{background:var(--dsw-alias-state-success-primary)}
+.mixDotOff{background:var(--dsw-alias-state-error-primary)}
 .mixName{flex:1;min-width:0;word-break:break-all;color:var(--dsw-alias-label-secondary)}
 .mixVal{font-family:var(--dsw-font-mono,monospace);font-size:12px;color:var(--dsw-alias-label-tertiary);text-align:right;max-width:55%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mixBtnRow{display:flex;gap:10px;margin-top:16px;justify-content:flex-end}
 .mixBtn{padding:8px 14px;border-radius:var(--dsw-radius-md,10px);border:1px solid var(--dsw-alias-border-l4);
-  background:var(--dsw-alias-bg-module,hsl(0 0% 100%));color:var(--dsw-alias-label-primary);font-size:13px;cursor:pointer}
+  background:transparent;color:var(--dsw-alias-label-secondary);font-size:13px;cursor:pointer;transition:opacity .12s}
+.mixBtn:hover{opacity:.88}
 .mixBtn:disabled{opacity:.5;cursor:default}
-.mixBtnPrimary{background:var(--dsw-alias-state-business-primary);border-color:transparent;color:#fff}
-.mixError{margin-top:12px;padding:10px;border-radius:8px;background:color-mix(in srgb,var(--dsw-alias-state-danger,#e5484d) 10%,transparent);font-size:12px;color:var(--dsw-alias-label-primary);white-space:pre-wrap}`
+.mixBtnPrimary{background:var(--dsw-alias-state-business-primary);border-color:transparent;color:var(--dsw-alias-label-primary-foreground)}
+.mixError{margin-top:12px;padding:10px;border-radius:8px;background:color-mix(in srgb,var(--dsw-alias-state-error-primary,#e5484d) 10%,transparent);font-size:12px;color:var(--dsw-alias-label-primary);white-space:pre-wrap}`
 
         function injectStyle() {
           let el = document.getElementById('mix-style')

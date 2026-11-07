@@ -1,6 +1,6 @@
 {
   "name": "@local/rea-craft-mix",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "type": "module",
   "description": "REA-Craft Anything 融合：REA(JADX+Ghidra) 深度反编译 × Craft Anything(321 工具) 全格式逆向，统一引擎探测、路径注入、就绪状态",
