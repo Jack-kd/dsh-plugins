@@ -79,6 +79,103 @@ function stripProgress(out) {
 
 const NOT_INSTALLED = 'rea 尚未安装。请先调用 rea_install 工具（约 3–5 分钟，装 REA + Ghidra + JADX）。'
 
+// ================= Craft Anything 工具壳 =================
+// craft-anything 是 /opt/craft-anything 下的一对 CLI（craft-anything / craft-anything-cli）。
+// 本组把它包装成 DSH 原生工具（route A：薄 CLI 胶水），并使胶囊显示「Craft · 操作名」。
+// 完整清单见 craft commands / capabilities（321 个跨格式工具），这里暴露通用桥 + 精选常用入口。
+const CRAFT_CLI = process.env.CRAFT_ANYTHING_CLI || '/opt/craft-anything/bin/craft-anything-cli'
+const CRAFT_NOT_INSTALLED = 'Craft Anything 尚未安装。请先调用 super_setup（勾选 craft）或 rea_install 安装。'
+
+/** 快速判断 craft-anything-cli 是否存在 */
+function craftAvailable() {
+  return fs.existsSync(CRAFT_CLI)
+}
+
+/** 执行 craft-anything-cli：args 为完整命令行参数（工具名 + --json 等）。返回 stdout 文本 */
+function runCraft(args, timeoutMs = 600000) {
+  // 默认 Deep mode：craft 默认 Clean room 只给"不读原目标"的元工具使能；
+  // 逆向需要能读原目标（core-target-open 等被 Clean room 拒绝）。`--deep` 放全局位。
+  return run(CRAFT_CLI, ['--deep', ...args], { timeoutMs })
+}
+
+/** 把用户的 kwargs 转成 --json '{"k":v,...}' 传给 craft 工具（craft 子命令都用 --json 收参） */
+function craftArgsJson(kwargs) {
+  if (!kwargs || Object.keys(kwargs).length === 0) return []
+  return ['--json', JSON.stringify(kwargs)]
+}
+
+// craft 工具名（DSH 前缀 craft_）→ craft-anything-cli 子命令名（连字符）。未列出的走通用桥。
+const CRAFT_TOOL_CMD = {
+  craft_doctor: 'doctor',
+  craft_capabilities: 'capabilities',
+  craft_commands: 'commands',
+  craft_targets: 'core-targets-list',
+  craft_target_open: 'core-target-open',
+  craft_target_close: 'core-target-close',
+  craft_triage: 'triage',
+  craft_rebuild_start: 'rebuild-start',
+  craft_rebuild_status: 'rebuild-status',
+}
+
+/** 构造整套 Craft 工具定义 */
+function buildCraftTools() {
+  const makeTool = (name, description, spec) => defineTool({
+    name,
+    description,
+    parameters: (spec && spec.parameters) || {},
+    output: {
+      schema: { type: 'string' },
+      render: (_a, v) => [{ type: 'text', text: String(v) }],
+    },
+    async execute(args) {
+      if (!craftAvailable()) throw new Error(CRAFT_NOT_INSTALLED)
+      const cmd = CRAFT_TOOL_CMD[name]
+      const kwargs = (spec && spec.kwargs) ? spec.kwargs(args) : {}
+      const out = await runCraft([cmd, ...craftArgsJson(kwargs)])
+      return out
+    },
+  })
+  return [
+    makeTool('craft_doctor', '检查 Craft Anything 安装 / 已注册引擎 / MCP 服务器就绪状态，返回诊断报告。', { kwargs: () => ({}) }),
+    makeTool('craft_capabilities', '列出当前安装 Craft Anything 能做什么：工具集、每个引擎是否就绪、共 321 个工具的清单。用于确定某个跨格式工具是否可用。', { kwargs: () => ({}) }),
+    makeTool('craft_commands', '列出 Craft Anything 的每一个工具（命令），含工具名与用途说明。想用通用桥调某工具时，先看这里确认工具名。', { kwargs: () => ({}) }),
+    makeTool('craft_targets', '列出当前已打开的 Craft 目标（target）列表，每个含 id / kind / sha256。', { kwargs: () => ({}) }),
+    makeTool('craft_target_open', '打开一个目标（绝对路径的文件/文件夹/APK/网站 URL），返回其 id 与能力摘要。后续用 craft_call 传 target_id 对它深入分析。', {
+      parameters: { path: { type: 'string', description: '目标绝对路径或 URL' } },
+      kwargs: (args) => ({ path: args.path }),
+    }),
+    makeTool('craft_target_close', '关闭一个已打开的 Craft 目标（按 id）。', {
+      parameters: { id: { type: 'string', description: '目标 id' } },
+      kwargs: (args) => ({ id: args.id }),
+    }),
+    makeTool('craft_triage', '打开一个文件并快速做第一轮审视（无需先 open target），返回概览与初步发现。', {
+      parameters: { path: { type: 'string', description: '文件绝对路径' } },
+      kwargs: (args) => ({ path: args.path }),
+    }),
+    makeTool('craft_rebuild_start', '启动一个重建工程：给定一个目标（网站 URL / 文件路径 / 或空）和一个诉求，craft 会在后台研究该目标并照它的样子在**新模式项目文件夹**里重建。会写代码、建工程，需要确认。返回工程 id 与进度。'
+      + '⚠️ 前置条件：craft-anything 需先配置一个 AI backend 才能跑重建（当前未配时为 null）。'
+      + '可先用 `craft_call` 调 `ai list` 看是否已配；未配则提示用户用 `craft-anything-cli ai add` 接入（如 openai_compatible + DeepSeek key）。', {
+      parameters: { target: { type: 'string', description: '目标：URL / 绝对路径（可空）' }, request: { type: 'string', description: '重建的诉求描述' } },
+      kwargs: (args) => ({ target: args.target || '', request: args.request || '' }),
+    }),
+    makeTool('craft_call', 'Craft Anything 通用桥：调用任意一个 Craft 工具（321 个跨格式逆向工具）。'
+      + '用法：tool 传 craft 工具名（如 core-target-open / android-method-show / java-vineflower-decompile / native-function-pseudocode），'
+      + 'args 传该工具的 JSON 参数对象。先 `craft_commands` 查工具名和参数，再 `craft_target_open` 打开目标，再 craft_call 传 target_id 调用。'
+      + '输出为该工具返回的 JSON 文本。', {
+      parameters: {
+        tool: { type: 'string', description: 'Craft 工具名（连字符式，如 core-target-open）' },
+        args: { type: 'object', additionalProperties: true, description: '该工具的 JSON 参数对象（视工具而定）' },
+      },
+      async execute(args) {
+        if (!craftAvailable()) throw new Error(CRAFT_NOT_INSTALLED)
+        if (!args || !args.tool) throw new Error('请提供 tool 参数（Craft 工具名）。先用 craft_commands 查看可用工具。')
+        const out = await runCraft([args.tool, ...craftArgsJson(args.args || {})])
+        return out
+      },
+    }),
+  ]
+}
+
 /** 分析类工具的统一构造：先确认 rea 在，再执行，再去进度行 */
 function reaTool(spec) {
   return defineTool({
@@ -286,6 +383,13 @@ export function apply(ctx) {
         return stripProgress(out)
       },
     }),
+
+    // ================= Craft Anything 工具壳（route A：薄 CLI 桥） =================
+    // craft-anything 本体是 /opt/craft-anything/bin/craft-anything-cli（一个完整 MCP server + 每工具即子命令）。
+    // 这里做薄薄一层胶水：把它的工具映射成 DSH 原生工具，便于 AI 直接调用 + 胶囊显示 Craft·xxx。
+    // 通用桥 craft_call 暴露全部 321 个工具；精选工具是常用入口，便于胶囊显示友好操作名。
+    // v0.2.x：CLI 路径可用环境变量 CRAFT_ANYTHING_CLI 覆盖（默认 /opt/craft-anything/bin/craft-anything-cli）。
+    ...buildCraftTools(),
   ]
 
   // 逐个注册，并把结果写成自检文件（"装上了" ≠ "真的注册成功"，留个可读证据）
