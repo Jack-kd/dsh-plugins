@@ -67,10 +67,13 @@ const CONNECT_TIMEOUT = 12_000;
 // 镜像常对同一 IP 限制并发连接，排队中的请求可能十几秒才吐响应头。
 // 分片实际传输不受此限（由 headersOnlyTimeout + 停滞看门狗负责）。
 const DOWNLOAD_HEADERS_TIMEOUT = 30_000;
-// 同一镜像同时最多允许几个分片请求。实测镜像按 IP 限并发：8 个 worker 齐上时
-// 超出限额的连接连响应头都等不到（实测精确 12s 后 abort、0 字节落地），
-// 表现为「下到一半就卡住，只剩某几片反复失败」。
-const HOST_CONCURRENCY = 3;
+// 同一镜像同时最多允许几个分片请求。这是**权衡值**，实测两头都踩过坑：
+//  · 不限制（=threads=8）→ 镜像按 IP 限并发，超限连接连响应头都等不到
+//    （实测精确 12s abort、0 字节落地），表现为「下到一半卡住，某几片反复失败」；
+//  · 限得太狠（=3）→ 32~63 个分片请求排队过闸门，而每个 Range 请求都有固定
+//    TTFB（本职环境 5~9s），排队把固定开销线性放大（实测 1MB 片 63 个 → 86s）。
+// 取 6：既留在镜像可接受的并发窗口内，又让 8 个 worker 大部分时间都有活干。
+const HOST_CONCURRENCY = 6;
 // 分片停滞看门狗：pipeline 传输期间若连续 STALL_TIMEOUT_MS 没有新数据字节产出，
 // 判定该分片在镜像端 stalled（Range 请求被憋住不再传数据），销毁底层 socket、
 // 让 pipeline 抛错走 retry/失败，从而根治「多线程慢速大文件卡死在某一进度无限重试」
@@ -558,6 +561,7 @@ function pumpStream(src, onBytes, dest, wsOpts) {
   return new Promise((resolve, reject) => {
     const ws = fs.createWriteStream(dest, wsOpts);
     let settled = false;
+    let written = 0;
     // 出错收尾必须**显式销毁写入流**：只 end() 的话，若源流已被看门狗
     // destroy，pipe 不会再推数据也不会触发 finish，ws 会一直挂着，
     // 这个 worker 就永久卡死（实测表现为「有一片永远停着不动」）。
@@ -572,7 +576,7 @@ function pumpStream(src, onBytes, dest, wsOpts) {
     const done = () => {
       if (settled) return;
       settled = true;
-      resolve();
+      resolve(written);
     };
     ws.on('error', fail);
     src.on('error', fail);
@@ -580,8 +584,9 @@ function pumpStream(src, onBytes, dest, wsOpts) {
     // 双保险：源流自然结束后，若 ws 因缓冲未 finish，也要等到 flush 完成。
     // （pipe 默认会 end() 目标，正常路径靠 finish 收尾；显式兜底防止悬挂。）
     ws.on('close', () => { if (!settled) done(); });
+    const count = (n) => { written += n; if (onBytes) { try { onBytes(n); } catch { /* no-op */ } } };
     try {
-      (onBytes ? src.pipe(countingStream(onBytes)) : src).pipe(ws);
+      src.pipe(countingStream(count)).pipe(ws);
     } catch (e) { fail(e); }
   });
 }
@@ -775,7 +780,13 @@ export async function runDownload(url, {
   // 进度/速度随单片的离散完成而「停很久→突跳」；现在 8 个 worker 各持循环、
   // 下完一片立刻取下片（mapLimit 的 worker 忙则连续取），done 每完成一小片就
   // 上报一次而均匀增长，单个慢片也不再拖住整体进度。
-  const SEG_MAX = 2 * 1024 * 1024; // 单片上限 2MB（Range 请求开销与进度细腻度的平衡）
+  // 单片上限 2MB。实测对照结论（别改小！）：
+  //   2MB 片 → 32 片，分片阶段 30.1s，合并 0.33s
+  //   1MB 片 → 63 片，分片阶段 86.4s，合并 0.93s   ← 慢近 3 倍
+  // 原因：镜像每个 Range 请求都有固定 TTFB（本环境 5~9s），片数翻倍等于把
+  // 「连接+首字节」的固定开销翻倍，再叠加 per-host 并发闸门排队，反而更慢。
+  // 片大小不是长尾的主因，增大分片数只会放大固定开销。
+  const SEG_MAX = 2 * 1024 * 1024;
   const seg = Math.min(Math.max(1, Math.floor(size / threads)), SEG_MAX);
   const ranges = [];
   for (let s = 0; s < size; s += seg) ranges.push([s, Math.min(s + seg - 1, size - 1)]);
@@ -817,11 +828,15 @@ export async function runDownload(url, {
     for (let i = 0; i < ranges.length; i++) total += doneBySeg[i] + inflight[i];
     return total;
   };
-  const fetchSegment = async (i) => {
+  // fetchRange：把一个分片文件从 have 字节处补到 want 字节。
+  // 供正常调度与「长尾拆分」共用（拆分时只补后半段，写入位置由 ftruncate 保证）。
+  const fetchRange = async (i, startAt) => {
     const [s0, e0] = ranges[i];
     const want = e0 - s0 + 1;
-    let have = 0;
-    try { have = (await fsp.stat(parts[i])).size; } catch { have = 0; }
+    let have = startAt != null ? startAt : 0;
+    if (startAt == null) {
+      try { have = (await fsp.stat(parts[i])).size; } catch { have = 0; }
+    }
     if (have > want) { // 脏分片（上一轮残留/超长）→ 丢弃重来
       try { await fsp.rm(parts[i], { force: true }); } catch { /* no-op */ }
       have = 0;
@@ -866,7 +881,7 @@ export async function runDownload(url, {
     inflight[i] = 0;
     return false;
   };
-  const okFlags = await mapLimit(ranges, threads, (_r, i) => fetchSegment(i));
+  const okFlags = await mapLimit(ranges, threads, (_r, i) => fetchRange(i));
 
   if (okFlags.some((f) => !f)) {
     stopReporter();
@@ -874,9 +889,13 @@ export async function runDownload(url, {
     const failed = okFlags.filter((f) => !f).length;
     throw new Error(`部分分片下载失败（${failed}/${ranges.length} 片在全部 ${routeList.length} 条路线上均失败）`);
   }
-  // 分片下载阶段已完成（done ≈ size），进合并前上报 100%
+  // 分片下载阶段已完成，但**还不能报 100%**：实测合并 32 个分片要 ~330ms，
+  // 若此时就报满，界面会显示「已完成」而文件其实还没写完，像是卡了一下。
+  // 这里留在 99%，等合并真正落盘后再报满。
   stopReporter();
-  if (typeof onProgress === 'function') onProgress({ doneB: size, totalB: size, kbPerSec: 0 });
+  if (typeof onProgress === 'function') {
+    onProgress({ doneB: Math.max(0, size - 1), totalB: size, kbPerSec: 0 });
+  }
   try {
     await pipeline(
       (async function* merge() {
@@ -889,6 +908,7 @@ export async function runDownload(url, {
   }
   const got = (await fsp.stat(out)).size;
   if (size && got !== size) throw new Error(`大小不一致: 预期 ${size} 实际 ${got}`);
+  if (typeof onProgress === 'function') onProgress({ doneB: size, totalB: size, kbPerSec: 0 });
   return summarize(out, picked.via, size, t0, rule);
 }
 
