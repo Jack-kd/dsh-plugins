@@ -13,6 +13,7 @@
 | `super_setup` | 本插件入口 | 一键安装「REA + 可选 Craft」：`--tier` basic/full、`--craft`，与弹窗行为一致 |
 | REA 逆向环境 | rea-tools 同款 | JADX（APK→Java）、Ghidra（ELF→伪代码）、apktool（解包/回编）、rea-agents |
 | Craft Anything | [storytold/craft-anything](https://github.com/storytold/craft-anything) | 可选 · 321 个跨格式工具 |
+| `craft_*` 工具壳 | 本插件 | 把 Craft Anything 包装成 DSH 工具（通用桥 + 精选），胶囊显示 `Craft · …`，与 REA 双引擎配合 |
 
 ## 安装入口弹窗
 
@@ -27,15 +28,31 @@
 ## 安装
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/super-re-v0.1.5/super-re-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/super-re-v0.1.7/super-re-plugin.tgz
 ```
 
 装完后首次准备环境弹窗即出现；也可在**设置 → 通用**里通过「安装超级逆向环境」重新打开。
 
+## REA 与 Craft 双引擎配合
+
+super-re 把 REA 和 Craft Anything 同时接入 DSH，AI 的系统提示词内置「REA vs Craft 选择规则」，按目标自动选引擎并可交叉配合：
+
+| 目标 / 诉求 | 引擎 | 说明 |
+|---|---|---|
+| APK 逆向（方法/类/资源） | **REA**（rea_inspect_apk_* / apktool） | craft 0.4.0 对现代 APK 的 ZIP 解析有 bug，APK 一律走 REA |
+| 原生二进制（ELF/.so） | **REA**（rea_analyze / rea_function，Ghidra） | Ghidra 反汇编→伪代码 |
+| 跨格式（wasm/智能合约/固件/游戏档案/抓包/无线） | **Craft**（craft_call 通用桥） | REA 没有这些，是 craft 独家能力 |
+| 重建新工程（照着一个 app/网站/游戏） | **Craft**（craft_rebuild_start） | 需先配 AI backend |
+| 快速"这是什么" | **Craft**（craft_triage） | 轻量 |
+
+**craft_* 工具**：`craft_call`（通用桥，可调任意 321 工具）、`craft_doctor`、`craft_capabilities`、`craft_commands`、`craft_triage`、`craft_targets/open/close`、`craft_rebuild_start`。
+
+**胶囊**：REA 工具显示 `REA · 操作`，craft 工具显示 `Craft · 操作`，一眼区分当前用哪个引擎。craft-anything 走 `/opt/craft-anything/bin/craft-anything-cli`（环境变量 `CRAFT_ANYTHING_CLI` 可覆盖），统一 `--deep` 深读。
+
 ## 说明
 
 - **与 rea-tools 的关系**：super-re 接管 REA 安装入口（rea-tools 退居）。两者**不要同时装**——工具名 `rea_*` 相同会冲突；请用 super-re 作为统一入口。
-- **与 rea-craft-mix 的关系**：super-re 负责「装环境」，rea-craft-mix 负责「装完后两套引擎的融合调度」。若你也要融合，可同时装 rea-craft-mix（它只探测、不装）。
+- **rea-craft-mix 已并入**：原融合插件 rea-craft-mix 已删除，其 craft 侧能力由本插件的 `craft_*` 工具壳承接（super-re 直接用 craft-anything 的 CLI，不必再装一个融合插件）。
 - Craft Anything 走官方 GitHub Release（aarch64/x86_64 自适应，SHA256 校验），安装到 `/opt/craft-anything`，软链到 `/usr/local/bin`。
 - 幂等：REA 与 Craft 均「已装就跳过」，不会重复下载覆盖。
 

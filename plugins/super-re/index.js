@@ -79,6 +79,100 @@ function stripProgress(out) {
 
 const NOT_INSTALLED = 'rea 尚未安装。请先调用 rea_install 工具（约 3–5 分钟，装 REA + Ghidra + JADX）。'
 
+// ===== Craft Anything 工具壳 =====
+// craft-anything 是 /opt/craft-anything 下的一对 CLI（craft-anything / craft-anything-cli）。
+// 本组把它包装成 DSH 原生工具（双引擎配合中的 Craft 侧），并使胶囊显示「Craft · 操作名」。
+// 通用桥 craft_call 暴露全部 321 个工具；精选工具是常用入口。统一加 --deep（深读原目标）。
+const CRAFT_CLI = process.env.CRAFT_ANYTHING_CLI || '/opt/craft-anything/bin/craft-anything-cli'
+const CRAFT_NOT_INSTALLED = 'Craft Anything 尚未安装。请先调用 super_setup（带 craft 参数）或 rea_install --craft 安装。'
+
+/** craft-anything-cli 是否就绪 */
+function craftAvailable() {
+  return fs.existsSync(CRAFT_CLI)
+}
+
+/** 执行 craft：args 为完整参数（工具名 + --json 等）。--deep 默认深读（craft 默认 Clean room 不读原目标） */
+function runCraft(args, timeoutMs = 600000) {
+  return run(CRAFT_CLI, ['--deep', ...args], { timeoutMs })
+}
+
+/** 把 kwargs 序列化为 craft 工具的 --json 参数；空对象则不传 */
+function craftArgsJson(kwargs) {
+  if (!kwargs || Object.keys(kwargs).length === 0) return []
+  return ['--json', JSON.stringify(kwargs)]
+}
+
+// craft_* 工具名 → craft-anything-cli 子命令（连字符）。未列入的走 craft_call 由 AI 传工具名。
+const CRAFT_TOOL_CMD = {
+  craft_doctor: 'doctor',
+  craft_capabilities: 'capabilities',
+  craft_commands: 'commands',
+  craft_targets: 'core-targets-list',
+  craft_target_open: 'core-target-open',
+  craft_target_close: 'core-target-close',
+  craft_triage: 'triage',
+  craft_rebuild_start: 'rebuild-start',
+  craft_rebuild_status: 'rebuild-status',
+}
+
+/** 构造整套 Craft 工具定义（无目标工具的精选 + 通用桥） */
+function buildCraftTools() {
+  const makeTool = (name, description, spec) => defineTool({
+    name,
+    description,
+    parameters: (spec && spec.parameters) || {},
+    output: {
+      schema: { type: 'string' },
+      render: (_a, v) => [{ type: 'text', text: String(v) }],
+    },
+    async execute(args) {
+      if (!craftAvailable()) throw new Error(CRAFT_NOT_INSTALLED)
+      const cmd = CRAFT_TOOL_CMD[name]
+      const kwargs = (spec && spec.kwargs) ? spec.kwargs(args) : {}
+      const out = await runCraft([cmd, ...craftArgsJson(kwargs)])
+      return out
+    },
+  })
+  return [
+    makeTool('craft_doctor', '检查 Craft Anything 安装 / 已注册引擎 / MCP 服务器就绪状态，返回诊断报告。', { kwargs: () => ({}) }),
+    makeTool('craft_capabilities', '列出当前安装 Craft Anything 能做什么：工具集、每个引擎是否就绪、321 工具清单。用于判断某个跨格式工具是否可用。', { kwargs: () => ({}) }),
+    makeTool('craft_commands', '列出 Craft Anything 的每一个工具（命令），含工具名与用途。用通用桥调某工具前先看这里确认工具名。', { kwargs: () => ({}) }),
+    makeTool('craft_targets', '列出当前已打开的 Craft 目标（target），每个含 id / kind / sha256。', { kwargs: () => ({}) }),
+    makeTool('craft_target_open', '打开一个目标（绝对路径的文件/文件夹/网站 URL），返回其 id 与能力摘要。注意：craft 按 CLI 子命令逐个 spawn，target 会话不跨进程保持，`core-target-open` 对现代 APK 会报 not_supported，APK 逆向请走 REA。', {
+      parameters: { path: { type: 'string', description: '目标绝对路径或 URL' } },
+      kwargs: (args) => ({ path: args.path }),
+    }),
+    makeTool('craft_target_close', '关闭一个已打开的 Craft 目标（按 id）。', {
+      parameters: { id: { type: 'string', description: '目标 id' } },
+      kwargs: (args) => ({ id: args.id }),
+    }),
+    makeTool('craft_triage', '打开一个文件并快速做第一轮审视（无需先 open target），返回概览与初步发现。轻量、适合"这是什么"的快速判断。', {
+      parameters: { path: { type: 'string', description: '文件绝对路径' } },
+      kwargs: (args) => ({ path: args.path }),
+    }),
+    makeTool('craft_rebuild_start', '启动一个重建工程：给定一个目标（网站 URL / 文件路径 / 或空）+ 一句诉求，craft 在后台研究该目标并照它的样子在项目文件夹里重建新工程。会写代码、建工程，需确认。'
+      + '⚠️ 前置：craft 需先配置 AI backend（当前多为 null）。可先 `craft_call` 调 `ai list` 看是否已配；未配则提示用户用 `craft-anything-cli ai add` 接入（如 openai_compatible + DeepSeek key）。', {
+      parameters: { target: { type: 'string', description: '目标：URL / 绝对路径（可空）' }, request: { type: 'string', description: '重建的诉求描述' } },
+      kwargs: (args) => ({ target: args.target || '', request: args.request || '' }),
+    }),
+    makeTool('craft_call', 'Craft Anything 通用桥：调用任意一个 Craft 工具（321 个跨格式逆向工具）。'
+      + '用法：tool 传 craft 工具名（如 native-functions-list / formats-wasm-module-show / web-site-capture / database-schema-show 等），'
+      + 'args 传该工具的 JSON 参数。先 `craft_commands` 查工具名和参数。输出为该工具返回的 JSON 文本。'
+      + 'APK 逆向请优先走 REA（rea_inspect_apk_*），craft 对现代 APK 有 ZIP 解析 bug；craft 常用于 REA 没有的跨格式/重建。', {
+      parameters: {
+        tool: { type: 'string', description: 'Craft 工具名（连字符式，如 native-functions-list）' },
+        args: { type: 'object', additionalProperties: true, description: '该工具的 JSON 参数（视工具而定）' },
+      },
+      async execute(args) {
+        if (!craftAvailable()) throw new Error(CRAFT_NOT_INSTALLED)
+        if (!args || !args.tool) throw new Error('请提供 tool 参数（Craft 工具名）。先用 craft_commands 查看可用工具。')
+        const out = await runCraft([args.tool, ...craftArgsJson(args.args || {})])
+        return out
+      },
+    }),
+  ]
+}
+
 /** 分析类工具的统一构造：先确认 rea 在，再执行，再去进度行 */
 function reaTool(spec) {
   return defineTool({
@@ -286,6 +380,13 @@ export function apply(ctx) {
         return stripProgress(out)
       },
     }),
+
+    // ===== Craft Anything 工具壳（双引擎配合：REA 主攻 APK/原生，Craft 补跨格式/重建）=====
+    // craft-anything 是 /opt/craft-anything/bin/craft-anything-cli（完整 MCP server + 每工具即子命令）。
+    // 这里包成 DSH 原生工具（通用桥 + 精选入口），工具执行时胶囊显示「Craft · 操作名」。
+    // 由系统提示词「REA vs Craft 选择规则」引导 AI 自主选引擎并互相配合。
+    // CLI 路径可用环境变量 CRAFT_ANYTHING_CLI 覆盖。
+    ...buildCraftTools(),
   ]
 
   // 逐个注册，并把结果写成自检文件（"装上了" ≠ "真的注册成功"，留个可读证据）
@@ -475,6 +576,15 @@ export function apply(ctx) {
     mix_doctor: '引擎探测',
     mix_inject: '引擎注入',
     mix_rebuild: 'Craft 回编',
+    craft_doctor: 'Craft 诊断',
+    craft_capabilities: 'Craft 能力',
+    craft_commands: 'Craft 工具清单',
+    craft_targets: 'Craft 目标列表',
+    craft_target_open: 'Craft 打开目标',
+    craft_target_close: 'Craft 关闭目标',
+    craft_triage: 'Craft 快速审视',
+    craft_rebuild_start: 'Craft 重建工程',
+    craft_call: 'Craft 通用桥',
   }
 
   const projection = {
@@ -884,7 +994,19 @@ export function apply(ctx) {
           '调用前先确认文件确实存在且路径正确（用户上传的文件通常在可访问的磁盘路径）；' +
           '若 rea 环境未装，提示用户先调 rea_install 或用设置页安装。不要用通用文本工具当逆向工具用。' +
           'apktool 已随 REA 一并内置（环境变量 REA_APKTOOL_JAR 指向 jar 路径）：当需要解包/改资源/回编 APK、' +
-          '或查看明文 XML（布局/清单）时用 apktool（java -jar $REA_APKTOOL_JAR ...）；反编译类代码逻辑仍用 rea_inspect_apk 系列。',
+          '或查看明文 XML（布局/清单）时用 apktool（java -jar $REA_APKTOOL_JAR ...）；反编译类代码逻辑仍用 rea_inspect_apk 系列。' +
+          ' | ' +
+          'REA vs Craft 双引擎配合（super-re 已接入 Craft Anything）：本环境同时提供 REA 和 Craft 两套逆向引擎，按目标选：' +
+          '① APK（安卓安装包）与原生二进制（ELF/.so）→ 用 REA（rea_inspect_apk_* / rea_analyze / rea_function）——' +
+          'craft-anything 0.4.0 对现代 APK 的 ZIP 目录解析有 bug，android-* 工具读不了真实 APK，APK 一律交给 REA；' +
+          '② REA 没有的跨格式目标 → 用 Craft（craft_call 通用桥，可调 321 个工具）：' +
+          'WebAssembly（formats-wasm-module-show）、智能合约（EVM/Solana sBPF）、固件、游戏档案（Unreal pak / Unity / IL2CPP，' +
+          'game-unity-* / game-pak-*）、网络抓包（packets-*）、无线电解码（radio-*）、Windows PE/native 二进制补充分析等；' +
+          '③ 「重建工程」（照着一个 app/网站/游戏重建新工程）→ 用 Craft 的 rebuild（craft_rebuild_start），需先配 AI backend；' +
+          '④ 快速判断"这是什么" → craft_triage 轻量审视。' +
+          '配合方式：遇跨格式目标先 craft_capabilities / craft_commands 确认 craft 有没有对应工具再动手；' +
+          '同目标需交叉验证时 REA 与 Craft 可并用（如 REA 解 APK 逻辑 + Craft 看打包结构/资源索引）。' +
+          '先用 craft_doctor 确认 craft-anything 是否已安装（未装则提示用 super_setup 安装）。',
       }))
     })
   } catch (e) {
