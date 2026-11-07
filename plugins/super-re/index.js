@@ -110,6 +110,35 @@ export function apply(ctx) {
   const tools = [
     // 安装器：不走 reaAvailable 门（它本身就是来装 rea 的）
     defineTool({
+      name: 'super_setup',
+      description: '超级逆向环境统一安装入口：一键装齐 REA（JADX + Ghidra + apktool），可选同时装 Craft Anything（321 个跨格式工具）。'
+        + '行为与弹窗「超级逆向环境需要准备」完全一致：REA 装完后若 craft 为真，自动串行接 Craft 安装。'
+        + '**后台安装、立即返回**（不阻塞工具调用），进度看输入框上方胶囊或调 rea_status / 弹窗。幂等（已装部分自动跳过）。',
+      parameters: {
+        tier: { type: 'string', enum: ['basic', 'full'], description: 'REA 环境档次：basic=初级（JDK+rea+JADX+apktool，跳过 Ghidra）；full=升级（+Ghidra+反编译器）。默认 full' },
+        craft: { type: 'boolean', description: '是否同时安装 Craft Anything（REA 装完自动接上）。默认 true' },
+      },
+      output: {
+        schema: { type: 'string' },
+        render: (_args, value) => [{ type: 'text', text: String(value) }],
+      },
+      async execute(args) {
+        if (isInstalling() || isCraftInstalling()) {
+          const p = currentProgress() || craftProgress()
+          return `已有安装正在进行中（${p && p.percent ? p.percent + '%' : '启动中'}）。可在输入框上方胶囊查看进度，或调 rea_status。`
+        }
+        const tier = args.tier === 'basic' ? 'basic' : 'full'
+        const withCraft = args.craft !== false
+        // 复用 doInstall —— 与弹窗同一条串行编排链路（REA 装完 pendingCraft 自动接 craft）
+        const r = await doInstall(tier, true, withCraft)
+        if (r.kind !== 'success') return '启动后台安装失败：' + (r.text || '未知错误')
+        return r.text + (withCraft
+          ? '\n· REA 装完后将自动串行安装 Craft Anything（v0.4.0，SHA256 校验）。'
+          : '\n· 本次未选 Craft Anything，需要时装 `super_setup` 带 --craft 或在弹窗勾选。')
+      },
+    }),
+
+    defineTool({
       name: 'rea_install',
       description: '安装 / 更新 REA + Ghidra + JADX 逆向工具链（幂等：已装好的部分自动跳过）。'
         + '全新环境第一步先调这个。**后台安装、立即返回**（不阻塞工具调用）：'
@@ -418,7 +447,7 @@ export function apply(ctx) {
 
   // 事件驱动：任一个 rea_* 工具被调用 → 置「REA 逆向中」，返回后清除
   // （与 gh-accel 同一套投影机制，由框架投喂 tool/call、tool/result 事件）
-  const REA_TOOLS = ['rea_install', 'rea_doctor', 'rea_analyze', 'rea_function',
+  const REA_TOOLS = ['super_setup', 'rea_install', 'rea_doctor', 'rea_analyze', 'rea_function',
     'rea_inspect_apk', 'rea_inspect_apk_class', 'rea_inspect_apk_method',
     'rea_apktool_run', 'rea_status']
 

@@ -10,6 +10,7 @@
 
 | 板块 | 来源 | 说明 |
 |---|---|---|
+| `super_setup` | 本插件入口 | 一键安装「REA + 可选 Craft」：`--tier` basic/full、`--craft`，与弹窗行为一致 |
 | REA 逆向环境 | rea-tools 同款 | JADX（APK→Java）、Ghidra（ELF→伪代码）、apktool（解包/回编）、rea-agents |
 | Craft Anything | [storytold/craft-anything](https://github.com/storytold/craft-anything) | 可选 · 321 个跨格式工具 |
 

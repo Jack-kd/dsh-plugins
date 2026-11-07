@@ -121,7 +121,7 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.10.0/gh-acc
 >
 > `dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/super-re-v0.1.0/super-re-plugin.tgz`
 >
-> **v0.1.0**：独立插件接管 REA 安装入口（rea-tools 退居，二者勿同装）；REA 复用 rea-tools 安装机制（install-rea-ghidra.sh 原样继承）；新增 `install-craft.sh`（官方 GitHub Release，aarch64/x86_64 自适应，SHA256 校验，装到 /opt/craft-anything + /usr/local/bin 软链，幂等）；弹窗 = REA 板块 + Craft 板块；HTTP 端点 `/super-re/state` + `/super-re/action`（支持 `withCraft` 串行）。Craft 官方源：`storytold/craft-anything` v0.4.0。
+> **v0.1.0**：独立插件接管 REA 安装入口（rea-tools 退居，二者勿同装）；REA 复用 rea-tools 安装机制（install-rea-ghidra.sh 原样继承）；新增 `install-craft.sh`（官方 GitHub Release，aarch64/x86_64 自适应，SHA256 校验，装到 /opt/craft-anything + /usr/local/bin 软链，幂等）；弹窗 = REA 板块 + Craft 板块；HTTP 端点 `/super-re/state` + `/super-re/action`（支持 `withCraft` 串行）；新增 `super_setup` 工具（`--tier` basic/full + `--craft`，与弹窗同一条串行编排链路）。Craft 官方源：`storytold/craft-anything` v0.4.0。
 
 </details>
 
