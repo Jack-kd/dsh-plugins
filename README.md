@@ -319,6 +319,31 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/hippocampus-v0.2.13/hip
 > **升级提示**：升级需先卸载再装新版本（记忆数据在 `~/.dsh/hippocampus/`，卸载重装不丢）。
 </details>
 
+<details>
+<summary><b>▶ dsh-purge · 提示词清洗与红队演练台（第三方收录）</b>　<code>v1.1.71</code></summary>
+
+> 在本机官方 Harness 上做提示词清洗与安全评测：会话标题旁打开侧栏，分「清洗」和「演练台」两页。清洗页分组查看并应用补丁、编辑提示词与多套规则；演练台内置资产与技能库，附本机环境视图。随包带 23 个红队技能（侦察、扫描、隧道、凭据、横向等）。只作用于本机已装的 `@deepseek-ai` 包与本机 profile，不是公网扫描器。**注意：它会改写宿主的审批与拒绝门（`hooksDenyBypass`），把 hooks 的 `deny` 判定替换成空壳**；装前请自行判断是否接受。
+>
+> **v1.1.71**：第三方项目原样收录，包内文件与目录结构未改动；仅修正原 zip 的路径分隔符（原包用 `\`，不符合 ZIP 规范，导致解析器建目录失败）。
+>
+> 原项目：[YuJunZhiXue/dsh-purge](https://github.com/YuJunZhiXue/dsh-purge)　MIT　Copyright (c) 2026 小杨、Jueze-2019。本仓库为再分发，版权归原作者；原仓库要求借用名称/思路/代码/提示词须署名并写明来源，此处已照办。
+
+**一条命令安装：**
+
+```bash
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-purge-v1.1.71/dsh-purge-plugin.tgz
+```
+
+**或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
+
+```
+https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-purge-v1.1.71/dsh-purge-plugin.tgz
+```
+
+> 装完重启一次 App 生效；写进 profile 后还要在侧栏「清洗 → 应用」才会改动宿主。
+> **升级提示**：升级需先卸载再装新版本。
+</details>
+
 
 
 <!--
@@ -366,7 +391,8 @@ dsh-plugins/
     ├── dsh-plugin-wallpaper-engine/ ← 壁纸引擎（本地 Wallpaper Engine 壁纸，第三方收录）
     ├── dsh-vision-router/   ← 视觉路由（给 Agent 看图，免 Key，第三方收录）
     ├── hippocampus/         ← 海马体（不靠自觉的记忆系统，自动记/自动进白名单）
-    └── dsh-jack-market/     ← 插件市场（本仓库一键安装）
+    ├── dsh-jack-market/     ← 插件市场（本仓库一键安装）
+    └── dsh-purge/           ← 提示词清洗与红队演练台（第三方收录）
 ```
 
 ## ✏️ 添加新插件（作者）
