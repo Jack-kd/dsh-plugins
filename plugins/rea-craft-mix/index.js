@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname } from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import {
-  probeEngines, buildStatus, injectEnginesIntoCraft, missingEngines,
+  probeEngines, buildStatus, injectEnginesIntoCraft, missingEngines, ensureApktool,
 } from './install-manager.js'
 
 export const name = 'rea-craft-mix'
@@ -94,14 +94,26 @@ export function apply(ctx) {
           + '或检查两者是否已在 PATH（rea / craft-anything-cli）。'
           + '\n\n当前探测：\n' + JSON.stringify(e, null, 2)
       }
+      const doRepair = args.repair !== false
       const lines = []
+      // —— apktool 缺失时先尝试自动补齐（解决"标红却无入口"的缺口）——
+      if (doRepair && !e.apktool) {
+        lines.push('> apktool 未探测到，尝试自动补全（镜像优先下载，SHA256 校验）…')
+        const ensured = await ensureApktool()
+        if (ensured.ok) {
+          e.apktool = ensured.path
+          lines.push(`> ✅ apktool 补全成功：${ensured.path}${ensured.skipped ? '（已存在）' : ''}`)
+        } else {
+          lines.push(`> ⚠️ apktool 未能自动补全：${ensured.error || '未知错误'}（不阻断，其余引擎照常注入）`)
+        }
+      }
       lines.push('## rea-craft-mix 引擎就绪')
       for (const k of ['reaCli', 'craftCli', 'ghidra', 'jadx', 'apktool', 'java']) {
         if (e[k] === undefined) continue
         lines.push(`- ${k}: ${e[k] ? '✅ ' + e[k] : '❌ 未找到'}`)
       }
       lines.push(`\n核心引擎 ${status.satisfied ? '✅ 齐备' : '⚠️ 基本可用'}`)
-      if (args.repair === false) {
+      if (!doRepair) {
         lines.push(`\n（本次未执行注入；缺口：${missingEngines(e).join(', ') || '无'}）`)
       } else {
         const injected = await injectEnginesIntoCraft(e)
@@ -111,7 +123,7 @@ export function apply(ctx) {
           const mark = r.ok ? '✅' : (r.optional ? '⚠️(可选)' : '❌')
           lines.push(`  - ${label[k] || k}: ${mark} ${r.error || r.set || ''}`)
         }
-        lines.push(injected.ok ? '  → 全部注入完成，两端已共享引擎。' : '  → 部分未注入（多为可选缺件）。')
+        lines.push(injected.ok ? '  → 全部注入完成，两端已共享引擎。' : '  → 部分未注入（详见上）。')
       }
       return lines.join('\n')
     },
@@ -125,8 +137,19 @@ export function apply(ctx) {
     output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: String(v) }] },
     async execute() {
       const engines = await probeEngines()
-      const injected = await injectEnginesIntoCraft(engines)
       const lines = []
+      // —— 与 mix_doctor 一致：apktool 缺失时先尝试自动补齐 ——
+      if (!engines.apktool) {
+        lines.push('apktool 未探测到，尝试自动补全…')
+        const ensured = await ensureApktool()
+        if (ensured.ok) {
+          engines.apktool = ensured.path
+          lines.push(`apktool 补全成功：${ensured.path}${ensured.skipped ? '（已存在）' : ''}`)
+        } else {
+          lines.push(`apktool 未能自动补全：${ensured.error || '未知错误'}`)
+        }
+      }
+      const injected = await injectEnginesIntoCraft(engines)
       const label = { jadx: 'JADX', apktool: 'Apktool', ghidraJava: 'Ghidra Java' }
       for (const [k, r] of Object.entries(injected.results || {})) {
         const done = r.ok ? '✅' : (r.optional ? '⚠️(可选)' : '❌')

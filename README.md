@@ -331,22 +331,24 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/hippocampus-v0.2.13/hip
 </details>
 
 <details>
-<summary><b>▶ rea-craft-mix · REA × Craft Anything 融合（统一引擎探测 + 全格式逆向）</b>　<code>v0.1.0</code></summary>
+<summary><b>▶ rea-craft-mix · REA × Craft Anything 融合（统一引擎探测 + 全格式逆向）</b>　<code>v0.1.1</code></summary>
 
 > 把 REA（JADX + Ghidra）的**深度反编译**和 Craft Anything 0.4.0 的 **321 个跨格式逆向工具**（Android / 原生 / 固件 / 抓包 / 数据库 / 游戏 / JS 等）融合到同一套工具命名空间：`rea_*` 走 REA，`cad_*` 走 Craft Anything，`mix_doctor` / `mix_inject` 统一引擎探测与路径注入（口径见 `install-manager.js` 的 `CANDIDATES`）。首次使用调一次 `mix_doctor` 即可就绪。
+>
+> **v0.1.1**：`mix_doctor` / `mix_inject` 遇到 **apktool 缺失时自动补齐**（不再标红无入口）——从 REA 同源镜像下载 `apktool_2.9.3.jar`（ghfast.top 优先，SHA256 校验，幂等），补全后再注入 craft-anything。此前 apktool 缺失时只有探测、没有补全入口，用户无法在设置页一键补上。
 >
 > **v0.1.0**：首发。注册 18 个工具（4 管理：`mix_doctor`/`mix_inject`/`cad_install`/`mix_rebuild` + 14 个 `cad_*` 精选薄壳）；`cad_*` 分析统一附 `--deep`（clean-room 由用户显式关闭）；`install-manager.js` 把 REA 的 JADX/Java/Ghidra 路径注入 craft-anything 配置，两端共享同一批引擎。
 
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/rea-craft-mix-v0.1.0/rea-craft-mix-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/rea-craft-mix-v0.1.1/rea-craft-mix-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/rea-craft-mix-v0.1.0/rea-craft-mix-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/rea-craft-mix-v0.1.1/rea-craft-mix-plugin.tgz
 ```
 
 > 前置：先装好 REA 与 Craft Anything；首次调一次 `mix_doctor` 自动探测 + 注入引擎路径。
