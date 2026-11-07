@@ -29,47 +29,7 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/enter-newline-v1.0.1/en
 > 装完无需重启，到输入框按一下回车即可验证（拼音输入法第一下是提交拼音，第二下才换行，属正常现象）。
 </details>
 
-<details>
-<summary><b>▶ retry-count · 请求重试次数</b>　<code>v2.0.8</code></summary>
 
-> 修改模型请求重试上限（默认 5）。在 **设置 → 通用设置 → 模型请求重试次数** 输入次数（如 10）点修改，或 **插件管理 → 请求重试次数 → 配置** 里改，立即生效。支持 deepseek 与 pi-ai（日日新）提供商。
->
-> **v2.0.8**：修复了改次数后 deepseek/pi-ai 重试策略不跟随的问题（app-boot/config-reload 信号 + 直读 settings user 段值源 + 干净上下文 setInterval 驱动执行，规避 HMR 事务 ALS 嵌套拒绝）。
-
-**一条命令安装：**
-
-```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/retry-count-v2.0.8/retry-count-plugin.tgz
-```
-
-**或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
-
-```
-https://github.com/Jack-kd/dsh-plugins/releases/download/retry-count-v2.0.8/retry-count-plugin.tgz
-```
-
-> 装完重启一次 App（让设置页入口出现）；之后改次数实时生效，无需再重启。卡顿重试提示会变成「已重试模型请求（1/10）」。
-</details>
-
-<details>
-<summary><b>▶ chat-keeper-mobile · 对话管理（手机版）</b>　<code>v1.2.0</code></summary>
-
-> 跨工作区对话总表、正文搜索、批量归档、可恢复删除（回收站），以及会话「…」菜单里的「删除会话」。入口：**设置 → 对话管理**（基于 Sky-lll27 的 DSH-chat-keeper 客户端适配手机布局，Host 能力一致）。
-
-**一条命令安装：**
-
-```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/chat-keeper-mobile-v1.2.0/chat-keeper-mobile-plugin.tgz
-```
-
-**或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
-
-```
-https://github.com/Jack-kd/dsh-plugins/releases/download/chat-keeper-mobile-v1.2.0/chat-keeper-mobile-plugin.tgz
-```
-
-> 装完重启一次 App（工具 + 删除/恢复接口生效）。删除默认进回收站，可 `conversation_restore` 恢复；正在对话的会话删除会中断它（确认后执行）。
-</details>
 
 <details>
 <summary><b>▶ 加速器 · 下载加速（GitHub + 通用，合并版）</b>　<code>v2.10.0</code></summary>
@@ -413,8 +373,6 @@ dsh-plugins/
 ├── README.md             ← 本文件：插件速查 + 作者指南
 └── plugins/
     ├── enter-newline/       ← 回车换行插件
-    ├── retry-count/         ← 请求重试次数插件
-    ├── chat-keeper-mobile/          ← 对话管理（手机版）插件
     ├── gh-accel/            ← 下载加速（GitHub + 通用，合并版）
     ├── rea-tools/           ← REA 逆向工具链（安装 + 原生/APK 逆向）
     ├── our-free-model/      ← 免费模型（免登录免 Key，第三方收录）
