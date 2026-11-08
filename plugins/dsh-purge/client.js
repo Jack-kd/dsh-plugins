@@ -8710,7 +8710,11 @@ body[data-ds-dark-theme] .dshp-rewind-item span{color:var(--dsw-alias-label-tert
 				name: "shell.overlay",
 				id: "dsh-purge-dock",
 				order: 50,
-			}, () => h(react.Fragment, null, h(WelcomeNotice), h(PurgeLauncher), h(PurgeDock), h(HeroNewSessionMount), h(TabRowPurgeMount), h(EnvAdaptSendGate))));
+			// 已移除右下角悬浮按钮 PurgeLauncher（fixed right:16px bottom:16px）：
+			// 它会常驻遮挡页面右下角。打开入口保留两条：
+			//   1. 首页模式旁的 chip（HeroNewSessionMount）
+			//   2. 标签行的按钮（TabRowPurgeMount）
+			}, () => h(react.Fragment, null, h(WelcomeNotice), h(PurgeDock), h(HeroNewSessionMount), h(TabRowPurgeMount), h(EnvAdaptSendGate))));
 			try {
 				if (typeof ctx.inject === "function") {
 					ctx.inject(["sessions", "uiWorkspace", "workspaces", "conversation"], (host) => installRewindUi(host));
