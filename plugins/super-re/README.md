@@ -28,7 +28,7 @@
 ## 安装
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/super-re-v0.2.2/super-re-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/super-re-v0.2.3/super-re-plugin.tgz
 ```
 
 装完后首次准备环境弹窗即出现；也可在**设置 → 通用**里通过「安装超级逆向环境」重新打开。

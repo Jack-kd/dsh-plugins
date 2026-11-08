@@ -164,6 +164,8 @@ rea_version() {
   fi
 }
 
+
+
 # 断点续传下载：curl -C - / wget -c；成功返回 0
 #
 # v0.1.1 关键修复：加入「慢速放弃」（slow-abort）。
@@ -211,6 +213,10 @@ download_resume() {
   # 现在用 --no-progress-meter 关掉进度条噪音（进度改由 install-manager 轮询
   # 输出文件大小计算，比解析 curl 的 \r 进度行可靠得多），但保留真正的错误输出。
   if has_cmd curl; then
+    # 注：曾试过用 --resolve 预绑 IP 来跳过系统 DNS（本机 8.8.8.8 不可达，
+    # 系统解析要等 5.1s），但实测**反而更慢甚至失败**（31.7s 失败 vs 12s 成功）：
+    # GitHub 有多个入口 IP，getent 拿到的那个未必可达/最优，而 curl 自己的
+    # 连接逻辑会重试多个 IP。所以这里保持原样，不传 --resolve。
     curl -fL -C - --retry 3 --connect-timeout 15 --retry-delay 2 \
       --speed-limit "${DL_SPEED_LIMIT}" --speed-time "${DL_SPEED_TIME}" \
       --no-progress-meter \

@@ -79,11 +79,13 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.10.9/gh-acc
 </details>
 
 <details>
-<summary><b>▶ super-re · 超级逆向（REA 环境 + Craft Anything 统一安装入口）</b>　<code>v0.2.2</code></summary>
+<summary><b>▶ super-re · 超级逆向（REA 环境 + Craft Anything 统一安装入口）</b>　<code>v0.2.3</code></summary>
 
 > **统一环境安装入口**——一个弹窗装齐 REA 逆向环境（JADX + Ghidra + apktool），**可选**勾选 Craft Anything（321 个跨格式工具）。针对「新用户装环境太麻烦」重做：本身自带**环境配置弹窗**（REA 板块 + Craft 板块），REA 板块与 rea-tools 一致（初级/升级 radio + 子组件勾选 + 断点续传 + 幂等）；Craft 板块独立 checkbox，勾选后 REA 装完**串行**自动接 craft 安装。后台下载不阻塞对话，进度胶囊实时显示。安装地址：
 >
-> `dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/super-re-v0.2.2/super-re-plugin.tgz`
+> `dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/super-re-v0.2.3/super-re-plugin.tgz`
+>
+> **v0.2.3**：修 `install-craft.sh` 里**重复请求 SHA256 文件两次**的问题（第一行取值没赋给变量、纯浪费一次网络，DNS 慢时等于多等一倍），现在只请求一次。同时实测确认内置加速核心的 DNS 优化已生效：小包 0.2~0.7s、craft 62MB **9.4s**、Ghidra 543MB **约 75s**（峰值 10.1MB/s，SHA256 与官方一致）。
 >
 > **v0.2.2**：内置加速核心同步修复 **DNS 慢导致选路失败** 的问题——本机系统 resolver每次解析要 5.1 秒（`8.8.8.8` 不可达却排第一），导致镜像竞速全部超时、回退直连，装环境时下载很慢。现改为直连快速 DNS（223.5.5.5 等）+ 10 分钟缓存 + IP 直连，并把竞速 deadline 放宽到 12s。
 >

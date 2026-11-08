@@ -69,7 +69,9 @@ if [ "$ok" -ne 1 ]; then
   for u in "${MIRRORS[@]}"; do
     echo "尝试: $u"
     set +e
-    # -C - 断点续传：镜像换路线时能利用已下载部分，不必从 0 重来
+    # v0.2.3：加 -C - 断点续传（原来换镜像要从 0 重下 62MB）。
+    # 注：曾试过 --resolve 跳过系统 DNS，实测反而更慢甚至失败（GitHub 多 IP，
+    # 预绑的那个未必最优），故不采用。
     curl -fL -C - --retry 2 --connect-timeout 20 --speed-time 60 --speed-limit 10240 \
       -o "${TARBALL}" "$u" 2>/dev/null
     rc=$?
@@ -84,10 +86,11 @@ if [ "$ok" -ne 1 ]; then echo "所有镜像下载失败"; exit 1; fi
 
 # ---- SHA256 校验 ----
 echo "校验 SHA256"
-expected=""
+# v0.2.3 修复：原来这里有**两次相同的 curl**（第一行取值没赋给变量、纯浪费一次
+# 网络请求），在 DNS 慢的环境里等于多等一倍。现在只请求一次并复用结果。
 set +e
-curl -fsSL "${SHA_URL}" 2>/dev/null | grep "${ASSET}" | awk '{print $1}' | head -n1
-sha_remote=$(curl -fsSL "${SHA_URL}" 2>/dev/null | grep "${ASSET}" | awk '{print $1}' | head -n1)
+sha_remote=$(curl -fsSL --connect-timeout 15 "${SHA_URL}" 2>/dev/null \
+  | grep "${ASSET}" | awk '{print $1}' | head -n1)
 set -e
 actual=$(sha256sum "${TARBALL}" | awk '{print $1}')
 if [ -n "$sha_remote" ] && [ "$sha_remote" != "$actual" ]; then
