@@ -231,9 +231,11 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-vision-router-v3.0.
 </details>
 
 <details>
-<summary><b>▶ dsh-jack-market · 插件市场（本仓库一键装）</b>　<code>v0.7.6</code></summary>
+<summary><b>▶ dsh-jack-market · 插件市场（本仓库一键装）</b>　<code>v0.7.7</code></summary>
 
 > 直接在 DSH 里浏览并一键安装本仓库的所有插件（类似内置的「插件市场」）。自动识别已安装状态与可更新版本，点「安装/更新」即后台下载安装并显示实时进度；每个插件卡片带简介、版本与更新时间，失败会显示具体原因。
+>
+> **v0.7.7**：**安装插件时的下载提速 4 倍**（5.9s → 1.4s）。市场新增内置下载核心（`lib/accel-core.mjs`，提取自加速器 v2.10.9，**不依赖加速器插件**），带来：DNS 直连快速服务器（本机系统解析每次等 5.1s）、并发竞速全部镜像、2MB×8 线程分片。**原下载逻辑完整保留为兜底**——新核心任何失败都自动回落，保证永不比原来差；`DSH_MARKET_NO_ACCEL=1` 可强制走旧逻辑。sha256 强校验仍由市场自己做（且校验不符时不再回落重试，避免重复下载错内容）。
 >
 > **v0.7.6**：**插件列表加载加速——API 缓存持久化到磁盘**。此前缓存是内存 Map，DSH 一重启就清空，导致每次重启后首次打开市场都要冷启动：实测 3 个 GitHub API 请求（plugins 目录 5.65s / README 5.91s / releases 6.66s，已并行）约 6.5s，加解析渲染约 8~12s。现在缓存写到 `<profile>/.dsh-market/api-cache.json`（原子写、5 秒合并落盘、24 小时过期），启动时读回内存——重启后首次打开立即命中，网络慢只在后台静默刷新时发生。
 >
@@ -289,13 +291,13 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-vision-router-v3.0.
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.6/dsh-jack-market-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.7/dsh-jack-market-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.6/dsh-jack-market-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.7/dsh-jack-market-plugin.tgz
 ```
 
 > 装完重启一次 App（让设置页入口出现）；之后打开 **设置 → Jack 插件市场** 即可浏览和安装本仓库的插件。

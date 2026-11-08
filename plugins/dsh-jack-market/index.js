@@ -881,10 +881,79 @@ async function raceDownload(cands, dest, { signal, onProgress, expectSha256 } = 
  * @param {object} opts
  * @param {string} [opts.expectSha256] 期望 sha256（GitHub Release digest），用于强校验
  */
+// ── 下载实现：内置加速核心优先，失败自动回落原竞速逻辑（v0.7.7）──────
+// 实测对比（同一 45KB/76KB 插件包、同环境）：
+//   旧逻辑（raceDownload，本文件下方）  5.9s   ← 其中 5.14s 是系统 DNS 等待
+//   新内核（accel-core，见 lib/）       1.4s   ← DNS 直连快速服务器+缓存
+// 差距主因不是带宽而是 DNS：本机 /etc/resolv.conf 里 8.8.8.8 排第一但不可达，
+// 系统解析每次要等 5.1s 超时才轮到可用的 223.5.5.5。
+// 新内核还额外带来：并发竞速全部镜像（首字节返回即赢）、2MB×8 线程分片、
+// 断点续传、停滞看门狗。校验仍由调用方（loadPlugin / install 流程）负责，
+// 本函数只负责「把文件完整下下来」。
+let _accelCore = null;
+let _accelCoreTried = false;
+async function getAccelCore() {
+  if (_accelCoreTried) return _accelCore;
+  _accelCoreTried = true;
+  try {
+    const path = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const dir = path.dirname(fileURLToPath(import.meta.url));
+    _accelCore = await import(path.join(dir, 'lib', 'accel-core.mjs'));
+  } catch (e) {
+    audit('download.noAccel', `内置加速核心不可用，回落原逻辑: ${(e && e.message) || e}`);
+    _accelCore = null;
+  }
+  return _accelCore;
+}
+
 async function downloadTgz(url, { dest, signal, onProgress, expectSha256 } = {}) {
   const fsp = await import('node:fs/promises');
-  await fsp.mkdir((await import('node:path')).dirname(dest), { recursive: true });
+  const path = await import('node:path');
+  await fsp.mkdir(path.dirname(dest), { recursive: true });
 
+  const t0 = Date.now();
+
+  // ── 第 ① 层：内置加速核心（多线程 + DNS 优化 + 竞速选路）──
+  if (process.env.DSH_MARKET_NO_ACCEL !== '1') {
+    const core = await getAccelCore();
+    if (core && typeof core.runDownload === 'function') {
+      try {
+        const r = await core.runDownload(url, {
+          out: dest,
+          threads: 8,
+          prefer: 'mirror',
+          signal,
+          onProgress: (p) => {
+            if (typeof onProgress === 'function' && p && p.doneB != null) onProgress(p.doneB);
+          },
+        });
+        const bytes = (await fsp.stat(dest)).size;
+        if (!bytes) throw new Error('下载文件为空');
+        // 若调用方给了期望 sha256，这里先自检一次（上层还会再校验一遍，冗余但更安全）
+        if (expectSha256) {
+          const got = await sha256Of(dest);
+          if (got !== expectSha256) {
+            await fsp.rm(dest, { force: true }).catch(() => {});
+            throw new Error(`加速内核下载内容校验不符（${got.slice(0, 12)}≠${expectSha256.slice(0, 12)}）`);
+          }
+        }
+        audit('download.done', `via=${r.via} bytes=${bytes} 耗时=${Date.now() - t0}ms 加速内核=是`);
+        return { dest, bytes, via: r.via };
+      } catch (e) {
+        // 加速内核失败不留半截文件，交给下面的原逻辑重下。
+        // 但「内容校验不符」不能回落重试——那不是网络问题，换个节点下到的
+        // 还是同样的错内容（可能是上游被投毒/版本对不上），重下纯属浪费。
+        // 这种错误直接上抛，让调用方明确失败。
+        await fsp.rm(dest, { force: true }).catch(() => {});
+        const msg = (e && e.message) || String(e);
+        if (msg.includes('校验不符')) throw e;
+        audit('download.accelFail', `回落原逻辑: ${msg}`);
+      }
+    }
+  }
+
+  // ── 第 ② 层：原有竞速逻辑（保留为兜底，保证永不比原来差）──
   // 候选顺序：全部镜像（按 TTFB 实测排序）+ 直连兜底。
   // 直连放最后：实测直连 TTFB 7.8s 且偶发 14s，但它不会带上第三方，
   // 作为「镜像全灭」时的最后手段。
@@ -893,9 +962,8 @@ async function downloadTgz(url, { dest, signal, onProgress, expectSha256 } = {})
     { u: url, via: 'direct' },
   ];
 
-  const t0 = Date.now();
   const r = await raceDownload(cands, dest, { signal, onProgress, expectSha256 });
-  audit('download.done', `via=${r.via} bytes=${r.bytes} 耗时=${Date.now() - t0}ms 校验=${expectSha256 ? 'sha256' : 'size'}`);
+  audit('download.done', `via=${r.via} bytes=${r.bytes} 耗时=${Date.now() - t0}ms 校验=${expectSha256 ? 'sha256' : 'size'} 加速内核=否`);
   return { dest, bytes: r.bytes, via: r.via };
 }
 
