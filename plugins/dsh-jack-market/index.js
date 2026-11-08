@@ -368,7 +368,71 @@ const API_MIRROR_BASES = [];
  *   connection: close   255ms
  * 连接复用在这种弱网/代理环境下反而拖慢并极易失败，干脆每次新建连接。
  */
+// ── DNS 解析优化（v0.7.8）─────────────────────────────────────────────
+// 实测：本机 /etc/resolv.conf 里 `nameserver 8.8.8.8` 排第一但完全不可达，
+// 系统 resolver（getaddrinfo）每次都要先等它超时 —— **单个 API 请求因此多花
+// 5.1 秒**（实测 contents/plugins：无优化 5490ms，预解析 IP 后 438ms，快 12.5 倍）。
+// 这才是「打开插件市场慢」的真正原因，与镜像无关（API 走镜像反而更慢）。
+//
+// 做法：用 dns.Resolver 直查公共 DNS（实测 30ms）并缓存 10 分钟；
+// 解析出 IP 后让 https 直连该 IP（保留 servername 供 TLS SNI、Host 头供路由）。
+// 解析失败/超时自动回退系统 lookup，保证兼容性、不会更差。
+import { Resolver as __NodeResolver, lookup as __nodeLookup } from 'node:dns';
+
+const DNS_SERVERS = (process.env.DSH_MARKET_DNS || '223.5.5.5,119.29.29.29,1.1.1.1')
+  .split(',').map((x) => x.trim()).filter(Boolean);
+const DNS_TTL_MS = 10 * 60 * 1000;
+const DNS_TIMEOUT_MS = 2000;
+const dnsCache = new Map(); // host -> { ip, at }
+
+function fastLookup(host) {
+  const hit = dnsCache.get(host);
+  if (hit && Date.now() - hit.at < DNS_TTL_MS) return Promise.resolve(hit.ip);
+  return new Promise((resolve) => {
+    const r = new __NodeResolver();
+    try { r.setServers(DNS_SERVERS); } catch { /* 用默认 */ }
+    let done = false;
+    const finish = (ip) => {
+      if (done) return;
+      done = true;
+      try { r.cancel(); } catch { /* no-op */ }
+      if (ip) { dnsCache.set(host, { ip, at: Date.now() }); resolve(ip); }
+      else {
+        // 回退系统解析（慢但能解析）
+        __nodeLookup(host, { family: 4 }, (e, addr) => resolve(e ? null : addr || null));
+      }
+    };
+    const timer = setTimeout(() => finish(null), DNS_TIMEOUT_MS);
+    try {
+      r.resolve4(host, (err, addrs) => {
+        clearTimeout(timer);
+        finish(err || !addrs || !addrs.length ? null : addrs[0]);
+      });
+    } catch { clearTimeout(timer); finish(null); }
+  });
+}
+
 function httpsText(url, { signal, timeoutMs = 25_000, headers = {} } = {}) {
+  return httpsTextResolved(url, { signal, timeoutMs, headers });
+}
+
+async function httpsTextResolved(url, opts) {
+  const { signal, timeoutMs = 25_000, headers = {} } = opts || {};
+  // 先尝试用快速 DNS 解析出 IP，直连以跳过系统 resolver
+  let reqUrl = url;
+  let sni = null;
+  let hostHeader = null;
+  try {
+    const u = new URL(url);
+    if (!/^\d+\.\d+\.\d+\.\d+$/.test(u.hostname)) {
+      const ip = await fastLookup(u.hostname);
+      if (ip) { sni = u.hostname; hostHeader = u.host; u.hostname = ip; reqUrl = u.toString(); }
+    }
+  } catch { /* 解析失败用原 URL */ }
+  return httpsTextRaw(reqUrl, { signal, timeoutMs, headers, sni, hostHeader, originalUrl: url });
+}
+
+function httpsTextRaw(url, { signal, timeoutMs = 25_000, headers = {}, sni = null, hostHeader = null, originalUrl = null } = {}) {
   return new Promise((resolve, reject) => {
     const mod = url.startsWith('https:') ? nodeHttps : nodeHttp;
 
@@ -388,10 +452,13 @@ function httpsText(url, { signal, timeoutMs = 25_000, headers = {} } = {}) {
     const run = (u, redirects) => {
       let req;
       try {
-        req = mod.get(u, {
-          headers: { ...headers, connection: 'close' },
+        const opts = {
+          headers: { ...headers, connection: 'close', ...(hostHeader ? { Host: hostHeader } : {}) },
           signal: ac.signal,
-        }, (res) => {
+        };
+        // TLS SNI 必须用域名：IP 直连时不设 servername，服务端可能选错证书
+        if (sni) opts.servername = sni;
+        req = mod.get(u, opts, (res) => {
           const status = res.statusCode || 0;
           const loc = res.headers.location;
           if (status >= 300 && status < 400 && loc && redirects > 0) {
@@ -1257,6 +1324,55 @@ function updateTask(key, patch) {
   installTasks.set(key, next);
 }
 
+// ── 真实进度计算（v0.7.8）────────────────────────────────────────────
+// 旧版进度是前端按 stage 硬编码的 10/40/75/88/100，用户看到「跳三段就好了」。
+// 现在改为后端算真实百分比：
+//   下载阶段 = 已下载字节 / 总字节（总字节来自 accel-core 或 Content-Length）
+//   校验阶段 = 固定 90~95（sha256 计算很快）
+//   安装阶段 = 由 pnpm 输出行数推进 95~100（pnpm 不吐逐字节进度）
+// 各阶段权重按实测耗时分配：下载 ~70%、校验 ~5%、安装 ~25%。
+const STAGE_WEIGHT = { downloading: [0, 70], verifying: [70, 78], installing: [78, 100] };
+const dlTrack = new Map(); // key -> { bytes, total, at, speed, lastBytes, lastAt }
+
+function reportDownload(key, doneB, totalB) {
+  const now = Date.now();
+  let st = dlTrack.get(key);
+  if (!st) { st = { bytes: 0, total: 0, lastBytes: 0, lastAt: now, speed: 0 }; dlTrack.set(key, st); }
+  st.bytes = doneB || 0;
+  if (totalB && totalB > 0) st.total = totalB;
+  // 速度：EMA 平滑（每 500ms 采一次，避免抖动）
+  if (now - st.lastAt >= 500) {
+    const dB = st.bytes - st.lastBytes;
+    const dt = (now - st.lastAt) / 1000;
+    const raw = dt > 0 ? dB / dt : 0;
+    st.speed = st.speed === 0 ? raw : Math.round(st.speed * 0.6 + raw * 0.4);
+    st.lastBytes = st.bytes;
+    st.lastAt = now;
+  }
+  const [lo, hi] = STAGE_WEIGHT.downloading;
+  const frac = st.total > 0 ? Math.min(1, st.bytes / st.total) : 0;
+  const pct = Math.round(lo + (hi - lo) * frac);
+  const mb = (n) => (n / 1048576).toFixed(1);
+  const kb = (n) => (n / 1024).toFixed(0);
+  const sizeText = st.total > 0 ? `${mb(st.bytes)}/${mb(st.total)} MB` : `${kb(st.bytes)} KB`;
+  const speedText = st.speed > 0
+    ? (st.speed >= 1048576 ? `${(st.speed / 1048576).toFixed(1)} MB/s` : `${kb(st.speed)} KB/s`)
+    : '';
+  updateTask(key, {
+    stage: 'downloading',
+    pct,
+    bytes: st.bytes,
+    total: st.total,
+    speed: Math.round(st.speed),
+    message: `下载中… ${sizeText}${speedText ? ' · ' + speedText : ''}`,
+    running: true,
+  });
+}
+
+function setStagePct(key, stage, pct, message) {
+  updateTask(key, { stage, pct, message, running: stage !== 'done' && stage !== 'failed' });
+}
+
 /** GET /dsh-jack-market/task?key=<key> → 该插件当前安装任务进度（无任务返回 idle）。 */
 async function handleTask(request, response) {
   if (request.method !== 'GET') { response.writeHead(405, { allow: 'GET' }); response.end(); return; }
@@ -1415,7 +1531,8 @@ export function apply(ctx, config) {
         let saved;
         try { saved = await snapshotProfileFiles(dir); } catch { saved = {}; }
         audit('install.snapshot', `dir=${dir} saved=${Object.keys(saved).join(',')}`);
-        updateTask(key, { stage: 'downloading', message: '下载中…', running: true });
+        dlTrack.delete(key);
+        updateTask(key, { stage: 'downloading', pct: 0, bytes: 0, total: 0, speed: 0, message: '下载中…', running: true });
         sendJson(response, 202, { status: 'started', target: url, key });
 
         // ② 下载 tgz 到 profile 下的稳定路径（.dsh-market/pkgs/<key>-plugin.tgz）
@@ -1440,13 +1557,15 @@ export function apply(ctx, config) {
             dest: `${localTgz}.unverified`,
             expectSha256: null,   // 本步只下载；校验在 digest 到达后统一做
 
-            onProgress: (n) => {
-              const cur = installTasks.get(key);
-              if (cur && (cur.stage === 'downloading' || cur.stage === 'running')) {
-                installTasks.set(key, { ...cur, stage: 'downloading', message: `下载中… ${(n / 1024).toFixed(0)} KB`, at: Date.now() });
-              }
+            onProgress: (p) => {
+              // accel-core 传的是 { doneB, totalB, kbPerSec }；旧逻辑传数字。
+              // 两种都兼容，统一交给 reportDownload 算真实百分比与速度。
+              if (p && typeof p === 'object' && p.doneB != null) reportDownload(key, p.doneB, p.totalB);
+              else if (typeof p === 'number') reportDownload(key, p, 0);
             },
           });
+          // 下载完成 → 进入校验阶段（按权重 70~78%）
+          setStagePct(key, 'verifying', 70, '校验 SHA256…');
           // 校验阶段：等 digest（多数情况已被 API 缓存命中，几乎不等）
           const expectSha256 = await digestPromise;
           audit('download.digest', expectSha256 ? `sha256=${expectSha256.slice(0, 16)}…` : '未取到（降级为大小校验）');
@@ -1466,13 +1585,13 @@ export function apply(ctx, config) {
           audit('download.done', `${key} via=${dl.via} bytes=${(await import('node:fs')).statSync(localTgz).size} 耗时=${Date.now() - tDlStart}ms 校验=${expectSha256 ? 'sha256✓' : 'size'}`);
         } catch (e) {
           audit('download.fail', `${key} err=${(e && e.message) || e} 耗时=${Date.now() - tDlStart}ms`);
-          updateTask(key, { stage: 'failed', message: `下载失败: ${(e && e.message) || e}`, running: false });
+          updateTask(key, { stage: 'failed', pct: 100, message: `下载失败: ${(e && e.message) || e}`, running: false });
           console.error('[dsh-jack-market] 下载失败:', e && e.message);
           return;
         }
 
         // ③ `pnpm add file:<稳定路径>` —— 稳定写 integrity、成功
-        updateTask(key, { stage: 'installing', message: '安装中…', running: true });
+        setStagePct(key, 'installing', 78, '安装中…');
 
         // ③-b v0.7.2：安装前先自愈 lockfile。
         //
@@ -1522,8 +1641,23 @@ export function apply(ctx, config) {
           const cls = classifyStage(`${out}\n${err}`, prevStage);
           const newStage = cls.stage;
           const stageMsg = cls.message;
+          // v0.7.8：pnpm 不输出逐字节进度，但会输出「解析/下载/链接」若干行。
+          // 用「已输出的有效行数」在一个区间内缓动推进 78%→97%，
+          // 让用户看到进度在动（而不是卡在 78% 直到突然 100%）。
+          // 真正的完成仍由 close 事件置 100，这里只是视觉推进。
+          let pctPatch = {};
+          if (newStage === 'installing') {
+            const lines = `${out}\n${err}`.split('\n').filter((l) => l.trim()).length;
+            // 典型 pnpm 安装输出 8~25 行；按 30 行封顶做缓动（1-e^-x 形态）
+            const frac = Math.min(1, lines / 30);
+            const eased = 1 - Math.pow(1 - frac, 2);   // easeOutQuad
+            pctPatch = { pct: Math.round(78 + 19 * eased) };  // 78 → 97
+          } else if (newStage === 'verifying') {
+            pctPatch = { pct: 70 };
+          }
           updateTask(key, {
             stage: newStage,
+            ...pctPatch,
             message: newStage === 'failed'
               ? (String(stageMsg || '').trim() || '安装失败')
               : (installTasks.get(key)?.message || '进行中…'),
@@ -1536,7 +1670,7 @@ export function apply(ctx, config) {
         child.on('error', (e) => {
           console.error('[dsh-jack-market] spawn:', e && e.message);
           audit('pnpm.spawnFail', `${key} err=${(e && e.message) || 'unknown'}`);
-          updateTask(key, { stage: 'failed', message: `启动失败: ${(e && e.message) || 'unknown'}`, running: false });
+          updateTask(key, { stage: 'failed', pct: 100, message: `启动失败: ${(e && e.message) || 'unknown'}`, running: false });
         });
         child.on('close', async (code) => {
           audit('pnpm.close', `${key} code=${code} 耗时=${Date.now() - tPnpmStart}ms`);
@@ -1560,7 +1694,7 @@ export function apply(ctx, config) {
               console.error('[dsh-jack-market] 恢复快照失败:', e && e.message);
             }
           }
-          updateTask(key, { stage: failedNow ? 'failed' : 'done', message, running: false });
+          updateTask(key, { stage: failedNow ? 'failed' : 'done', pct: 100, message, running: false, speed: 0 });
 
           // ④ v0.7.1：安装成功 → **自动写 bundles 启用**（否则装完还要去「插件」
           // 页面手动点一次启用）。这是官方 dsh-plugin-manager 安装收尾

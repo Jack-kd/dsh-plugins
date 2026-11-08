@@ -47,7 +47,17 @@ window.__ModuleLoader__.load({
       padding: '6px 14px', borderRadius: '6px', fontSize: '13px',
       border: 'none', cursor: 'pointer', flexShrink: 0, whiteSpace: 'nowrap',
     };
-    const progressTrack = {
+    // v0.7.8：进度条流光动效（下载/安装进行中时背景横向流动，暗示"还在动"）
+// 用 <style> 注入一次，避免每个卡片重复插入。
+(function injectMarketCss() {
+  if (typeof document === 'undefined' || document.getElementById('dsh-mk-css')) return;
+  const st = document.createElement('style');
+  st.id = 'dsh-mk-css';
+  st.textContent = '@keyframes dsh-mk-flow{0%{background-position:0% 50%}100%{background-position:200% 50%}}';
+  try { document.head.appendChild(st); } catch { /* no-op */ }
+})();
+
+const progressTrack = {
       width: '100%', height: '6px', borderRadius: '3px',
       background: 'var(--dsw-alias-bg-layer-2, #eee)', marginTop: '8px',
       overflow: 'hidden',
@@ -156,32 +166,93 @@ window.__ModuleLoader__.load({
       // 进度反馈渲染（阶段文字 + 进度条 + 失败原因）
       let feedback = null;
       if (activeTask) {
-        const pct = stagePct[task.stage] || 10;
+        // v0.7.8：优先用后端算出的**真实百分比**（task.pct）；
+        // 后端没给（老数据/极端情况）才退回按阶段的粗粒度映射。
+        const pct = typeof task.pct === 'number' ? Math.max(0, Math.min(100, task.pct))
+          : (stagePct[task.stage] || 10);
         const label = stageLabel[task.stage] || '进行中…';
         const color = stageColor[task.stage] || 'var(--dsw-alias-label-secondary, #666)';
         const isFail = task.stage === 'failed';
         const isDone = task.stage === 'done';
+        const isTransfer = task.stage === 'downloading' || task.stage === 'installing';
+
+        // 速度文字（下载阶段才有）
+        const speedText = (() => {
+          const sp = Number(task.speed) || 0;
+          if (!sp) return '';
+          return sp >= 1048576 ? `${(sp / 1048576).toFixed(1)} MB/s` : `${Math.round(sp / 1024)} KB/s`;
+        })();
+        // 体积文字（下载阶段）
+        const sizeText = (() => {
+          const t = Number(task.total) || 0;
+          const b = Number(task.bytes) || 0;
+          if (!b) return '';
+          const mb = (n) => (n / 1048576).toFixed(1);
+          return t > 0 ? `${mb(b)}/${mb(t)} MB` : `${Math.round(b / 1024)} KB`;
+        })();
+
         if (isDone) {
-          feedback = h('p', {
-            style: { ...metaStyle, marginTop: 6, color: stageColor.done },
-          }, '✓ 安装成功，重启 App 后生效');
+          feedback = h('div', { style: { marginTop: 8, display: 'flex', alignItems: 'center', gap: 6 } },
+            h('span', {
+              style: {
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                width: 18, height: 18, borderRadius: 9,
+                background: 'var(--dsw-alias-state-success-primary, #22c55e)', color: '#fff',
+                fontSize: 11, fontWeight: 700, flex: '0 0 auto',
+              },
+            }, '✓'),
+            h('span', { style: { ...metaStyle, color: stageColor.done, margin: 0 } }, '安装成功，重启 App 后生效'),
+          );
         } else {
+          // 进度条：圆角 + 渐变填充 + 平滑过渡；下载中加流光动效
+          const fillStyle = {
+            ...progressFill,
+            width: `${pct}%`,
+            transition: 'width 380ms cubic-bezier(.22,.61,.36,1)',
+            background: isFail
+              ? stageColor.failed
+              : (task.stage === 'downloading'
+                  ? 'linear-gradient(90deg, var(--dsw-alias-brand-primary, #247bbf), var(--dsw-alias-state-success-primary, #22c55e))'
+                  : undefined),
+            ...(isTransfer && !isFail ? {
+              backgroundSize: '220% 100%',
+              animation: 'dsh-mk-flow 1.6s linear infinite',
+            } : {}),
+          };
+          // 右侧百分比：等宽数字，减少跳动
+          const pctText = `${pct}%`;
+          const subBits = [];
+          if (sizeText) subBits.push(sizeText);
+          if (speedText && task.stage === 'downloading') subBits.push(speedText);
+
           feedback = h('div', { style: { marginTop: 8 } },
             h('div', {
-              style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 },
+              style: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4, gap: 8 },
             },
-              h('span', { style: { ...metaStyle, color, margin: 0 } }, label),
-              h('span', { style: { ...metaStyle, margin: 0 } }, `${pct}%`),
+              h('span', { style: { ...metaStyle, color, margin: 0, fontWeight: 500 } }, label),
+              h('span', {
+                style: {
+                  ...metaStyle, margin: 0, fontVariantNumeric: 'tabular-nums',
+                  fontFeatureSettings: '"tnum"', color, fontWeight: 600,
+                },
+              }, pctText),
             ),
             h('div', { style: progressTrack },
-              h('div', {
-                style: {
-                  ...progressFill,
-                  width: `${pct}%`,
-                  background: isFail ? stageColor.failed : undefined,
-                },
-              }),
+              h('div', { style: fillStyle }),
             ),
+            subBits.length
+              ? h('div', {
+                  style: {
+                    ...metaStyle, marginTop: 5, margin: 0, marginBlockStart: 5,
+                    display: 'flex', justifyContent: 'space-between',
+                    fontVariantNumeric: 'tabular-nums', fontFeatureSettings: '"tnum"',
+                    opacity: 0.85,
+                  },
+                },
+                  h('span', null, subBits[0] || ''),
+                  h('span', null, subBits[1] || ''),
+                )
+              : null,
             (isFail && task.message) ? h('p', {
               style: { ...metaStyle, marginTop: 6, color: stageColor.failed, wordBreak: 'break-all' },
             }, String(task.message).slice(0, 240)) : null,

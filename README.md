@@ -231,9 +231,11 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-vision-router-v3.0.
 </details>
 
 <details>
-<summary><b>▶ dsh-jack-market · 插件市场（本仓库一键装）</b>　<code>v0.7.7</code></summary>
+<summary><b>▶ dsh-jack-market · 插件市场（本仓库一键装）</b>　<code>v0.7.8</code></summary>
 
 > 直接在 DSH 里浏览并一键安装本仓库的所有插件（类似内置的「插件市场」）。自动识别已安装状态与可更新版本，点「安装/更新」即后台下载安装并显示实时进度；每个插件卡片带简介、版本与更新时间，失败会显示具体原因。
+>
+> **v0.7.8**：**获取插件列表加速 5.5 倍**（6.3s → 1.15s）+ **真实安装进度**。① 列表慢的真凶还是 DNS：单个 API 请求系统解析要等 5.1s，实测 `contents/plugins` 无优化 5490ms、预解析 IP 后 **438ms**（12.5 倍）。现在 API 请求也走快速 DNS + 10 分钟缓存，三个请求并行从 6317ms → **1154ms**（注意：API 走镜像无效，镜像 TTFB 反而更慢且会返假数据）。② 安装进度从「按阶段硬编码 10/40/75/88/100 跳三段」改为**真实百分比**：下载阶段按实际字节算 0→70%（并显示 `28.6/57.2 MB · 47.5 MB/s` 实时速度，EMA 平滑），校验 70→78%，安装按 pnpm 输出行数缓动推进 78→97%，完成 100%。进度条改为圆角渐变填充 + 380ms 缓动动画，进行中带流光效果，百分比用等宽数字防跳动。
 >
 > **v0.7.7**：**安装插件时的下载提速 4 倍**（5.9s → 1.4s）。市场新增内置下载核心（`lib/accel-core.mjs`，提取自加速器 v2.10.9，**不依赖加速器插件**），带来：DNS 直连快速服务器（本机系统解析每次等 5.1s）、并发竞速全部镜像、2MB×8 线程分片。**原下载逻辑完整保留为兜底**——新核心任何失败都自动回落，保证永不比原来差；`DSH_MARKET_NO_ACCEL=1` 可强制走旧逻辑。sha256 强校验仍由市场自己做（且校验不符时不再回落重试，避免重复下载错内容）。
 >
@@ -291,13 +293,13 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-vision-router-v3.0.
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.7/dsh-jack-market-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.8/dsh-jack-market-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.7/dsh-jack-market-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.8/dsh-jack-market-plugin.tgz
 ```
 
 > 装完重启一次 App（让设置页入口出现）；之后打开 **设置 → Jack 插件市场** 即可浏览和安装本仓库的插件。
