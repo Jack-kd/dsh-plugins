@@ -17,6 +17,72 @@ import { pipeline } from 'node:stream/promises';
 import { Transform } from 'node:stream';
 
 export const UA = 'gh-accel/2.9.0 (+https://github.com)';
+// ── DNS 解析优化（v2.10.9）────────────────────────────────────────────
+// 实测本环境：/etc/resolv.conf 里 `nameserver 8.8.8.8` 排第一，但该服务器
+// **完全不可达**（UDP 53 超时 15s+）。系统 resolver（getaddrinfo）会先等
+// 8.8.8.8 超时，才轮到可用的 223.5.5.5 —— 导致**每次 DNS 解析耗时 5.1 秒**。
+// 后果：选路阶段每个镜像都要先花 5s 解析域名，而 raceProbeFastest 的
+// deadline 只有 9s → 9 个镜像并发解析直接超时 → 全部判失败 → 回退直连，
+// 用户看到「小文件下载 32 秒、路线 direct」。
+//
+// 解法：绕开系统 resolver，直接用 dns.Resolver 查公共 DNS（实测 30ms），
+// 并把结果缓存（默认 10 分钟）。失败时回退系统 lookup，保证兼容性。
+import { Resolver as __DnsResolver } from 'node:dns';
+import { lookup as __sysLookup } from 'node:dns';
+
+const DNS_SERVERS = (process.env.GH_ACCEL_DNS || '223.5.5.5,119.29.29.29,1.1.1.1')
+  .split(',').map((s) => s.trim()).filter(Boolean);
+const DNS_CACHE_TTL_MS = 10 * 60 * 1000;   // 10 分钟，兼顾新鲜度与命中率
+const DNS_QUERY_TIMEOUT_MS = 2000;         // 单次查询上限，失败就回退系统
+const dnsCache = new Map();                // host -> { addrs: [ip], at }
+
+function pickResolver() {
+  const r = new __DnsResolver();
+  try { r.setServers(DNS_SERVERS); } catch { /* 用默认 */ }
+  return r;
+}
+
+/** 用快速 DNS 服务器解析，失败/超时回退系统 lookup。带 10 分钟缓存。 */
+function fastLookup(host) {
+  const hit = dnsCache.get(host);
+  if (hit && Date.now() - hit.at < DNS_CACHE_TTL_MS) return Promise.resolve(hit.addrs);
+
+  return new Promise((resolve) => {
+    const r = pickResolver();
+    let done = false;
+    const finish = (addrs) => {
+      if (done) return;
+      done = true;
+      try { r.cancel(); } catch { /* no-op */ }
+      if (addrs && addrs.length) {
+        dnsCache.set(host, { addrs, at: Date.now() });
+        resolve(addrs);
+      } else {
+        // 回退系统解析（可能慢，但保证能解析）
+        __sysLookup(host, { all: true }, (e, list) => {
+          if (!e && list && list.length) resolve(list.map((x) => x.address));
+          else resolve(null);
+        });
+      }
+    };
+    const timer = setTimeout(() => finish(null), DNS_QUERY_TIMEOUT_MS);
+    try {
+      r.resolve4(host, (err, addrs) => {
+        clearTimeout(timer);
+        finish(err ? null : addrs);
+      });
+    } catch {
+      clearTimeout(timer);
+      finish(null);
+    }
+  });
+}
+
+// DNS 缓存命中统计（便于诊断；不影响功能）
+function dnsCacheStats() {
+  return { size: dnsCache.size, servers: DNS_SERVERS };
+}
+
 
 // 内置默认规则（自定义规则排在前面，优先命中）
 export const DEFAULT_RULES = [
@@ -195,9 +261,28 @@ export function matchRule(url, rules) {
   return null;
 }
 
-function httpGet(url, { headers = {}, followRedirects = 5, signal, timeoutMs = CONNECT_TIMEOUT, headersOnlyTimeout = false } = {}) {
+async function httpGet(url, { headers = {}, followRedirects = 5, signal, timeoutMs = CONNECT_TIMEOUT, headersOnlyTimeout = false } = {}) {
+  // ── 用快速 DNS 解析出的 IP 直连，绕开系统的慢 resolver（实测 5.1s → 30ms）──
+  // 保留 servername 供 TLS SNI、Host 头供虚拟主机路由，语义等价于直连域名。
+  let reqUrl = url;
+  let forcedServername = null;
+  let hostHeader = null;
+  try {
+    const u = new URL(url);
+    // 已经是 IP 就不折腾
+    if (!/^\d+\.\d+\.\d+\.\d+$/.test(u.hostname) && !u.hostname.includes(':')) {
+      const addrs = await fastLookup(u.hostname);
+      if (addrs && addrs.length) {
+        forcedServername = u.hostname;
+        hostHeader = u.host;
+        u.hostname = addrs[0];
+        reqUrl = u.toString();
+      }
+    }
+  } catch { /* 解析失败就用原 URL，交给系统 resolver */ }
+
   return new Promise((resolve, reject) => {
-    const mod = url.startsWith('https:') ? https : http;
+    const mod = reqUrl.startsWith('https:') ? https : http;
     // v2.9.0：不再用 req.setTimeout / 手动 setTimeout（本环境 setTimeout 定时不准、
     // 会在 ~5s 提前触发杀掉连接，而 TTFB 要 5.4s+，导致候选被误判超时/选路全挂）。
     // 统一用 AbortSignal.timeout（market 实测它可靠），并合并外部 signal。
@@ -225,10 +310,13 @@ function httpGet(url, { headers = {}, followRedirects = 5, signal, timeoutMs = C
     const releaseTimer = () => { if (timer) { clearTimeout(timer); timer = null; } };
     let req;
     try {
-      req = mod.get(url, {
-        headers: { 'User-Agent': UA, Accept: '*/*', ...headers },
+      const reqOpts = {
+        headers: { 'User-Agent': UA, Accept: '*/*', ...headers, ...(hostHeader ? { Host: hostHeader } : {}) },
         signal: ac,
-      }, (res) => {
+      };
+      // TLS SNI 必须用域名：IP 直连时若不设 servername，Server 无法选对证书
+      if (forcedServername) reqOpts.servername = forcedServername;
+      req = mod.get(reqUrl, reqOpts, (res) => {
         // 响应头已到：解除「连接/首字节」定时器，之后的响应体不再受它约束
         releaseTimer();
         const status = res.statusCode || 0;
@@ -525,7 +613,12 @@ export async function raceProbeFastest(cands, { signal, budgetMs }) {
     // 死路/资源 404 场景的兜底秒表：若长时间无一条候选 ok 成立（不是"等全部 settle"
     // —— 那样会被最后那几条慢死镜像拖到预算 15s+），到 deadline 就按失败收场，
     // 让上层尽快走 fallback，而不是干等最慢候选自然超时。
-    const deadline = Math.min(budgetMs || 15000, 9000);
+    // v2.10.9：deadline 从 9s 放宽到 12s。
+    // 原先限制 9s 是为了「死镜像不许拖慢选路」，但本环境镜像 TTFB 本身就要
+    // 5~7s（DNS+握手+首字节），余量只有 2~3s。一旦 DNS 稍慢就会全候选超时 →
+    // 误判失败 → 回退直连（实测小文件因此下载 32s）。DNS 已单独优化（fastLookup），
+    // 这里再放宽余量，避免边界抖动。真正的兜底仍由预算 budgetMs 兜住。
+    const deadline = Math.min(budgetMs || 15000, 12000);
     const timer = setTimeout(() => {
       if (!settled && !anyFailed) { /* 尚无失败也无 ok，再等等 */ return; }
       finish({ u: cands[0].u, via: 'direct(fallback)', speed: 0, size: null, rangeOk: false });

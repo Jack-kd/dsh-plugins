@@ -1,6 +1,6 @@
 {
   "name": "@local/super-re",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "type": "module",
   "description": "超级逆向：REA 逆向环境（JADX + Ghidra + apktool）一键安装 + Craft Anything（321 工具）可选勾选安装。内置独立加速下载核心（多线程分片 + 并发竞速选路 + 断点续传，不依赖 gh-accel 插件）。",

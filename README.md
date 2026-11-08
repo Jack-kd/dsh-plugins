@@ -32,9 +32,11 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/enter-newline-v1.0.1/en
 
 
 <details>
-<summary><b>▶ 加速器 · 下载加速（GitHub + 通用，合并版）</b>　<code>v2.10.8</code></summary>
+<summary><b>▶ 加速器 · 下载加速（GitHub + 通用，合并版）</b>　<code>v2.10.9</code></summary>
 
 > GitHub 与任意站点的下载/上传加速：自动测速直连与多个加速镜像、**谁快选谁**，大文件多线程分段下载；`github_accel_download` / `github_accel_clone` / `github_accel_push` / `url_accel_download` / `url_accel_probe` 五件套。下载时输入框上方显示实时速度与进度胶囊。
+>
+> **v2.10.9**：**修复小文件下载走直连、耗时 30 秒以上的问题**。根因是 **DNS**：本机 `/etc/resolv.conf` 里 `nameserver 8.8.8.8` 排第一，但该服务器完全不可达（实测 UDP 53 超时 15s+），系统 resolver 每次都要先等它超时 → **每次域名解析耗时 5.1 秒**。后果：选路阶段 9 个镜像并发解析全被拖慢，超过竞速的 9 秒 deadline → 全部判失败 → 回退直连。现在绕开系统 resolver，直接用 `dns.Resolver` 查 223.5.5.5/119.29.29.29/1.1.1.1（实测 30ms）并缓存 10 分钟，解析出的 IP 直连（保留 SNI 与 Host 头）。同时把竞速 deadline 从 9s 放宽到 12s。实测：42KB 小文件 32s→**0.5s**，62MB 大文件 33~47s→**4.3s**。
 >
 > **v2.10.8**：修复**大文件下载卡死**（多线程分片下载 40MB+ 大文件时卡在同一进度、反复重试后失败）。根因是 6 个问题叠加：① `AbortSignal.timeout(12s)` 绑在整个响应体上，导致「慢但健康」的分片必然失败（实测失败耗时精确 12000ms）；② 镜像按 IP 限并发，8 worker 齐上时超限连接连响应头都等不到（0 字节、12s abort）→ 加 per-host 并发闸门；③ `pumpStream` 出错只 `ws.end()` 不 destroy，写入流永久悬挂使 worker 永不返回；④ 无停滞看门狗 → 分片 stalled 无限死等；⑤ 任一分片失败就整表重下 → 改为逐片多路线回退 + 分片级断点续传；⑥ **不创建目标父目录** → 进度走满 100% 后写文件才报 ENOENT（表现为「进度满了却卡住」）。实测 62MB 包 6 轮下载 sha256 全部一致。同时**镜像池实测重建**（筛查 github.akams.cn 的 57 个候选）：剔除对 Ghidra 返回 403 的 `ghfast.top`、死链 `ghproxy.net`，以及一批**不支持 Range**（对大文件回 200、会让每个线程各下一遍完整文件）的节点；新增 `gh.monlor.com`、`gh.07150721.xyz`。
 >
@@ -62,13 +64,13 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/enter-newline-v1.0.1/en
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.10.8/gh-accel-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.10.9/gh-accel-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.10.8/gh-accel-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.10.9/gh-accel-plugin.tgz
 ```
 
 > 镜像（ghfast.top 等）是公共第三方服务、有失效风险；可在配置里用 `mirrors`/`rules` 自行增删站点规则。下载大文件建议指定绝对 `out` 路径。
@@ -77,11 +79,13 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.10.8/gh-acc
 </details>
 
 <details>
-<summary><b>▶ super-re · 超级逆向（REA 环境 + Craft Anything 统一安装入口）</b>　<code>v0.2.1</code></summary>
+<summary><b>▶ super-re · 超级逆向（REA 环境 + Craft Anything 统一安装入口）</b>　<code>v0.2.2</code></summary>
 
 > **统一环境安装入口**——一个弹窗装齐 REA 逆向环境（JADX + Ghidra + apktool），**可选**勾选 Craft Anything（321 个跨格式工具）。针对「新用户装环境太麻烦」重做：本身自带**环境配置弹窗**（REA 板块 + Craft 板块），REA 板块与 rea-tools 一致（初级/升级 radio + 子组件勾选 + 断点续传 + 幂等）；Craft 板块独立 checkbox，勾选后 REA 装完**串行**自动接 craft 安装。后台下载不阻塞对话，进度胶囊实时显示。安装地址：
 >
-> `dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/super-re-v0.2.1/super-re-plugin.tgz`
+> `dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/super-re-v0.2.2/super-re-plugin.tgz`
+>
+> **v0.2.2**：内置加速核心同步修复 **DNS 慢导致选路失败** 的问题——本机系统 resolver每次解析要 5.1 秒（`8.8.8.8` 不可达却排第一），导致镜像竞速全部超时、回退直连，装环境时下载很慢。现改为直连快速 DNS（223.5.5.5 等）+ 10 分钟缓存 + IP 直连，并把竞速 deadline 放宽到 12s。
 >
 > **v0.2.1**：剔除实测不合格的镜像——`ghfast.top` 对 Ghidra 543MB **直接返回 403**（旧版放在镜像列表第一位，每次装 Ghidra 都先撞 403 白等），`ghproxy.net` 已是死链；三套镜像列表（GHIDRA/JADX/APKTOOL）+ 反编译器下载的硬编码镜像全部重建，首选实测最快的 `gh.acmsz.top`。同时给加速核心加 **Range 支持安全阀**：服务器对带 Range 的请求回 200（忽略 Range 发整个文件）时，中段请求一律拒绝换路线（否则会把整个文件当成某一片写进去、污染数据），首片请求放行（数据本身正确）。
 >
