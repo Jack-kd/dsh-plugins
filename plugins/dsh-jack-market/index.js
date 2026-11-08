@@ -196,10 +196,19 @@ let _cacheFile = null;      // 由 ensureDiskCache(profileDir) 设定
 let _cacheDirty = false;
 let _cacheTimer = null;
 
+// 磁盘缓存加载的「就绪 promise」（v0.7.9）
+// 竞态修复：旧实现 ensureDiskCache() 只是**触发** loadDiskCache() 而不 await，
+// 而 loadDiskCache 内部要 await import('node:fs/promises') 再读文件。
+// 若用户在读完之前打开市场，请求就查不到内存缓存 → 走网络 → 冷启动要等
+// 3 个 API 请求（DNS+网络 ~1.7s，叠加进程刚启动的资源竞争可能到 15~20s）。
+// 现在把加载过程存成 promise，所有走缓存的调用都先 await 它就绪。
+let _cacheReady = null;
 function ensureDiskCache(profileDir) {
-  if (_cacheFile || !profileDir) return;
+  if (_cacheReady) return _cacheReady;
+  if (!profileDir) return Promise.resolve();
   _cacheFile = nodePath.join(profileDir, '.dsh-market', 'api-cache.json');
-  loadDiskCache();
+  _cacheReady = loadDiskCache();
+  return _cacheReady;
 }
 
 async function loadDiskCache() {
@@ -263,6 +272,8 @@ function backgroundRefresh(url) {
 }
 
 async function cachedGhJson(url, controller) {
+  // 等磁盘缓存加载完成，避免「刚启动就打开市场」时误走网络（见 ensureDiskCache 注释）
+  if (_cacheReady) { try { await _cacheReady; } catch { /* 加载失败则当作无缓存 */ } }
   const cached = apiCache.get(url);
   const age = cached ? Date.now() - cached.at : Infinity;
 
@@ -523,14 +534,23 @@ async function ghJson(url, controller) {
  * cap is hit. Returns a flat array. Mirrors GitHub's Link-free contract: a page
  * with fewer than RELEASES_PER_PAGE entries means we've reached the end. */
 async function fetchAllReleases(controller) {
+  // v0.7.9：并发预取所有页，而不是「串行翻页」。
+  // 旧实现必须等第 1 页返回才知道要不要第 2 页，两页串行 → 多花一个完整 RTT
+  // （实测第 2 页 739ms）。RELEASES_MAX_PAGES 只有 2，直接并发拉两页，
+  // 再按「第一页不满就只用第一页」的语义裁剪，结果完全等价但省一个 RTT。
+  const pages = [];
+  for (let page = 1; page <= RELEASES_MAX_PAGES; page++) pages.push(page);
+  const results = await Promise.allSettled(
+    pages.map((page) =>
+      cachedGhJson(`${API_RELEASES}?per_page=${RELEASES_PER_PAGE}&page=${page}`, controller),
+    ),
+  );
   const all = [];
-  for (let page = 1; page <= RELEASES_MAX_PAGES; page++) {
-    const batch = await cachedGhJson(
-      `${API_RELEASES}?per_page=${RELEASES_PER_PAGE}&page=${page}`,
-      controller,
-    );
-    const list = Array.isArray(batch) ? batch : [];
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i];
+    const list = r.status === 'fulfilled' && Array.isArray(r.value) ? r.value : [];
     all.push(...list);
+    // 与串行版语义一致：某页不满 per_page 说明已是最后一页，后面的不要
     if (list.length < RELEASES_PER_PAGE) break;
   }
   return all;

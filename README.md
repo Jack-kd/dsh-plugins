@@ -231,9 +231,11 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-vision-router-v3.0.
 </details>
 
 <details>
-<summary><b>▶ dsh-jack-market · 插件市场（本仓库一键装）</b>　<code>v0.7.8</code></summary>
+<summary><b>▶ dsh-jack-market · 插件市场（本仓库一键装）</b>　<code>v0.7.9</code></summary>
 
 > 直接在 DSH 里浏览并一键安装本仓库的所有插件（类似内置的「插件市场」）。自动识别已安装状态与可更新版本，点「安装/更新」即后台下载安装并显示实时进度；每个插件卡片带简介、版本与更新时间，失败会显示具体原因。
+>
+> **v0.7.9**：修「重启后第一次打开市场仍要等十几秒」——**磁盘缓存加载竞态**。旧代码 `ensureDiskCache()` 只**触发**异步加载却不 await，而加载内部要先 `await import('node:fs/promises')` 再读文件；若用户在读完前打开市场，缓存查不到 → 走网络 → 冷启动要等 3 个 API 请求。现在把加载存成 promise，所有走缓存的请求先 await 它就绪（实测「启动即请求」从 1732ms 降到 **14ms**）。另把 releases 翻页从**串行**改为**并发预取**（第 2 页需等第 1 页返回才知道要不要翻，白费一个 RTT；实测省 739ms），结果与原语义完全等价（30+1=31 条）。
 >
 > **v0.7.8**：**获取插件列表加速 5.5 倍**（6.3s → 1.15s）+ **真实安装进度**。① 列表慢的真凶还是 DNS：单个 API 请求系统解析要等 5.1s，实测 `contents/plugins` 无优化 5490ms、预解析 IP 后 **438ms**（12.5 倍）。现在 API 请求也走快速 DNS + 10 分钟缓存，三个请求并行从 6317ms → **1154ms**（注意：API 走镜像无效，镜像 TTFB 反而更慢且会返假数据）。② 安装进度从「按阶段硬编码 10/40/75/88/100 跳三段」改为**真实百分比**：下载阶段按实际字节算 0→70%（并显示 `28.6/57.2 MB · 47.5 MB/s` 实时速度，EMA 平滑），校验 70→78%，安装按 pnpm 输出行数缓动推进 78→97%，完成 100%。进度条改为圆角渐变填充 + 380ms 缓动动画，进行中带流光效果，百分比用等宽数字防跳动。
 >
@@ -293,13 +295,13 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-vision-router-v3.0.
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.8/dsh-jack-market-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.9/dsh-jack-market-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.8/dsh-jack-market-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/dsh-jack-market-v0.7.9/dsh-jack-market-plugin.tgz
 ```
 
 > 装完重启一次 App（让设置页入口出现）；之后打开 **设置 → Jack 插件市场** 即可浏览和安装本仓库的插件。
