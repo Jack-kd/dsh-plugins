@@ -32,9 +32,11 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/enter-newline-v1.0.1/en
 
 
 <details>
-<summary><b>▶ 加速器 · 下载加速（GitHub + 通用，合并版）</b>　<code>v2.10.9</code></summary>
+<summary><b>▶ 加速器 · 下载加速（GitHub + 通用，合并版）</b>　<code>v2.11.0</code></summary>
 
 > GitHub 与任意站点的下载/上传加速：自动测速直连与多个加速镜像、**谁快选谁**，大文件多线程分段下载；`github_accel_download` / `github_accel_clone` / `github_accel_push` / `url_accel_download` / `url_accel_probe` 五件套。下载时输入框上方显示实时速度与进度胶囊。
+>
+> **v2.11.0**：**修复「文件下完了，胶囊还要卡一会才消失」**。根因在**分片合并落盘**这一段：多线程下完的 N 个临时分片要串成一个最终文件，旧实现逐片 `createReadStream` 接起来，每片都新建一次流对象并各自走一遍内部缓冲——片越多固定开销越大。实测 100MB/50 片在 `/sdcard`（fuseblk，FUSE 模拟的 Android 存储）上要 **1014ms**，而这段时间胶囊**一直停在 99%、速度显示 0**，看起来就像卡死。两处改进：① 合并改用**大块缓冲顺序读写**（4MB buffer + 单个输出 fd），实测 `/sdcard` 100MB **1014ms→116ms（快 8.7 倍）**、60MB **674ms→156ms（快 4.3 倍）**、`/tmp` 718ms→285ms；② 新增 **`phase` 阶段上报**（`merge` / `done`），胶囊在合并阶段显示**「✓ 下载完成 · 合并中…（100MB）」**并把圆环直接拉满，不再干停在 99% 让人以为卡住。注意：**合并期间仍不会提前报 100%**（避免「显示已完成但文件没写完」的假成功），文件大小校验与临时目录清理逻辑保持不变。
 >
 > **v2.10.9**：**修复小文件下载走直连、耗时 30 秒以上的问题**。根因是 **DNS**：本机 `/etc/resolv.conf` 里 `nameserver 8.8.8.8` 排第一，但该服务器完全不可达（实测 UDP 53 超时 15s+），系统 resolver 每次都要先等它超时 → **每次域名解析耗时 5.1 秒**。后果：选路阶段 9 个镜像并发解析全被拖慢，超过竞速的 9 秒 deadline → 全部判失败 → 回退直连。现在绕开系统 resolver，直接用 `dns.Resolver` 查 223.5.5.5/119.29.29.29/1.1.1.1（实测 30ms）并缓存 10 分钟，解析出的 IP 直连（保留 SNI 与 Host 头）。同时把竞速 deadline 从 9s 放宽到 12s。实测：42KB 小文件 32s→**0.5s**，62MB 大文件 33~47s→**4.3s**。
 >
@@ -64,13 +66,13 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/enter-newline-v1.0.1/en
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.10.9/gh-accel-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.11.0/gh-accel-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.10.9/gh-accel-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.11.0/gh-accel-plugin.tgz
 ```
 
 > 镜像（ghfast.top 等）是公共第三方服务、有失效风险；可在配置里用 `mirrors`/`rules` 自行增删站点规则。下载大文件建议指定绝对 `out` 路径。

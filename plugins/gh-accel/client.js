@@ -89,7 +89,10 @@
           const [dispPct, setDispPct] = React.useState(0);
           React.useEffect(() => {
             if (!active || !progress || !(progress.totalB > 0)) { setDispPct(0); return; }
-            const target = Math.min(100, (progress.doneB / progress.totalB) * 100);
+            // merge 阶段分片已全部下完，环直接拉满，不再跟着 doneB 停在 99%
+            const target = progress.phase === 'merge'
+              ? 100
+              : Math.min(100, (progress.doneB / progress.totalB) * 100);
             let raf = 0;
             const step = () => {
               setDispPct((p) => {
@@ -141,9 +144,18 @@
           const pct = hasProgress ? Math.min(100, dispPct) : 0;
           const ringDash = (pct / 100) * RING_CIRCUM;
 
+          // 合并落盘阶段：分片已下完，正在把临时分片串成最终文件。
+          // 这一步在 /sdcard 上要几百 ms，若仍显示 99% 会像卡住，
+          // 因此单独给一行明确文案，圆环保持满圈不再假装还在下载。
+          const merging = Boolean(progress && progress.phase === 'merge');
+
           let line2 = null;
           if (direction === 'upload') {
             line2 = '↑ 推送中…';
+          } else if (merging) {
+            line2 = hasProgress
+              ? `✓ 下载完成 · 合并中…（${fmtBytes(progress.totalB)}）`
+              : '✓ 下载完成 · 合并中…';
           } else {
             // 下载态：速度（有则显示）+ 分式（拿到总量才显示）。
             // 已下载字节用「插值后的比例 × 总量」反推，让文本与圆环同节奏平滑，
