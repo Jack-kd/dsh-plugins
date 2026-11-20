@@ -2,6 +2,154 @@
 
 **gh-accel 与 dl-accel 合二为一**：一个插件同时负责 GitHub 与任意站点的下载/上传加速。
 
+## v2.12.0 · 修复「下载到的源码是乱码」（Content-Encoding 未解压）+ 系统提示补 Artifacts
+
+### 背景：一个几乎无法察觉的数据损坏 bug
+
+用户反馈「插件下源码给 AI 用」是核心场景。按这个场景实测时发现：**raw 文件下载下来是坏的**。
+
+```
+raw.githubusercontent.com/…/package.json   直连 = 236 字节明文 JSON
+经 gh.monlor.com / gh.acmsz.top / ghproxy.icu 镜像 = 225 字节 gzip 压缩数据（直接落盘）
+```
+
+文件「有大小」（225 vs 236 只差 11 字节），`ok: true`、进度正常、速度看着也正常 —— 但内容是 gzip 字节，
+任何程序打开都是乱码。对「AI 读源码」这个用途来说，这等于**静默地喂给模型一堆垃圾**。
+
+### 根因
+
+`httpGet` 只发 `Accept: '*/*'`，既没声明 `Accept-Encoding`，也从没检查过响应的 `Content-Encoding`。
+部分镜像（实测 5 个里 3 个）即使没收到 `Accept-Encoding` 请求头，也自顾自返回 `Content-Encoding: gzip`。
+原实现把响应体直接 `pipe` 进文件，于是压缩字节成了「源码文件」。
+
+### 修复（双保险）
+
+1. **请求侧**：显式声明 `Accept-Encoding: identity`，请服务端别压缩。
+2. **响应侧**：新增 `decodeBody()`，一旦响应仍带 `Content-Encoding: gzip|deflate|br`，
+   自动挂对应解压流（支持多重编码，按声明逆序拆解；不认识的编码原样返回不误伤）。
+
+### 顺带修掉的分片陷阱
+
+压缩流**无法按字节偏移切分**。分片/断点续传请求 `Range: bytes=start-end` 时，若响应仍带压缩：
+
+- 解压 → 内容不对应所请求的区间
+- 不解压 → 写进去的是压缩字节
+
+两条路都是错数据。因此 `downloadRange` 新增 `exactRange` 参数：只有「这一片必须精确等于 [start,end]」
+的场景（分片下载、断点续传）才拒绝带压缩的响应，让该候选失败、上层换路线。
+整文件下载（`start=0, end=size-1`）语义是「要整个文件」，解压后内容正确，不拦。
+
+> 第一版修复漏了这个区分，无条件拦截所有带 `end` 的请求，结果 5 个镜像里 3 个被误杀
+> （全部失败）。实测发现后改为 `exactRange` 显式声明。
+
+### 修复后实测（raw 文件，逐个镜像强制指定）
+
+| 镜像 | 修复前 | 修复后 |
+|---|---|---|
+| gh.monlor.com | 225 B ⚠ gzip 垃圾 | 236 B ✓ 明文 |
+| gh.acmsz.top | 225 B ⚠ gzip 垃圾 | 236 B ✓ 明文 |
+| ghfast.top | 236 B ✓ | 236 B ✓ |
+| ghproxy.icu | 225 B ⚠ gzip 垃圾 | 236 B ✓ 明文 |
+| gh-proxy.com | 236 B ✓ | 236 B ✓ |
+
+**5/5 全部正确**，且与直连字节一致。
+
+### 同时修复：系统提示里没提 Artifacts
+
+插件通过 `systemPrompt.section()` 向模型注入「文件下载优选规则」，这是 AI 判断「该不该用这个工具」
+的**主要依据**。v2.11.0 加了 Artifacts 支持，但那段提示词里一个字都没提 Artifacts ——
+模型看到 `api.github.com/...` 完全可能觉得「这不是 github.com，不属于站内文件」而改用 curl
+（匿名直连 api.github.com 必定 401）。现在提示词明确写了 Artifacts 也走 `github_accel_download`。
+
+### 典型场景实测（修复后）
+
+| 场景 | 结果 |
+|---|---|
+| 源码归档 tarball（35 MB） | 3,554 KB/s，10.0s ✓（修复前 1,493 KB/s） |
+| 单文件 raw | 236 B，内容正确 ✓ |
+| release 附件 | 45 KB，解包版本号正确 ✓ |
+| `git clone`（83 MB 仓库） | 730 KB/s，113.8s ✓ |
+
+## v2.11.0 · 支持 GitHub Actions Artifacts 下载（专用镜像 + 带宽实测选路 + 过期识别）
+
+**背景**：此前插件的镜像全部**下载不了 Artifacts**。原因是 Artifacts 的下载地址是
+`https://api.github.com/repos/{owner}/{repo}/actions/artifacts/{id}/zip`，它属于 GitHub API 域名，
+不是 `github.com` / `raw.githubusercontent.com` / `codeload.github.com` —— 旧规则只匹配后者，
+所以 Artifacts URL 根本不进加速通道；而匿名直连 `api.github.com` **必定 401**（需要 token）。
+
+**实测筛出的可用镜像（20 个候选里只有 2 个能过 Artifacts）**：
+`ghproxy.icu` 与 `gh-proxy.com`。其余 18 个（`ghfast.top` / `ghproxy.net` / `ghproxy.homeboyc.cn`
+403、`ghps.cc` 521、`ghproxy.1888866.xyz` 525、`ghproxy.988669.xyz` 404、`gh.jjj.gv.uy` /
+`gh.07150721.xyz` 401 等）对 `api.github.com` 一律失败，**不要加进来**。
+
+**关键约束：必须是 `prefix` 风格**。Artifacts 要保留完整原 URL 作为路径（
+`https://ghproxy.icu/https://api.github.com/repos/.../zip`）；`host` 风格会把 origin 换成镜像域名、
+路径变成 `/repos/...`，直接 404。
+
+**本次改动**：
+
+1. **新增 `ARTIFACT_RULE`，排在 `DEFAULT_RULES` 第一位**（`matchRule` 只取第一个命中，
+   顺序必须靠前，否则会被通用 GitHub 规则吃掉）。带 `artifact: true` 标记。
+2. **`api.github.com` Artifacts 走 `github_accel_download`**：`index.js` 新增 `ARTIFACT_RE`，
+   `GH_ACCEL_RE` 合并两者；`url_accel_download` 会拒收 Artifacts 直链并提示改用专用工具。
+3. **Artifacts 一律单连接，不用多线程**。实测多连接反而更差：`ghproxy.icu` 1MB×4 = 4/6 分片
+   成功 @95KB/s、1MB×6 = 4/6 @110KB/s，而单流 346~613KB/s。故 `ARTIFACT_SEG_MIN = 256MB`，
+   低于 256MB 全部走单流；真要切片时 worker 上限 `ARTIFACT_THREADS = 4`。
+4. **带宽实测选路（本次最重要的修复）**。通用选路用 TTFB 竞速，而 `probeTTFB` 返回的 bps
+   其实是 `1e6/ttfb`——纯延迟倒数，**不代表带宽**。两个镜像 TTFB 都在 6.7~8.0s，谁先到
+   纯看运气，于是「首字节快、带宽只有 1/5」的 `gh-proxy.com` 会赢下竞速吃掉整次下载：
+   同一 artifact，`ghproxy.icu` 678/812/520 KB/s vs `gh-proxy.com` 107/342/277 KB/s，
+   实测 4 次里有 1 次整次下载从 7~11s 变成 52s。Artifacts 只有 2 个候选，改为**逐个做一次
+   真实带宽采样（读 256KB）再挑最快**，成本极低、结果可靠。
+5. **采样必须扣掉 TTFB**。这是踩过的坑：采样只读 256KB，而 TTFB 高达 7s，若用总耗时当分母，
+   500KB/s 的真实带宽会被压成 35KB/s，两个镜像测出来几乎相同（实测 35 vs 29、31 vs 32、
+   28 vs 33 KB/s），排序等于随机。改为只用「首字节之后到传输结束」的时长做分母。
+6. **403 退避重试**。镜像的 403 多是 GitHub API 限流（代理出口 IP 轮换，`{"message":"API rate
+   limit exceeded for user ID ..."}`），属瞬时错误，退避重试即可救回。采样阶段重试
+   `[0, 800, 1800]ms`，下载阶段重试 `[1000, 2000, 4000, 6000, 8000, 10000]ms`。
+   不重试的话，撞上限流的镜像会以 bps=0 出局，把冠军白送给慢镜像。
+7. **过期/不存在的 Artifacts 立即报错**。Artifacts 默认只保留 **30 天**，过期后任何镜像都无法
+   取回。难点在于镜像对**不存在的 id** 未必回 404：实测坏 id 时 `ghproxy.icu` 回 404、
+   `gh-proxy.com` 回 403（限流兜底），两个镜像表现相反。因此下载前对候选**逐个**做一次
+   `Range: bytes=0-0` 存在性探测：任一 200/206 即存在、任一 404/410 即判死。
+   盲目重试的代价实测过：坏 id 会把 4 秒的失败拖成 **116 秒**；修正后 **6.5 秒**给出明确提示。
+8. **不再把裸 `api.github.com` 排进候选**。直连匿名必 401，排进去纯白等一次连接超时。
+9. **`downloadRange` 增加 `statusRef`**，把状态码回传给调用方，用于区分「403 限流（可重试）」
+   与「404 已过期（永久失败）」。
+10. **采样必须串行，不能并行**（踩坑修正）。两个镜像的采样请求并发发出时，`ghproxy.icu`
+    会频繁直接失败（`status=0`，连不上），于是它以 bps=0 出局，冠军白送给慢一倍的
+    `gh-proxy.com`——实测回归 3/3 全选错，耗时 27/54/65s。串行后两路都能拿到真实带宽
+    （实测 343KB/s vs 27KB/s），选路恢复正确。串行只多花约 2s，远小于选错路亏的几十秒。
+11. **慢路换道 + 跨路线断点续传（兜底核心）**。采样选对了镜像也会中途塌掉（同一 artifact
+    在几分钟内：`ghproxy.icu` 时 800KB/s 时 403 时直接连不上，`gh-proxy.com` 时 165KB/s
+    时 40KB/s 时整段超时）。三条规则：
+    - **慢路看门狗**：下载中每 1s 采样已写字节数，瞬时速度低于 `ARTIFACT_SLOW_BPS = 40KB/s`
+      持续 `ARTIFACT_SLOW_WINDOW_MS = 8s`（窗口不能太短，镜像 TTFB 本身就有 6~7s）就主动断开；
+    - **断开/失败都保留已写字节**，换下一条路线 `Range: bytes=have-` 从断点续传，绝不从头再来；
+    - **候选表循环多轮**（`ARTIFACT_MAX_ROUNDS = 3`），总时限 `ARTIFACT_TOTAL_BUDGET_MS = 180s`。
+      只切一轮是不够的：换到的那条路也可能恰好失败，那一半数据就全废了；循环续传才能把镜像的
+      「时好时坏」变成「总能拼完」。404/410 例外，确定过期立即报错。
+12. **采样超时单独放宽到 20s**。`probeBandwidth` 默认 `timeoutMs = BIG_SAMPLE_BUDGET_MS = 4s`，
+    而本环境镜像 TTFB 就有 6.3~7.0s——用默认值会让两个镜像都在首字节到达前超时、全部 bps=0，
+    于是退回 TTFB 竞速随机选路（实测回归：3/3 选慢镜像，32~71s）。
+
+**实测结果**（artifact `Jack-kd/ai-sign` #14516929906，5,722,683 B）：
+
+| 阶段 | 结果 |
+| --- | --- |
+| 修正后（网络良好） | 6/6 成功，全选 `ghproxy.icu`，6.7~8.8s，632~837 KB/s |
+| 修完串行采样 + 续传（网络降级） | 6/6 成功，全选 `ghproxy.icu`，12.4~51.3s，中位 13.5s |
+| 坏 id（不存在的 artifact） | 7.7s 明确报错「不存在或已过期（HTTP 404）」 |
+| 修正前对照 | 5 次里 4 次选中慢镜像，耗时 21~57s |
+
+下载文件 SHA256 与直连一致（`e26a1b4a…46b0f8`），内层 `app-debug.apk`（6,667,417 B，
+CRC `8deb4960`）校验通过。调试选路可用 `GH_ACCEL_DEBUG=1` 环境变量，会打印每个镜像的
+`bps / status / bytes / ttfb`。
+
+**注意**：Artifacts 的 zip 里装的是**又一个压缩包**（如 `app-debug.apk`），拿到后通常还要再解一层。
+
+---
+
 ## v2.10.8 · 修复大文件下载卡死（40MB+ 多线程分片）+ 镜像池实测重建
 
 **卡死的 6 个叠加根因**：① `AbortSignal.timeout(12s)` 绑在整个响应体上 → 慢但健康的分片必然失败（实测失败耗时精确 12000ms）；② 镜像按 IP 限并发，8 worker 齐上时超限连接 0 字节、12s abort；③ `pumpStream` 出错只 `ws.end()` 不 destroy → 写入流永久悬挂、worker 永不返回；④ 无停滞看门狗 → 分片 stalled 无限死等；⑤ 任一分片失败就整表重下；⑥ 不创建目标父目录 → 进度走满后才报 ENOENT（「进度满了却卡住」）。
@@ -92,7 +240,7 @@
 
 > 安装：
 > ```bash
-> dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.10.9/gh-accel-plugin.tgz
+> dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.11.0/gh-accel-plugin.tgz
 > ```
 
 ## v2.6.1 · 胶囊刷新更顺滑
@@ -235,9 +383,14 @@ https://registry.npmmirror.comhttps://registry.npmjs.org/typescript/...
 
 | 站点 | style | 镜像 |
 |---|---|---|
+| api.github.com/…/actions/artifacts/（Actions Artifacts） | prefix | ghproxy.icu、gh-proxy.com |
 | github.com / raw.githubusercontent.com / codeload.github.com | prefix | ghfast.top、github.geekery.cn、down.mxw.xx.kg、gh.monlor.com、js.jiangss.shop、github.mxw.qzz.io、gh.acmsz.top、ghproxy.felicity.land、gh-proxy.com、ghproxy.net |
 | huggingface.co / hf.co | host | hf-mirror.com |
 | registry.npmjs.org | host | registry.npmmirror.com |
+
+> Artifacts 规则（`ARTIFACT_RULE`）排在**第一位**——`matchRule` 只取第一个命中的规则，
+> 顺序靠后会被通用 GitHub 规则截走。该规则带 `artifact: true`，触发专用的
+> 单连接 + 带宽实测选路逻辑（详见 v2.11.0 说明）。
 
 ## 配置（可选）
 

@@ -32,9 +32,11 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/enter-newline-v1.0.1/en
 
 
 <details>
-<summary><b>▶ 加速器 · 下载加速（GitHub + 通用，合并版）</b>　<code>v2.11.0</code></summary>
+<summary><b>▶ 加速器 · 下载加速（GitHub + 通用，合并版）</b>　<code>v2.12.0</code></summary>
 
 > GitHub 与任意站点的下载/上传加速：自动测速直连与多个加速镜像、**谁快选谁**，大文件多线程分段下载；`github_accel_download` / `github_accel_clone` / `github_accel_push` / `url_accel_download` / `url_accel_probe` 五件套。下载时输入框上方显示实时速度与进度胶囊。
+>
+> **v2.12.0**：**修复「下载到的源码是乱码」**——这是一个**几乎无法察觉的数据损坏 bug**，影响核心场景（让 AI 读源码）。现象：`raw.githubusercontent.com` 上一个 236 字节的明文 JSON，经镜像下载后变成 **225 字节的 gzip 压缩数据**直接落盘；文件有大小、`ok: true`、进度与速度都正常，只差 11 字节，但任何程序打开都是乱码——等于**静默地喂给模型一堆垃圾**。根因：`httpGet` 只发 `Accept: '*/*'`，既没声明 `Accept-Encoding`，也从没检查响应的 `Content-Encoding`，而**实测 5 个镜像里有 3 个**会自顾自返回 `Content-Encoding: gzip`，原实现把响应体直接 `pipe` 进文件，压缩字节就成了「源码」。双保险修复：① **请求侧**显式声明 `Accept-Encoding: identity`；② **响应侧**新增 `decodeBody()`，响应仍带 `gzip|deflate|br` 时自动挂解压流（支持多重编码，按声明逆序拆解，不认识的编码原样返回不误伤）。顺带修掉**分片陷阱**：压缩流无法按字节偏移切分，分片/续传请求 `Range` 时若响应带压缩则解压与不解压都是错数据，故 `downloadRange` 新增 `exactRange` 参数，只有「这一片必须精确等于 [start,end]」的场景（分片、续传）才拒绝压缩响应并换路线，整文件下载（`start=0,end=size-1`）解压后内容正确、放行——这个区分是必须的，第一版无条件拦截导致 5 个镜像里 3 个被误杀。同时**系统提示补上 Actions Artifacts 覆盖说明**（此前提示只讲 `github.com` 直链，模型不知道 Artifacts 也归本工具管）。实测：raw 文件恢复 236 字节明文（magic `7b 0a`），Artifacts 跨镜像切换下载 sha256 完全一致。
 >
 > **v2.11.0**：**修复「文件下完了，胶囊还要卡一会才消失」**。根因在**分片合并落盘**这一段：多线程下完的 N 个临时分片要串成一个最终文件，旧实现逐片 `createReadStream` 接起来，每片都新建一次流对象并各自走一遍内部缓冲——片越多固定开销越大。实测 100MB/50 片在 `/sdcard`（fuseblk，FUSE 模拟的 Android 存储）上要 **1014ms**，而这段时间胶囊**一直停在 99%、速度显示 0**，看起来就像卡死。两处改进：① 合并改用**大块缓冲顺序读写**（4MB buffer + 单个输出 fd），实测 `/sdcard` 100MB **1014ms→116ms（快 8.7 倍）**、60MB **674ms→156ms（快 4.3 倍）**、`/tmp` 718ms→285ms；② 新增 **`phase` 阶段上报**（`merge` / `done`），胶囊在合并阶段显示**「✓ 下载完成 · 合并中…（100MB）」**并把圆环直接拉满，不再干停在 99% 让人以为卡住。注意：**合并期间仍不会提前报 100%**（避免「显示已完成但文件没写完」的假成功），文件大小校验与临时目录清理逻辑保持不变。
 >
@@ -66,13 +68,13 @@ https://github.com/Jack-kd/dsh-plugins/releases/download/enter-newline-v1.0.1/en
 **一条命令安装：**
 
 ```bash
-dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.11.0/gh-accel-plugin.tgz
+dsh plugin --profile web add https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.12.0/gh-accel-plugin.tgz
 ```
 
 **或者**：「插件管理 → 添加插件」粘贴下面地址，点安装：
 
 ```
-https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.11.0/gh-accel-plugin.tgz
+https://github.com/Jack-kd/dsh-plugins/releases/download/gh-accel-v2.12.0/gh-accel-plugin.tgz
 ```
 
 > 镜像（ghfast.top 等）是公共第三方服务、有失效风险；可在配置里用 `mirrors`/`rules` 自行增删站点规则。下载大文件建议指定绝对 `out` 路径。

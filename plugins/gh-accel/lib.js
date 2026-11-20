@@ -15,8 +15,9 @@ import http from 'node:http';
 import { execFile } from 'node:child_process';
 import { pipeline } from 'node:stream/promises';
 import { Transform } from 'node:stream';
+import zlib from 'node:zlib';
 
-export const UA = 'gh-accel/2.9.0 (+https://github.com)';
+export const UA = 'gh-accel/2.12.0 (+https://github.com)';
 // ── DNS 解析优化（v2.10.9）────────────────────────────────────────────
 // 实测本环境：/etc/resolv.conf 里 `nameserver 8.8.8.8` 排第一，但该服务器
 // **完全不可达**（UDP 53 超时 15s+）。系统 resolver（getaddrinfo）会先等
@@ -84,8 +85,42 @@ function dnsCacheStats() {
 }
 
 
+// ── GitHub Actions Artifacts 专用规则（必须排在通用 GitHub 规则之前）────────
+// matchRule 取**第一条命中**的规则，而 artifact 链接形如
+//   https://api.github.com/repos/<owner>/<repo>/actions/artifacts/<id>/zip
+// 不在通用规则的 match（github.com/ 等）范围内，且必须用 prefix 样式拼接，
+// 所以单列一条规则放最前，并打 artifact:true 供下载器识别专用策略。
+//
+// 2026-11 实测结论（真实 artifact，匿名、Range 探测）：
+//   · 20 个候选镜像全量筛查，**只有 2 个能下 artifact**：
+//       ghproxy.icu     单连接全文件 9.1~10.8s / 518~613KB/s（5 次里 1 次 403 限流）
+//       gh-proxy.com    单连接全文件 20~54s   / 104~277KB/s（5/5 成功）
+//     其余全部失败：gh.jjj.gv.uy / gh.07150721.xyz → 401（不透传 api.github.com）
+//       gh.acmsz.top / cfgh.ikgy.top / ghfast.top / ghproxy.net → 403
+//       gh.monlor.com / ghgo.de5.net / ghproxy.988669.xyz → 404
+//       github.chenc.dev → 301 到错误路径；其余 10 个直接连不上（000）
+//   · 直连 api.github.com 匿名 → 401，**必须走镜像**，直连兜底对 artifact 无意义。
+//   · artifact 对**并发极敏感**：ghproxy.icu 单连接 10s，切成 6 片并发反而 32s
+//     且只成功 4/6 片（403 限流）；gh-proxy.com 单连接 44s，6 片并发 18s。
+//     故 artifact 默认**单连接整文件**下载（见 ARTIFACT_SEG_MIN），只有超大文件
+//     才切片且并发上限压到 4。
+//   · 403 是 GitHub API 限流（响应体 "API rate limit exceeded for user ID ..."），
+//     **瞬时错误**，退避重试能救回来（实测 3 片并发、1/1.5/2.5/4/6/8/10s 退避，
+//     全部第 1 次就成功）；404 才是真不存在/已过期（artifacts 默认保留 30 天）。
+//   顺序：快的在前（TTFB 竞速会先到先得，顺序只影响 mirror 档与兜底顺序）。
+export const ARTIFACT_RULE = {
+  match: 'api\\.github\\.com/repos/[^/]+/[^/]+/actions/artifacts/',
+  style: 'prefix', // 必须 prefix：host 样式会改掉 api.github.com 主机名，镜像直接不认
+  artifact: true,  // 标记：下载器据此启用单连接 + 403 退避 + 直连不兜底
+  mirrors: [
+    'https://ghproxy.icu/',
+    'https://gh-proxy.com/',
+  ],
+};
+
 // 内置默认规则（自定义规则排在前面，优先命中）
 export const DEFAULT_RULES = [
+  ARTIFACT_RULE,
   {
     // v2.9.0：镜像清单换成**实测按 TTFB 排序**的一套（与 dsh-jack-market 共享结论）。
     // 环境是延迟主导（各节点 TTFB 5~9s），谁快几乎只取决于谁首字节快。
@@ -261,6 +296,34 @@ export function matchRule(url, rules) {
   return null;
 }
 
+/**
+ * 按 Content-Encoding 兜底解压响应流（v2.12.0）。
+ * 背景：部分 GitHub 镜像无视 `Accept-Encoding: identity`，强行返回 gzip/br/deflate。
+ * 不解压会把压缩字节直接写进目标文件，文件看着「有大小」但内容是乱码。
+ * 无法识别的编码（或 identity）原样返回。
+ */
+function decodeBody(res) {
+  const enc = String(res.headers['content-encoding'] || '').toLowerCase().trim();
+  if (!enc || enc === 'identity') return res;
+  // 多重编码（如 "gzip, br"）按声明的逆序拆解；实际镜像极少出现，但顺手支持。
+  const parts = enc.split(',').map((s) => s.trim()).filter(Boolean).reverse();
+  let s = res;
+  try {
+    for (const p of parts) {
+      if (p === 'gzip' || p === 'x-gzip') s = s.pipe(zlib.createGunzip());
+      else if (p === 'deflate') s = s.pipe(zlib.createInflate());
+      else if (p === 'br') s = s.pipe(zlib.createBrotliDecompress());
+      else return res; // 不认识的编码：交回原流，避免误伤
+    }
+    // 解压流没有 .headers，把原始编码挂在流上，供 downloadRange 判断
+    // 「Range 分片 + 压缩」这种不可用组合（见 downloadRange 内的安全阀）。
+    try { s.__contentEncoding = enc; } catch { /* 只读流则忽略 */ }
+    return s;
+  } catch {
+    return res;
+  }
+}
+
 async function httpGet(url, { headers = {}, followRedirects = 5, signal, timeoutMs = CONNECT_TIMEOUT, headersOnlyTimeout = false } = {}) {
   // ── 用快速 DNS 解析出的 IP 直连，绕开系统的慢 resolver（实测 5.1s → 30ms）──
   // 保留 servername 供 TLS SNI、Host 头供虚拟主机路由，语义等价于直连域名。
@@ -311,7 +374,21 @@ async function httpGet(url, { headers = {}, followRedirects = 5, signal, timeout
     let req;
     try {
       const reqOpts = {
-        headers: { 'User-Agent': UA, Accept: '*/*', ...headers, ...(hostHeader ? { Host: hostHeader } : {}) },
+        // v2.12.0 关键修复（Content-Encoding 未解压 → 写盘内容是 gzip 垃圾）：
+        // 实测 gh.monlor.com / gh.acmsz.top / ghproxy.icu 三个镜像即使**没有**收到
+        // `Accept-Encoding` 请求头，也会自作主张返回 `Content-Encoding: gzip` 的压缩体
+        // （raw 文件 236B → 225B gzip）。原实现把响应体直接 pipe 进文件，等于把 gzip
+        // 字节存成了「源码文件」——用户/AI 拿到的是打不开的乱码，且文件大小看起来正常
+        // （225 vs 236 差别极小），极难察觉。
+        // 双保险：① 显式声明 `Accept-Encoding: identity` 请对方别压缩；
+        //         ② 仍收到 Content-Encoding 时，在响应流上挂解压器兜底。
+        headers: {
+          'User-Agent': UA,
+          Accept: '*/*',
+          'Accept-Encoding': 'identity',
+          ...headers,
+          ...(hostHeader ? { Host: hostHeader } : {}),
+        },
         signal: ac,
       };
       // TLS SNI 必须用域名：IP 直连时若不设 servername，Server 无法选对证书
@@ -327,7 +404,12 @@ async function httpGet(url, { headers = {}, followRedirects = 5, signal, timeout
             .then(resolve, reject);
           return;
         }
-        resolve({ status, headers: res.headers, stream: res });
+        // 兜底解压：即便声明了 identity，仍有镜像强行 gzip（见上方注释）。
+        // 注意 Range 分片请求下，服务端若对分片也压缩，解压后字节数与会与
+        // content-range 不符 —— 那种情况宁可让该候选失败（解压异常会被上层
+        // 判为下载失败并换路线），也不能把压缩字节当成数据落盘。
+        const stream = decodeBody(res);
+        resolve({ status, headers: res.headers, stream });
       });
     } catch (e) {
       releaseTimer();
@@ -456,6 +538,86 @@ async function pick(url, { rule, directOnly = false, signal, prefer = 'smart', f
   // （旧实现逐个串行 probe：冷缓存时若头部都是死镜像，需逐个踩满超时才轮到好的，
   //   实测被拖到 ~50s；竞速并行后 ~6s 即可。）
   if (prefer === 'mirror' && mirrorCands.length) {
+    // ── Artifact 专用选路（v2.11.0）─────────────────────────────────
+    // 通用 TTFB 竞速对 artifact 是错的选法：probeTTFB 返回的 bps 其实是
+    // 1e6/ttfb（纯延迟倒数，不代表带宽），于是「首字节快、带宽只有 1/5」的
+    // 镜像会赢下竞速并吃掉整次下载。实测同一 artifact：
+    //   ghproxy.icu   678/812/520 KB/s（正常时）
+    //   gh-proxy.com  107/342/277 KB/s
+    // 而 TTFB 两者都在 6.7~8.0s，谁先到纯看运气 —— 实测 4 次里有 1 次
+    // 选了 gh-proxy.com，整次下载从 7~11s 变成 52s。
+    // artifact 只有 2 个候选，逐个做一次真实带宽采样（读 1MB 计时）成本很低，
+    // 比"赌首字节"可靠得多；采样结果同时写入速度缓存，后续走 sortMirrorsByHistory。
+    if (rule && rule.artifact) {
+      const sampleOne = async (c) => {
+        // 403 多为 GitHub API 限流（瞬时的，代理出口 IP 轮换），退避重试即可救回。
+        // 不重试的话，撞上限流的镜像会以 bps=0 出局，把冠军白送给慢镜像。
+        for (const wait of [0, 800, 1800]) {
+          if (wait) await delay(wait);
+          if (signal && signal.aborted) break;
+          const r = await probeBandwidth(c.u, {
+            followRedirects: 1, signal, maxBytes: BIG_SAMPLE_BYTES,
+            // 超时必须单独放宽：probeBandwidth 默认 timeoutMs = BIG_SAMPLE_BUDGET_MS = 4s，
+            // 但本环境镜像 TTFB 实测 6.3~7.0s —— 用 4s 会让两个镜像都在首字节到达前
+            // 超时、全部返回 bps=0，于是又退回 TTFB 竞速随机选路（实测回归：3/3 选中
+            // 慢镜像 gh-proxy.com，耗时 32~71s）。这里给到 20s 覆盖 TTFB + 采样传输。
+            timeoutMs: 20_000,
+          });
+          if (r.bps > 0) {
+            if (c.via !== 'direct') rememberMirrorSpeed(c.via, r.bps);
+            return { c, r };
+          }
+          if (r.status !== 403 && r.status !== 0) break; // 404 等确定性错误不必重试
+        }
+        return { c, r: { bps: 0, size: null, rangeOk: false, status: 0 } };
+      };
+      // 串行采样，不要并行（实测结论，别改回 Promise.all）。
+      // 并行发两个采样请求时，ghproxy.icu 频繁直接失败（status=0，无响应），
+      // 于是它被当作「不可用」出局，冠军白送给慢一倍的 gh-proxy.com ——
+      // 实测回归：3/3 全选 gh-proxy.com，耗时 27/54/65s。串行后两路都能拿到
+      // 真实带宽（实测 ghproxy.icu 343KB/s vs gh-proxy.com 27KB/s），选路正确。
+      // 串行代价是多了 ~2s（第二个镜像要等第一个采样完），远小于选错路亏的几十秒。
+      const sampled = [];
+      for (const c of mirrorCands) {
+        if (signal && signal.aborted) break;
+        sampled.push(await sampleOne(c));
+      }
+      if (process.env.GH_ACCEL_DEBUG) {
+        for (const s2 of sampled) {
+          console.error('[artifact-sample]', s2.c.via, 'bps=' + Math.round(s2.r.bps || 0),
+            'status=' + (s2.r.status ?? '?'), 'bytes=' + (s2.r.bytes ?? 0),
+            'ttfb=' + (s2.r.ttfbMs ?? '?'));
+        }
+      }
+      // 只认采样成功（bps>0）的镜像
+      const valid = sampled.filter((s) => s.r.bps > 0);
+      if (valid.length) {
+        valid.sort((a, b) => b.r.bps - a.r.bps);
+        const best = valid[0];
+        return {
+          u: best.c.u,
+          via: best.c.via,
+          speed: best.r.bps,
+          size: best.r.size || null,
+          rangeOk: best.r.rangeOk,
+        };
+      }
+      // 全部采样失败（多半是并发触发 403 限流）：不能退回 TTFB 竞速随机选路。
+      // 实测代价：TTFB 竞速在 ghproxy.icu 被限流时会选中 gh-proxy.com（107~342KB/s），
+      // 整次下载 32~71s，而 ghproxy.icu 正常时只要 6.3~9.8s。
+      // artifact 候选只有 2 个，直接按「历史速度 → 规则顺序」定序试第一个，
+      // 下载阶段失败/过慢会自动换到下一个，比赌首字节可靠。
+      const ranked = sortMirrorsByHistory(rule.mirrors).slice(0, presets.maxProbes);
+      if (ranked.length) {
+        return {
+          u: rewriteFor(url, ranked[0], rule.style),
+          via: ranked[0],
+          speed: 0,          // 0 表示「未实测」而非「不可用」
+          size: null,
+          rangeOk: true,
+        };
+      }
+    }
     const win = await raceProbeFastest(mirrorCands, { signal, budgetMs });
     if (win && win.via !== 'direct(fallback)' && win.speed > 0) {
       // 大文件：TTFB 快不代表带宽足够，对大文件再对可用镜像做真实带宽采样，
@@ -560,24 +722,36 @@ async function probeBandwidth(url, { followRedirects = 1, signal, maxBytes = BIG
       signal,
       timeoutMs,
     });
-    if (status !== 200 && status !== 206) { stream.resume(); return { bps: 0, size: null, rangeOk: false }; }
+    if (status !== 200 && status !== 206) { stream.resume(); return { bps: 0, size: null, rangeOk: false, status }; }
     let size = null;
     const cr = headers['content-range'];
     if (cr && cr.includes('/')) size = Number(cr.split('/').pop());
     else if (status === 200) size = Number(headers['content-length'] || 0);
     let len = 0;
+    let firstAt = 0;   // 首字节到达时刻（用于扣掉 TTFB，得到真实传输带宽）
     await new Promise((resolve) => {
       let s = false;
       const done = () => { if (!s) { s = true; resolve(); } };
-      stream.on('data', (c) => { len += c.length; });
+      stream.on('data', (c) => {
+        if (!firstAt) firstAt = Date.now();
+        len += c.length;
+      });
       stream.on('end', done); stream.on('close', done); stream.on('error', done);
       if (signal) signal.addEventListener('abort', done, { once: true });
     });
-    if (len <= 0) return { bps: 0, size: null, rangeOk: status === 206 };
-    const secs = Math.max((Date.now() - t0) / 1000, 0.01);
-    return { bps: Math.max(len / secs, 1), size, rangeOk: status === 206 };
+    if (len <= 0) return { bps: 0, size: null, rangeOk: status === 206, status };
+    // ── 必须扣掉 TTFB 再算带宽（v2.11.0）─────────────────────────────
+    // 本环境镜像 TTFB 高达 6~9s，而采样只读 256KB。若用「总耗时」算 bps，
+    // 分母里 7s 的连接/首字节开销会把 500KB/s 的真实带宽压成 35KB/s，
+    // 两个镜像测出来几乎相同（实测 35 vs 29、31 vs 32、28 vs 33 KB/s），
+    // 排序等于随机——这正是「artifact 选路把 52s 的慢镜像选成冠军」的根因。
+    // 改为只用「首字节之后到传输结束」的时长做分母，才反映持续带宽。
+    const endAt = Date.now();
+    const xferMs = Math.max(endAt - (firstAt || t0), 1);
+    const bps = Math.max(len / (xferMs / 1000), 1);
+    return { bps, size, rangeOk: status === 206, ttfbMs: (firstAt || endAt) - t0, bytes: len, status };
   } catch {
-    return { bps: 0, size: null, rangeOk: false };
+    return { bps: 0, size: null, rangeOk: false, status: 0 };
   }
 }
 
@@ -697,7 +871,7 @@ function pumpStream(src, onBytes, dest, wsOpts) {
   });
 }
 
-async function downloadRange(url, start, end, dest, { retries = 2, signal, onBytes, append = false }) {
+async function downloadRange(url, start, end, dest, { retries = 2, signal, onBytes, append = false, statusRef = null, exactRange = false }) {
   for (let i = 0; i <= retries; i++) {
     try {
       const headers = end == null ? {} : { Range: `bytes=${start}-${end}` };
@@ -705,12 +879,35 @@ async function downloadRange(url, start, end, dest, { retries = 2, signal, onByt
         headers, followRedirects: 5, signal,
         headersOnlyTimeout: true, timeoutMs: DOWNLOAD_HEADERS_TIMEOUT,
       });
+      // 把状态码回传给调用方（artifact 路径靠它区分 403 限流 vs 404 已过期）
+      if (statusRef) statusRef.status = status;
       if (status !== 200 && status !== 206) {
         stream.resume();
         // 4xx 属于资源级错误（404 不存在 / 403 拒绝等）：该 URL 确定性不可用，
         // 重试毫无意义，立即失败让上层切换到下一候选/通道，而不是反复等重试。
         if (status >= 400 && status < 500) return false;
         throw new Error(`HTTP ${status}`);
+      }
+      // ── Range + 压缩冲突安全阀（v2.12.0）────────────────────────────
+      // 请求了 `Range: bytes=start-end`，但响应仍带 Content-Encoding（gzip/br）。
+      // 压缩流无法按字节偏移切分：解压出来的内容不对应所请求的区间，
+      // 不解压则写进去的是压缩字节 —— 两条路都是错数据。
+      // 这种镜像不能用于分片/续传，直接判该候选失败，让上层换路线。
+      //
+      // 只在 exactRange=true 时检查：那是「这一片必须精确等于 [start,end]」的场景
+      // （分片/断点续传）。整文件下载（start=0、end=size-1）虽然也传了 Range，
+      // 但语义是「要整个文件」，解压后内容就是对的 —— 拦它会把本可用的镜像误杀
+      // （实测：加了这个无条件检查后 3 个镜像全部失败）。
+      if (exactRange && end != null) {
+        const ce = String(
+          (stream && stream.__contentEncoding)
+          || (stream && stream.headers && stream.headers['content-encoding'])
+          || '',
+        ).toLowerCase().trim();
+        if (ce && ce !== 'identity') {
+          stream.resume();
+          return false;
+        }
       }
       // ── Range 支持安全阀（v2.10.8）──────────────────────────────────
       // 我们请求了 `Range: bytes=start-end`，服务器却回 200（而不是 206），
@@ -837,6 +1034,12 @@ export async function runDownload(url, {
         mirrors: [mirror],
       }
     : matchRule(url, rules);
+  // ── GitHub Actions Artifacts 专用路径 ────────────────────────────────
+  // 见 ARTIFACT_RULE 注释里的实测数据。核心三条差异：
+  //  ① 直连匿名 401 → 绝不能把直连当兜底（通用逻辑会回退直连然后干等超时）；
+  //  ② 镜像对并发极敏感 → 默认单连接整文件，只有超过 ARTIFACT_SEG_MIN 才切片；
+  //  ③ 403 是 GitHub API 限流（瞬时）→ 必须退避重试，不能像通用 4xx 那样立即放弃。
+  const isArtifact = Boolean(rule && rule.artifact);
 
   // 先探测拿 size（供选路判断小文件、以及分片决策）；选路用同一轮探测结果避免重复请求
   const picked = await pick(url, { rule, directOnly: !rule, signal, prefer: pref });
@@ -855,6 +1058,15 @@ export async function runDownload(url, {
   const candidates = (() => {
     if (mirror) return [rewriteFor(url, mirror, rule.style)];
     if (!rule) return [picked.u];
+    // ── Artifact 专用候选表 ────────────────────────────────────────
+    // 直连 api.github.com 匿名必 401，把它放进候选表只会白等一次超时；
+    // 这里只保留镜像，且把已选中路线放最前，其余镜像按历史速度降序兜底。
+    if (isArtifact) {
+      const arts = sortMirrorsByHistory(rule.mirrors).map((m) => rewriteFor(url, m, rule.style));
+      // 只收镜像路线：picked.u 若是直连（api.github.com 本体）必须剔除——
+      // 匿名直连必 401，放进候选表纯粹白等一次连接超时。
+      return [...new Set([picked.u, ...arts].filter((x) => x && x !== url))];
+    }
     // 竞速已判定无任何镜像/直连可用（via 标记为 direct(fallback)）：探测阶段就已全败，
     // 下载再逐候选重试 12 个纯属浪费时间（每个都要连上+超时）。
     // 此时只保留一个快速兜底直连，让它尽快失败并抛出可读错误，而不是干等几十秒。
@@ -867,6 +1079,168 @@ export async function runDownload(url, {
     // 「已知不可达的直连」先阻塞等待超时（本环境直连 github 15s+ 才失败），白白拖慢。
     return [...directFirst, picked.u, ...mirrorUrls.filter((x) => x !== picked.u), ...(picked.u !== url ? [url] : [])];
   })();
+
+  // ── Artifact：单连接整文件下载 + 403 退避重试 ─────────────────────────
+  // 实测（见 ARTIFACT_RULE）：artifact 走镜像时，单连接整文件比切片并发快得多
+  // （ghproxy.icu 10s vs 32s；gh-proxy.com 44s vs 18s 但会掉片），且镜像对并发
+  // 触发 GitHub API 限流（403）。所以：
+  //   · 默认单连接整文件（Range 一次覆盖全文件，仍是 206 单流）；
+  //   · 超过 ARTIFACT_SEG_MIN 才切片，且 worker 上限压到 4；
+  //   · 403 视为瞬时限流 → 退避重试（1/2/4/6/8/10s），并轮换到下一个镜像；
+  //   · 404 → artifact 不存在或已过期（默认保留 30 天），直接给出明确提示。
+  const ARTIFACT_SEG_MIN = 256 * 1024 * 1024; // 256MB 以下一律单连接
+  const ARTIFACT_THREADS = 4;                 // 切片时的 worker 上限
+  const ARTIFACT_RETRY_DELAYS = [1000, 2000, 4000, 6000, 8000, 10000];
+
+  if (isArtifact && (!size || size <= ARTIFACT_SEG_MIN)) {
+    let lastErr = null;
+    // 存在性探测：镜像对**不存在的 id** 未必回 404（常回 403 限流兜底），
+    // 无法只凭一个镜像的状态码判定「过期/不存在」。所以对候选逐个做一次
+    // Range 0-0 探测（很便宜），判定优先级：
+    //   · 200/206（任一镜像）→ 存在，直接进正式下载，不再探测其余；
+    //   · 404/410（任一镜像）→ 确实不存在（artifacts 默认保留 30 天），立即报错，
+    //     不进重试循环（实测盲目重试会把 4 秒的失败拖成 116 秒）；
+    //   · 全部 401/403/网络错 → 按瞬时限流处理，进退避重试循环。
+    // 为什么必须遍历：两个镜像对同一个坏 id 表现相反——实测坏 id 时
+    // ghproxy.icu 回 404、gh-proxy.com 回 403，只看第一个会漏判。
+    const preRef = { status: 0 };
+    if (!size && candidates.length) {
+      for (const t of candidates) {
+        if (signal && signal.aborted) break;
+        const ref = { status: 0 };
+        try {
+          await downloadRange(t, 0, 0, out, { retries: 0, signal, statusRef: ref });
+        } catch { /* 探测失败不影响判定 */ }
+        try { await fsp.rm(out, { force: true }); } catch { /* no-op */ }
+        preRef.status = ref.status;
+        if (ref.status === 404 || ref.status === 410) break;
+        if (ref.status === 200 || ref.status === 206) break;
+      }
+      if (preRef.status === 404 || preRef.status === 410) {
+        stopReporter();
+        throw new Error(
+          `Artifact 不存在或已过期（HTTP ${preRef.status}）：${url}\n` +
+          'GitHub Actions Artifacts 默认只保留 30 天，过期后任何镜像都无法取回；' +
+          '请到仓库 Actions 页面确认该 artifact 是否仍存在，或重新触发 workflow 生成。',
+        );
+      }
+    }
+    // 每个候选路线按 ARTIFACT_RETRY_DELAYS 退避重试；403/5xx/网络错都重试。
+    // ── 多轮换道 + 断点续传（v2.11.0 兜底）────────────────────────────
+    // 采样选路能挑出快镜像，但镜像带宽会中途塌掉，也可能中途开始 403/超时
+    // （实测同一 artifact 在几分钟内：ghproxy.icu 时快时 403，gh-proxy.com
+    // 时 165KB/s 时 40KB/s 时整段超时）。三条兜底规则：
+    //  ① 慢路看门狗：瞬时速度低于 ARTIFACT_SLOW_BPS 持续一个窗口 → 主动断开当前路线；
+    //  ② 断开/失败都**保留已写字节**，换下一个候选从断点续传，绝不从头再来；
+    //  ③ 候选表可以循环多轮（ARTIFACT_MAX_ROUNDS）——只切一轮时，若换到的那条
+    //     路也恰好失败，已经下到一半的数据就全废了；循环续传才能把镜像的
+    //     「时好时坏」变成「总能拼完」。
+    // 唯一例外：404/410 是确定性的（artifact 过期），任何路线都救不回，立即报错。
+    const ARTIFACT_SLOW_BPS = 40 * 1024;       // 低于 40KB/s 视为慢路
+    const ARTIFACT_SLOW_WINDOW_MS = 8_000;     // 观察窗口（镜像 TTFB 就有 6~7s，窗口不能太短）
+    const ARTIFACT_MAX_ROUNDS = 3;             // 候选表最多轮几圈
+    const ARTIFACT_TOTAL_BUDGET_MS = 180_000;  // 总时限，超了就报错而不是无限磨
+    const canResume = Boolean(size);           // size 未知时无法定位断点，只能整段重下
+    let have = 0;
+    try { have = fs.existsSync(out) ? fs.statSync(out).size : 0; } catch { have = 0; }
+    if (!canResume) { try { await fsp.rm(out, { force: true }); } catch { /* no-op */ } have = 0; }
+    let finalRoute = candidates[0];
+    outer:
+    for (let round = 0; round < ARTIFACT_MAX_ROUNDS; round++) {
+      for (const t of candidates) {
+        if (signal && signal.aborted) { stopReporter(); throw new Error('下载已取消'); }
+        if (Date.now() - t0 > ARTIFACT_TOTAL_BUDGET_MS) break outer;
+        // 已下满（可能是上一轮刚写完）：直接收尾
+        if (size && have >= size) {
+          stopReporter();
+          if (typeof onProgress === 'function') onProgress({ doneB: have, totalB: size, kbPerSec: 0 });
+          return summarize(out, t, size, t0, rule);
+        }
+        for (let attempt = 0; attempt <= ARTIFACT_RETRY_DELAYS.length; attempt++) {
+          if (signal && signal.aborted) { stopReporter(); throw new Error('下载已取消'); }
+          const ref = { status: 0 };
+          // 单次尝试的内部中断器：慢路看门狗通过它断开本次请求（保留已写字节）
+          const inner = new AbortController();
+          const onOuterAbort = () => inner.abort();
+          if (signal) signal.addEventListener('abort', onOuterAbort, { once: true });
+          let slowAbort = false;
+          let lastMark = Date.now();
+          let lastBytes = have;
+          const wd = setInterval(() => {
+            const nowMs = Date.now();
+            const dtMs = nowMs - lastMark;
+            if (dtMs < ARTIFACT_SLOW_WINDOW_MS) return;
+            const cur = fs.existsSync(out) ? fs.statSync(out).size : 0;
+            const bps = (cur - lastBytes) / (dtMs / 1000);
+            lastMark = nowMs; lastBytes = cur;
+            // 只对「还没下完」的情况判慢：已接近完成就让最后一点自然收尾
+            if (size && cur >= size) return;
+            if (bps < ARTIFACT_SLOW_BPS) { slowAbort = true; inner.abort(); }
+          }, 1000);
+          try {
+            done = have; // 续传时进度基线对齐，避免字节数重复累加
+            const okDl = await downloadRange(t, have, size ? size - 1 : null, out, {
+              retries: 0, signal: inner.signal, onBytes: sumBytes, statusRef: ref,
+              append: have > 0,
+              // have > 0 表示从断点续传：这一段必须精确等于 [have, size-1]，
+              // 镜像若还带 Content-Encoding 压缩，解压后对不上，必须换路线。
+              exactRange: have > 0,
+            });
+            clearInterval(wd);
+            if (signal) signal.removeEventListener('abort', onOuterAbort);
+            if (okDl) {
+              stopReporter();
+              const fin = fs.existsSync(out) ? fs.statSync(out).size : done;
+              if (typeof onProgress === 'function') onProgress({ doneB: fin, totalB: size || 0, kbPerSec: 0 });
+              return summarize(out, t, size, t0, rule);
+            }
+            // 失败：记下已写入字节（供换道续传），不清文件
+            try { have = fs.existsSync(out) ? fs.statSync(out).size : 0; } catch { have = 0; }
+            if (!canResume) { try { await fsp.rm(out, { force: true }); } catch { /* no-op */ } have = 0; }
+            lastErr = new Error(`下载失败: ${t}（HTTP ${ref.status || '网络错误'}）`);
+          } catch (e) {
+            clearInterval(wd);
+            if (signal) signal.removeEventListener('abort', onOuterAbort);
+            try { have = fs.existsSync(out) ? fs.statSync(out).size : 0; } catch { have = 0; }
+            if (!canResume) { try { await fsp.rm(out, { force: true }); } catch { /* no-op */ } have = 0; }
+            lastErr = e;
+          }
+          // 404/410：artifact 已过期或被删除，换镜像、重试都没用
+          if (ref.status === 404 || ref.status === 410) {
+            stopReporter();
+            try { await fsp.rm(out, { force: true }); } catch { /* no-op */ }
+            throw new Error(
+              `Artifact 不存在或已过期（HTTP ${ref.status}）：${url}\n` +
+              'GitHub Actions Artifacts 默认只保留 30 天，过期后任何镜像都无法取回；' +
+              '请到仓库 Actions 页面确认该 artifact 是否仍存在，或重新触发 workflow 生成。',
+            );
+          }
+          // 慢路：立刻换下一个候选（保留 have 续传），不浪费时间在原路重试
+          if (slowAbort) {
+            lastErr = new Error(`镜像过慢已换道: ${t}`);
+            finalRoute = t;
+            continue outer;
+          }
+          const wait = ARTIFACT_RETRY_DELAYS[attempt];
+          if (wait == null) break;
+          await delay(wait);
+        }
+        finalRoute = t;
+      }
+    }
+    stopReporter();
+    // 收尾：若多轮拼下来其实已经凑够完整文件（最后一条路正好写完但没来得及判定），
+    // 按成功返回，避免「数据其实完整却报失败」。
+    try {
+      const fin = fs.existsSync(out) ? fs.statSync(out).size : 0;
+      if (size && fin === size) {
+        if (typeof onProgress === 'function') onProgress({ doneB: fin, totalB: size, kbPerSec: 0 });
+        return summarize(out, finalRoute, size, t0, rule);
+      }
+    } catch { /* no-op */ }
+    try { await fsp.rm(out, { force: true }); } catch { /* no-op */ }
+    throw lastErr || new Error('download failed');
+  }
 
   if (!size || size <= SEGMENT_MIN || !picked.rangeOk) {
     let lastErr = null;
@@ -907,7 +1281,9 @@ export async function runDownload(url, {
   // 「连接+首字节」的固定开销翻倍，再叠加 per-host 并发闸门排队，反而更慢。
   // 片大小不是长尾的主因，增大分片数只会放大固定开销。
   const SEG_MAX = 2 * 1024 * 1024;
-  const seg = Math.min(Math.max(1, Math.floor(size / threads)), SEG_MAX);
+  // Artifact 切片路径（仅 >256MB 才会走到）：镜像对并发极敏感，worker 压到 4。
+  const effThreads = isArtifact ? Math.min(threads, ARTIFACT_THREADS) : threads;
+  const seg = Math.min(Math.max(1, Math.floor(size / effThreads)), SEG_MAX);
   const ranges = [];
   for (let s = 0; s < size; s += seg) ranges.push([s, Math.min(s + seg - 1, size - 1)]);
   const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'ghaccel-'));
@@ -973,6 +1349,8 @@ export async function runDownload(url, {
       try {
         ok = await downloadRange(route, s0 + have, e0, parts[i], {
           retries: 0, signal, append: have > 0,
+          // 分片必须精确对应 [s0+have, e0]，压缩流无法按偏移切分 → 该候选不可用
+          exactRange: true,
           onBytes: (n) => { inflight[i] += n; done = liveBytes(); },
         });
       } finally {
@@ -1001,7 +1379,7 @@ export async function runDownload(url, {
     inflight[i] = 0;
     return false;
   };
-  const okFlags = await mapLimit(ranges, threads, (_r, i) => fetchRange(i));
+  const okFlags = await mapLimit(ranges, effThreads, (_r, i) => fetchRange(i));
 
   if (okFlags.some((f) => !f)) {
     stopReporter();
@@ -1009,7 +1387,7 @@ export async function runDownload(url, {
     const failed = okFlags.filter((f) => !f).length;
     throw new Error(`部分分片下载失败（${failed}/${ranges.length} 片在全部 ${routeList.length} 条路线上均失败）`);
   }
-  // 分片下载阶段已完成，进入**合并落盘**阶段。
+  // 分片下载阶段已完成，进入**合并落盘**阶段（v2.11.0 恢复）。
   //
   // 这一段是用户能明显感知的等待：实测 100MB / 50 片在 /sdcard(fuseblk) 上
   // 逐片 createReadStream 串接要 ~1000ms，而胶囊此前一直停在 99% 不动，

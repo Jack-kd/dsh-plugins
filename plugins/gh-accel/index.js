@@ -101,7 +101,17 @@ const probeOutputSchema = {
   },
 };
 
+// ── GitHub Actions Artifacts 链接识别 ────────────────────────────────────
+// artifact 下载地址在 **api.github.com** 上，形如
+//   https://api.github.com/repos/<owner>/<repo>/actions/artifacts/<id>/zip
+// 旧版 GITHUB_RE 只认 github.com / raw / codeload，导致这类链接被
+// github_accel_download 拒收、又被 url_accel_download 以「GitHub 直链」为由踢回，
+// 两个工具互相推诿 → 只能裸 curl，而直连匿名必 401。
+// 现在单列一条正则：命中即交给 artifact 专用规则（见 lib.js ARTIFACT_RULE）。
+const ARTIFACT_RE = /^https:\/\/api\.github\.com\/repos\/[^/]+\/[^/]+\/actions\/artifacts\/\d+\/(zip|archive)/i;
 const GITHUB_RE = /^https:\/\/(github\.com|raw\.githubusercontent\.com|codeload\.github\.com)\//i;
+// 允许进入 github_accel_download 的全部形态
+const GH_ACCEL_RE = new RegExp(`(?:${GITHUB_RE.source})|(?:${ARTIFACT_RE.source})`, 'i');
 
 // 把 release 资产 URL 转成等价源码归档(tarball)URL，用于原通道 404 时降级重试。
 //   /releases/download/<tag>/<file>  →  /archive/refs/tags/<tag>.tar.gz
@@ -140,7 +150,12 @@ export function apply(ctx, config = {}) {
   const threads = clampInt(config.threads, 8, 32);
   const prefer = normalizePrefer(config.prefer); // 'smart' | 'mirror' | 'direct'，默认 smart
   if (Array.isArray(config.mirrors) && config.mirrors.length) {
-    rules = rules.map((r) => (/github/.test(r.match) ? { ...r, mirrors: config.mirrors } : r));
+    // 只替换「通用 GitHub 规则」的镜像；artifact 规则必须保住自己的两条专用镜像
+    // （实测 20 个候选里只有 ghproxy.icu / gh-proxy.com 能下 artifact，
+    //   被用户的通用镜像表覆盖后必然全挂），huggingface/npm 等也不受影响。
+    rules = rules.map((r) => (
+      /github/.test(r.match) && !r.artifact ? { ...r, mirrors: config.mirrors } : r
+    ));
   }
 
   // ── 下载/上传中状态投影：会话事件折叠出「正走加速节点」状态 ─────────────
@@ -246,10 +261,12 @@ export function apply(ctx, config = {}) {
   ctx.effect(() => ctx.tools.register({
     name: 'github_accel_download',
     description:
-      '从 GitHub 加速下载文件（release 附件 / raw 文件 / 源码归档）。' +
+      '从 GitHub 加速下载文件（release 附件 / raw 文件 / 源码归档 / Actions Artifacts）。' +
       '自动对直连与多个 GitHub 加速镜像并行测速（每个 3.5 秒封顶）选最快路线；大文件按 Range 切片多线程并发下载，失败自动重试。' +
       '下载 GitHub 站内文件时优先使用本工具（比直接 curl 快数倍到数十倍）。' +
-      '参数: url 必须是 github.com / raw.githubusercontent.com / codeload.github.com 开头的 https 链接；out 建议绝对路径；' +
+      'Artifacts 链接（api.github.com/repos/…/actions/artifacts/<id>/zip）自动走专用镜像 ghproxy.icu / gh-proxy.com，' +
+      '单连接整文件下载并对 403 限流退避重试。' +
+      '参数: url 必须是 github.com / raw.githubusercontent.com / codeload.github.com / api.github.com(artifacts) 开头的 https 链接；out 建议绝对路径；' +
       'threads 并发分片数；prefer 下载优先策略（mirror=镜像优先/国内推荐，smart=智能平衡/默认，direct=直连优先）；' +
       'mirror 可显式指定镜像 base 强制走它。',
     parameters: {
@@ -269,7 +286,7 @@ export function apply(ctx, config = {}) {
     output: { schema: downloadOutputSchema, render: downloadRender },
     async execute(args, exec) {
       const url = String(args.url || '').trim();
-      if (!GITHUB_RE.test(url)) throw new Error('url 必须是 github.com / raw.githubusercontent.com / codeload.github.com 开头的 https 链接');
+      if (!GH_ACCEL_RE.test(url)) throw new Error('url 必须是 github.com / raw.githubusercontent.com / codeload.github.com / api.github.com(artifacts) 开头的 https 链接');
       if (exec.signal?.aborted) throw new Error('已取消');
       // threads 优先取调用参数，未传时回退插件配置（修复：之前参数被静默忽略）
       const t = clampInt(args.threads ?? threads, 8, 32);
@@ -391,8 +408,8 @@ export function apply(ctx, config = {}) {
     async execute(args, exec) {
       const url = String(args.url || '').trim();
       if (!/^https?:\/\//i.test(url)) throw new Error('url 必须是 http(s) 链接');
-      if (GITHUB_RE.test(url)) {
-        throw new Error('GitHub 直链请使用 github_accel_download 工具（本插件的 GitHub 专用路线）');
+      if (GH_ACCEL_RE.test(url)) {
+        throw new Error('GitHub 直链（含 Actions Artifacts）请使用 github_accel_download 工具（本插件的 GitHub 专用路线）');
       }
       if (exec.signal?.aborted) throw new Error('已取消');
       // threads 优先取调用参数，未传时回退插件配置（修复：之前参数被静默忽略）
@@ -458,6 +475,10 @@ export function apply(ctx, config = {}) {
         text:
           '文件下载优选规则（gh-accel v2 已生效）：下载任意 URL 的大文件/工具时，' +
           'GitHub 站内文件一律用 github_accel_download（自动走加速镜像）；' +
+          'GitHub Actions Artifacts（api.github.com/repos/<owner>/<repo>/actions/artifacts/<id>/zip）' +
+          '同样属于 GitHub 站内文件，一律用 github_accel_download —— 它内置 Artifacts 专用镜像' +
+          '（ghproxy.icu / gh-proxy.com），会自动改写地址、实测带宽选路、403 退避重试；' +
+          '不要因为「这是 api.github.com 不是 github.com」就退回 curl（匿名直连 api.github.com 必定 401）。' +
           '其他任意站点用 url_accel_download（规则镜像 + 多线程）；git clone 用 github_accel_clone，push 用 github_accel_push；' +
           '需要对比选路时可先用 url_accel_probe。不要用 curl/wget 直连下载大文件（通常慢数倍）。',
       }));
